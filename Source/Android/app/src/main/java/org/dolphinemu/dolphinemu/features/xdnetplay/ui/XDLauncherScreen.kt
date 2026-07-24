@@ -38,6 +38,7 @@ fun XDLauncherScreen(
     initialized: Boolean,
     xdGameFound: Boolean,
     emeraldRomSet: Boolean,
+    teamSavesReady: Boolean,
     onPickXdFolder: () -> Unit,
     onPickEmeraldRom: () -> Unit,
     onTeamEditor: () -> Unit,
@@ -76,6 +77,7 @@ fun XDLauncherScreen(
                 ReadinessCard(
                     xdGameFound = xdGameFound,
                     emeraldRomSet = emeraldRomSet,
+                    teamSavesReady = teamSavesReady,
                     onPickXdFolder = onPickXdFolder,
                     onPickEmeraldRom = onPickEmeraldRom
                 )
@@ -112,6 +114,7 @@ fun XDLauncherScreen(
 private fun ReadinessCard(
     xdGameFound: Boolean,
     emeraldRomSet: Boolean,
+    teamSavesReady: Boolean,
     onPickXdFolder: () -> Unit,
     onPickEmeraldRom: () -> Unit
 ) {
@@ -135,6 +138,13 @@ private fun ReadinessCard(
                 missingText = "Emerald ROM not set",
                 fixLabel = "Choose ROM…",
                 onFix = onPickEmeraldRom
+            )
+            CheckRow(
+                ok = teamSavesReady,
+                okText = "Team saves installed (XD requires progressed saves)",
+                missingText = "Team saves install automatically once the Emerald ROM is set",
+                fixLabel = "",
+                onFix = null
             )
             CheckRow(
                 ok = true,
