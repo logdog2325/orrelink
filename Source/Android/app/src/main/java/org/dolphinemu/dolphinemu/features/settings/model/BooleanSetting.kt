@@ -280,7 +280,8 @@ enum class BooleanSetting(
         Settings.FILE_DOLPHIN,
         Settings.SECTION_INI_ANDROID,
         "ShowInputOverlay",
-        true
+        // Off by default: this fork targets handhelds with physical controls.
+        false
     ),
     MAIN_DUAL_SCREEN_EXTERNAL_DISPLAY(
         Settings.FILE_DOLPHIN,
