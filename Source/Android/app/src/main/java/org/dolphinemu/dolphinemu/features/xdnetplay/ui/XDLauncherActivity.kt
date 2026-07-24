@@ -18,6 +18,7 @@ import java.io.File
 import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.SaveNaming
+import org.dolphinemu.dolphinemu.features.xdnetplay.input.AutoMapper
 import org.dolphinemu.dolphinemu.features.settings.ui.MenuTag
 import org.dolphinemu.dolphinemu.features.settings.ui.SettingsActivity
 import org.dolphinemu.dolphinemu.model.GameFileCache
@@ -36,6 +37,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var xdGameFound by mutableStateOf(false)
     private var emeraldRomSet by mutableStateOf(false)
     private var teamSavesReady by mutableStateOf(false)
+    private var controllerMapped by mutableStateOf(false)
 
     private val pickXdFolder =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -90,6 +92,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     xdGameFound = xdGameFound,
                     emeraldRomSet = emeraldRomSet,
                     teamSavesReady = teamSavesReady,
+                    controllerMapped = controllerMapped,
                     onPickXdFolder = { pickXdFolder.launch(null) },
                     onPickEmeraldRom = { pickEmeraldRom.launch(arrayOf("*/*")) },
                     onTeamEditor = { TeamEditorActivity.launch(this) },
@@ -118,6 +121,11 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
             StringSetting.MAIN_GBA_ROM_3.string.isNotEmpty()
         xdGameFound = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID) != null
         teamSavesReady = if (emeraldRomSet) seedTeamSaves() else false
+        controllerMapped = try {
+            AutoMapper.isMapped() || AutoMapper.autoMap()
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /**
