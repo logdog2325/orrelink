@@ -44,6 +44,7 @@ fun XDLauncherScreen(
     onPickEmeraldRom: () -> Unit,
     onTeamEditor: () -> Unit,
     onBattle: () -> Unit,
+    onFindBattles: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDolphin: () -> Unit
 ) {
@@ -99,6 +100,14 @@ fun XDLauncherScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Battle  —  Host or Join", style = MaterialTheme.typography.titleMedium)
+                }
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = onFindBattles,
+                    enabled = xdGameFound,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Find Battles  —  public lobby", style = MaterialTheme.typography.titleMedium)
                 }
                 Spacer(Modifier.height(24.dp))
 
