@@ -127,9 +127,21 @@ class ExternalDisplayManager(private val context: Context) : DisplayManager.Disp
             return findPresentationDisplay(displayManager) != null
         }
 
-        private fun findPresentationDisplay(displayManager: DisplayManager): Display? =
-            displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION).firstOrNull {
-                it.displayId != Display.DEFAULT_DISPLAY && it.state == Display.STATE_ON
-            }
+        private fun findPresentationDisplay(displayManager: DisplayManager): Display? {
+            val defaultName = displayManager.getDisplay(Display.DEFAULT_DISPLAY)?.name
+            val candidates =
+                displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION).filter {
+                    it.displayId != Display.DEFAULT_DISPLAY &&
+                        it.state == Display.STATE_ON &&
+                        it.isValid
+                }
+
+            // Some devices (e.g. AYN Odin 2 / Thor firmware) expose a phantom virtual
+            // display that shares the built-in display's name. Prefer a display that
+            // doesn't look like the default one so the physical second screen wins.
+            return candidates.firstOrNull {
+                it.name != defaultName && !it.name.contains("Built", ignoreCase = true)
+            } ?: candidates.firstOrNull()
+        }
     }
 }
