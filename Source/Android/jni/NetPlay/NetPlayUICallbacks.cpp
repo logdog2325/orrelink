@@ -3,9 +3,13 @@
 
 #include <android/log.h>
 
+#include <fmt/format.h>
+
 #include "Common/TraversalClient.h"
 #include "Core/Boot/Boot.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
+#include "Core/HW/GBACore.h"
 #include "Core/System.h"
 #include "NetPlayUICallbacks.h"
 #include "UICommon/GameFile.h"
@@ -172,8 +176,12 @@ void NetPlayUICallbacks::OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_ide
   });
 }
 
-void NetPlayUICallbacks::OnMsgChangeGBARom(int, const NetPlay::GBAConfig&)
+void NetPlayUICallbacks::OnMsgChangeGBARom(int pad, const NetPlay::GBAConfig& config)
 {
+  if (config.has_rom)
+    AppendChat(fmt::format("GBA{} ROM changed to \"{}\"", pad + 1, config.title));
+  else
+    AppendChat(fmt::format("GBA{} ROM disabled", pad + 1));
 }
 
 void NetPlayUICallbacks::OnMsgStartGame()
@@ -327,8 +335,26 @@ NetPlayUICallbacks::FindGameFile(const NetPlay::SyncIdentifier& sync_identifier,
   return result;
 }
 
-std::string NetPlayUICallbacks::FindGBARomPath(const std::array<u8, 20>&, std::string_view, int)
+std::string NetPlayUICallbacks::FindGBARomPath(const std::array<u8, 20>& hash,
+                                               std::string_view title, int device_number)
 {
+#ifdef HAS_LIBMGBA
+  std::string rom_path;
+  std::array<u8, 20> rom_hash;
+  std::string rom_title;
+  for (size_t i = device_number; i < static_cast<size_t>(device_number) + 4; ++i)
+  {
+    rom_path = Config::Get(Config::MAIN_GBA_ROM_PATHS[i % 4]);
+    if (!rom_path.empty() && HW::GBA::Core::GetRomInfo(rom_path.c_str(), rom_hash, rom_title) &&
+        rom_hash == hash && rom_title == title)
+    {
+      return rom_path;
+    }
+  }
+  AppendChat(fmt::format("No GBA ROM matching \"{}\" is configured for GBA{}. Set the ROM in "
+                         "Settings -> GBA Link before starting.",
+                         title, device_number + 1));
+#endif
   return {};
 }
 
