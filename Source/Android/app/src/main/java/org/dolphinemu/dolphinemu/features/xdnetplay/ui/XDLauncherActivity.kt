@@ -7,15 +7,18 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplaySetupActivity
+import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
 import org.dolphinemu.dolphinemu.features.settings.ui.MenuTag
 import org.dolphinemu.dolphinemu.features.settings.ui.SettingsActivity
+import org.dolphinemu.dolphinemu.model.GameFileCache
 import org.dolphinemu.dolphinemu.services.GameFileCacheManager
 import org.dolphinemu.dolphinemu.ui.main.MainActivity
 import org.dolphinemu.dolphinemu.ui.main.ThemeProvider
@@ -30,6 +33,33 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var initialized by mutableStateOf(false)
     private var xdGameFound by mutableStateOf(false)
     private var emeraldRomSet by mutableStateOf(false)
+
+    private val pickXdFolder =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri != null) {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+                GameFileCache.addGameFolder(uri.toString())
+                GameFileCacheManager.startRescan()
+            }
+        }
+
+    private val pickEmeraldRom =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+                // Same ROM in both linkable slots, mirroring the desktop XD Netplay config.
+                StringSetting.MAIN_GBA_ROM_2.setString(NativeConfig.LAYER_BASE, uri.toString())
+                StringSetting.MAIN_GBA_ROM_3.setString(NativeConfig.LAYER_BASE, uri.toString())
+                NativeConfig.save(NativeConfig.LAYER_BASE)
+                refreshChecks()
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen().setKeepOnScreenCondition {
@@ -56,6 +86,8 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     initialized = initialized,
                     xdGameFound = xdGameFound,
                     emeraldRomSet = emeraldRomSet,
+                    onPickXdFolder = { pickXdFolder.launch(null) },
+                    onPickEmeraldRom = { pickEmeraldRom.launch(arrayOf("*/*")) },
                     onTeamEditor = { TeamEditorActivity.launch(this) },
                     onBattle = { NetplaySetupActivity.launch(this) },
                     onOpenSettings = {
