@@ -19,6 +19,7 @@
 #include "AudioCommon/AudioCommon.h"
 
 #include "Common/ChunkFile.h"
+#include "Common/CommonPaths.h"
 #include "Common/CommonTypes.h"
 #include "Common/Config/Config.h"
 #include "Common/Crypto/SHA1.h"
@@ -229,7 +230,15 @@ bool Core::Start(u64 gc_ticks)
 
   if (m_core->platform(m_core) == mPLATFORM_GBA)
   {
-    LoadBIOS(File::GetUserPath(F_GBABIOS_IDX).c_str());
+    std::string bios_path = File::GetUserPath(F_GBABIOS_IDX);
+    if (!File::Exists(bios_path))
+    {
+      // Fall back to a BIOS bundled in the Sys directory, if present.
+      const std::string sys_bios = File::GetSysDirectory() + "GBA" DIR_SEP "gba_bios.bin";
+      if (File::Exists(sys_bios))
+        bios_path = sys_bios;
+    }
+    LoadBIOS(bios_path.c_str());
   }
 
   if (rom)
