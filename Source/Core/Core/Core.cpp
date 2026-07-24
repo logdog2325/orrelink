@@ -329,13 +329,13 @@ static void CpuThread(Core::System& system, const std::optional<std::string>& sa
 {
   if (system.IsDualCoreMode())
     Common::SetCurrentThreadName("CPU thread");
+  else
+    Common::SetCurrentThreadName("CPU-GPU thread");
+
 #ifdef __ANDROID__
   // Keep this thread responsive under Android scheduling (URGENT_DISPLAY class).
   setpriority(PRIO_PROCESS, 0, -8);
 #endif
-
-  else
-    Common::SetCurrentThreadName("CPU-GPU thread");
 
   // This needs to be delayed until after the video backend is ready.
   DolphinAnalytics::Instance().ReportGameStart();
