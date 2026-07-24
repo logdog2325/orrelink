@@ -179,6 +179,18 @@ class EmulationFragment : Fragment(), SurfaceHolder.Callback {
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         Log.debug("[EmulationFragment] Surface changed. Resolution: $width x $height")
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            try {
+                // Vote for the GameCube's 59.94 Hz so high-refresh panels drop to a
+                // clean cadence instead of compositing 120 Hz for 60 Hz content.
+                holder.surface.setFrameRate(
+                    60000f / 1001f,
+                    android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
+                )
+            } catch (_: Exception) {
+                // Not critical; some devices reject frame-rate votes.
+            }
+        }
         NativeLibrary.SurfaceChanged(holder.surface)
         if (runWhenSurfaceIsValid) {
             runWithValidSurface()
