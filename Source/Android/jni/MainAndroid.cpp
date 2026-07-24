@@ -444,12 +444,18 @@ JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_SurfaceChang
 {
   std::lock_guard<std::mutex> guard(s_surface_lock);
 
+  ANativeWindow* previous_surf = s_surf;
   s_surf = ANativeWindow_fromSurface(env, surf);
   if (s_surf == nullptr)
     __android_log_print(ANDROID_LOG_ERROR, DOLPHIN_TAG, "Error: Surface is null.");
 
   if (g_presenter)
     g_presenter->ChangeSurface(s_surf);
+
+  // surfaceChanged can fire repeatedly without a surfaceDestroyed in between
+  // (resizes, display hotplug); release the ref we took on the previous window.
+  if (previous_surf)
+    ANativeWindow_release(previous_surf);
 
   s_surface_cv.notify_all();
 }

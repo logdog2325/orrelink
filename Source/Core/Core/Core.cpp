@@ -3,6 +3,10 @@
 
 #include "Core/Core.h"
 
+#ifdef __ANDROID__
+#include <sys/resource.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <functional>
@@ -325,6 +329,11 @@ static void CpuThread(Core::System& system, const std::optional<std::string>& sa
 {
   if (system.IsDualCoreMode())
     Common::SetCurrentThreadName("CPU thread");
+#ifdef __ANDROID__
+  // Keep this thread responsive under Android scheduling (URGENT_DISPLAY class).
+  setpriority(PRIO_PROCESS, 0, -8);
+#endif
+
   else
     Common::SetCurrentThreadName("CPU-GPU thread");
 
@@ -471,6 +480,11 @@ static void FifoPlayerThread(Core::System& system, const std::optional<std::stri
     // Spawn the GPU thread.
     std::thread gpu_thread{[&] {
       Common::SetCurrentThreadName("Video thread");
+#ifdef __ANDROID__
+  // Keep this thread responsive under Android scheduling (URGENT_DISPLAY class).
+  setpriority(PRIO_PROCESS, 0, -8);
+#endif
+
 
       const bool is_init = init_video();
       init_from_thread.set_value(is_init);

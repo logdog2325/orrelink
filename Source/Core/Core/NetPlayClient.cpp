@@ -3,6 +3,10 @@
 
 #include "Core/NetPlayClient.h"
 
+#ifdef __ANDROID__
+#include <sys/resource.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -1584,6 +1588,11 @@ void NetPlayClient::SendAsync(sf::Packet&& packet, const u8 channel_id)
 void NetPlayClient::ThreadFunc()
 {
   INFO_LOG_FMT(NETPLAY, "NetPlayClient starting.");
+#ifdef __ANDROID__
+  // Keep this thread responsive under Android scheduling (URGENT_DISPLAY class).
+  setpriority(PRIO_PROCESS, 0, -8);
+#endif
+
 
   Common::QoSSession qos_session;
   if (Config::Get(Config::NETPLAY_ENABLE_QOS))

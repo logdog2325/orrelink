@@ -3,6 +3,10 @@
 
 #include "Core/NetPlayServer.h"
 
+#ifdef __ANDROID__
+#include <sys/resource.h>
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -245,6 +249,11 @@ void NetPlayServer::SetupIndex()
 // called from ---NETPLAY--- thread
 void NetPlayServer::ThreadFunc()
 {
+#ifdef __ANDROID__
+  // Keep this thread responsive under Android scheduling (URGENT_DISPLAY class).
+  setpriority(PRIO_PROCESS, 0, -8);
+#endif
+
   INFO_LOG_FMT(NETPLAY, "NetPlayServer starting.");
 
   while (m_do_loop)
