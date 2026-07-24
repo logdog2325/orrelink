@@ -53,8 +53,9 @@
             tools:targetApi="29" />
 
         <activity
-            android:name=".ui.main.MainActivity"
+            android:name=".features.xdnetplay.ui.XDLauncherActivity"
             android:exported="true"
+            android:label="XD Netplay"
             android:theme="@style/Theme.Dolphin.Splash.Main">
 
             <!-- This intentfilter marks this Activity as the one that gets launched from Home screen. -->
@@ -64,6 +65,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".features.xdnetplay.ui.TeamEditorActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Dolphin.Main" />
+
+        <activity
+            android:name=".ui.main.MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Dolphin.Splash.Main" />
 
         <activity
             android:name=".ui.main.TvMainActivity"
