@@ -33,6 +33,7 @@ add_library(main SHARED
   Input/NumericSetting.cpp
   Input/NumericSetting.h
   NetPlay/Netplay.cpp
+  NetPlay/NetPlayIndexBridge.cpp
   NetPlay/NetPlayUICallbacks.cpp
   NetPlay/NetPlayUICallbacks.h
   MainAndroid.cpp

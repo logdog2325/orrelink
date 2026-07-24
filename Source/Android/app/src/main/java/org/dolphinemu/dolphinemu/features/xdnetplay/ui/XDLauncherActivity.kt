@@ -97,6 +97,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     onPickEmeraldRom = { pickEmeraldRom.launch(arrayOf("*/*")) },
                     onTeamEditor = { TeamEditorActivity.launch(this) },
                     onBattle = { NetplaySetupActivity.launch(this) },
+                    onFindBattles = { FindBattlesActivity.launch(this) },
                     onOpenSettings = {
                         SettingsActivity.launch(this, MenuTag.SETTINGS)
                     },
