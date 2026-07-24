@@ -313,6 +313,12 @@ enum class BooleanSetting(
         "MuteLinkAudio",
         false
     ),
+    MAIN_GBA_PRACTICE_DUMMY(
+        Settings.FILE_DOLPHIN,
+        Settings.SECTION_INI_GBA,
+        "PracticeDummy",
+        false
+    ),
     MAIN_IR_ALWAYS_RECENTER(
         Settings.FILE_DOLPHIN,
         Settings.SECTION_INI_ANDROID,

@@ -1496,6 +1496,14 @@ class SettingsFragmentPresenter(
         sl.add(
             SwitchSetting(
                 context,
+                BooleanSetting.MAIN_GBA_PRACTICE_DUMMY,
+                R.string.gba_practice_dummy,
+                R.string.gba_practice_dummy_description
+            )
+        )
+        sl.add(
+            SwitchSetting(
+                context,
                 BooleanSetting.MAIN_GBA_LINK_EXTERNAL_DISPLAY,
                 R.string.gba_link_external_display,
                 R.string.gba_link_external_display_description
