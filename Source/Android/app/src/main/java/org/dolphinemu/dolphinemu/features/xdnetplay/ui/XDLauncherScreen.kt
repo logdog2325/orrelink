@@ -38,6 +38,8 @@ fun XDLauncherScreen(
     initialized: Boolean,
     xdGameFound: Boolean,
     emeraldRomSet: Boolean,
+    onPickXdFolder: () -> Unit,
+    onPickEmeraldRom: () -> Unit,
     onTeamEditor: () -> Unit,
     onBattle: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -74,8 +76,8 @@ fun XDLauncherScreen(
                 ReadinessCard(
                     xdGameFound = xdGameFound,
                     emeraldRomSet = emeraldRomSet,
-                    onOpenSettings = onOpenSettings,
-                    onOpenDolphin = onOpenDolphin
+                    onPickXdFolder = onPickXdFolder,
+                    onPickEmeraldRom = onPickEmeraldRom
                 )
                 Spacer(Modifier.height(24.dp))
 
@@ -110,8 +112,8 @@ fun XDLauncherScreen(
 private fun ReadinessCard(
     xdGameFound: Boolean,
     emeraldRomSet: Boolean,
-    onOpenSettings: () -> Unit,
-    onOpenDolphin: () -> Unit
+    onPickXdFolder: () -> Unit,
+    onPickEmeraldRom: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -123,19 +125,22 @@ private fun ReadinessCard(
             CheckRow(
                 ok = xdGameFound,
                 okText = "Pokémon XD found",
-                missingText = "Pokémon XD not found — add your ISO folder in Full Dolphin",
-                onFix = onOpenDolphin
+                missingText = "Pokémon XD not found — choose the folder with your ISO",
+                fixLabel = "Choose folder…",
+                onFix = onPickXdFolder
             )
             CheckRow(
                 ok = emeraldRomSet,
                 okText = "Emerald ROM configured",
-                missingText = "Emerald ROM not set — pick it in Settings → GBA",
-                onFix = onOpenSettings
+                missingText = "Emerald ROM not set",
+                fixLabel = "Choose ROM…",
+                onFix = onPickEmeraldRom
             )
             CheckRow(
                 ok = true,
                 okText = "GBA BIOS + XD OU rules bundled",
                 missingText = "",
+                fixLabel = "",
                 onFix = null
             )
         }
@@ -147,6 +152,7 @@ private fun CheckRow(
     ok: Boolean,
     okText: String,
     missingText: String,
+    fixLabel: String,
     onFix: (() -> Unit)?
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -171,7 +177,7 @@ private fun CheckRow(
                     onClick = onFix,
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
                 ) {
-                    Text("Fix")
+                    Text(fixLabel)
                 }
             }
         }
