@@ -76,6 +76,8 @@
     <string name="gba_link_scale_fit">Fit, keep aspect ratio</string>
     <string name="gba_link_scale_stretch">Stretch to full screen</string>
     <string name="gba_link_scale_integer">Integer scale</string>
+    <string name="gba_practice_dummy">Practice Dummy on GBA 3</string>
+    <string name="gba_practice_dummy_description">Auto-presses A on GBA port 3 so you can battle a scripted opponent by yourself. Turn off for real matches.</string>
     <string name="gba_link_external_display">Use External Display for GBA Link</string>
     <string name="gba_link_external_display_description">Shows the active GBA Link screen on a valid external presentation display when one is connected.</string>
     <string name="gba_link_position">GBA Screen Position</string>
