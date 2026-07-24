@@ -39,6 +39,7 @@ fun XDLauncherScreen(
     xdGameFound: Boolean,
     emeraldRomSet: Boolean,
     teamSavesReady: Boolean,
+    controllerMapped: Boolean,
     onPickXdFolder: () -> Unit,
     onPickEmeraldRom: () -> Unit,
     onTeamEditor: () -> Unit,
@@ -78,8 +79,10 @@ fun XDLauncherScreen(
                     xdGameFound = xdGameFound,
                     emeraldRomSet = emeraldRomSet,
                     teamSavesReady = teamSavesReady,
+                    controllerMapped = controllerMapped,
                     onPickXdFolder = onPickXdFolder,
-                    onPickEmeraldRom = onPickEmeraldRom
+                    onPickEmeraldRom = onPickEmeraldRom,
+                    onOpenSettings = onOpenSettings
                 )
                 Spacer(Modifier.height(24.dp))
 
@@ -115,8 +118,10 @@ private fun ReadinessCard(
     xdGameFound: Boolean,
     emeraldRomSet: Boolean,
     teamSavesReady: Boolean,
+    controllerMapped: Boolean,
     onPickXdFolder: () -> Unit,
-    onPickEmeraldRom: () -> Unit
+    onPickEmeraldRom: () -> Unit,
+    onOpenSettings: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -145,6 +150,13 @@ private fun ReadinessCard(
                 missingText = "Team saves install automatically once the Emerald ROM is set",
                 fixLabel = "",
                 onFix = null
+            )
+            CheckRow(
+                ok = controllerMapped,
+                okText = "Controller mapped",
+                missingText = "No gamepad detected — connect one, or map manually",
+                fixLabel = "Input settings…",
+                onFix = onOpenSettings
             )
             CheckRow(
                 ok = true,
