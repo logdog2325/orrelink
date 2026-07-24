@@ -14,8 +14,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplaySetupActivity
+import java.io.File
 import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
+import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.SaveNaming
 import org.dolphinemu.dolphinemu.features.settings.ui.MenuTag
 import org.dolphinemu.dolphinemu.features.settings.ui.SettingsActivity
 import org.dolphinemu.dolphinemu.model.GameFileCache
@@ -113,6 +115,36 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         emeraldRomSet = StringSetting.MAIN_GBA_ROM_2.string.isNotEmpty() ||
             StringSetting.MAIN_GBA_ROM_3.string.isNotEmpty()
         xdGameFound = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID) != null
+        if (emeraldRomSet) {
+            seedTeamSaves()
+        }
+    }
+
+    /**
+     * Places the bundled dummy team saves where Dolphin expects the netplay
+     * GBA saves, so hosting works out of the box. Never overwrites.
+     */
+    private fun seedTeamSaves() {
+        val rom = StringSetting.MAIN_GBA_ROM_2.string
+            .ifEmpty { StringSetting.MAIN_GBA_ROM_3.string }
+        if (rom.isEmpty()) return
+        try {
+            val savesDir = File(
+                DirectoryInitialization.getUserDirectory(),
+                "GBA" + File.separator + "Saves"
+            )
+            savesDir.mkdirs()
+            for (role in TeamRole.entries) {
+                val target = File(SaveNaming.deriveSavePath(savesDir.path, rom, role.deviceNumber))
+                if (!target.exists()) {
+                    assets.open(role.templateAsset).use { input ->
+                        target.outputStream().use { input.copyTo(it) }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Non-fatal: the team editor can still create saves on demand.
+        }
     }
 
     companion object {
