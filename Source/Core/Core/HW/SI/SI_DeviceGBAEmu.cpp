@@ -10,6 +10,8 @@
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
+#include "Common/Config/Config.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/GBACore.h"
@@ -124,7 +126,19 @@ DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
 {
   GCPadStatus pad_status{};
   if (!NetPlay::IsNetPlayRunning())
+  {
     pad_status = Pad::GetGBAStatus(m_device_number);
+
+    // Practice dummy: rhythmically press A on GBA port 3 so a single player
+    // can spar against a scripted opponent without netplay.
+    if (m_device_number == 2 && Config::Get(Config::MAIN_GBA_PRACTICE_DUMMY))
+    {
+      const u64 tenths = m_system.GetCoreTiming().GetTicks() /
+                         (m_system.GetSystemTimers().GetTicksPerSecond() / 10);
+      if (tenths % 7 < 2)
+        pad_status.button |= PadButton::PAD_BUTTON_A;
+    }
+  }
   SerialInterface::CSIDevice_GCController::HandleMoviePadStatus(m_system.GetMovie(),
                                                                 m_device_number, &pad_status);
 
