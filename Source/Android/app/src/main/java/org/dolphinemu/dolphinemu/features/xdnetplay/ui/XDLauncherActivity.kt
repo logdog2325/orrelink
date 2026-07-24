@@ -35,6 +35,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var initialized by mutableStateOf(false)
     private var xdGameFound by mutableStateOf(false)
     private var emeraldRomSet by mutableStateOf(false)
+    private var teamSavesReady by mutableStateOf(false)
 
     private val pickXdFolder =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -88,6 +89,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     initialized = initialized,
                     xdGameFound = xdGameFound,
                     emeraldRomSet = emeraldRomSet,
+                    teamSavesReady = teamSavesReady,
                     onPickXdFolder = { pickXdFolder.launch(null) },
                     onPickEmeraldRom = { pickEmeraldRom.launch(arrayOf("*/*")) },
                     onTeamEditor = { TeamEditorActivity.launch(this) },
@@ -115,25 +117,24 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         emeraldRomSet = StringSetting.MAIN_GBA_ROM_2.string.isNotEmpty() ||
             StringSetting.MAIN_GBA_ROM_3.string.isNotEmpty()
         xdGameFound = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID) != null
-        if (emeraldRomSet) {
-            seedTeamSaves()
-        }
+        teamSavesReady = if (emeraldRomSet) seedTeamSaves() else false
     }
 
     /**
      * Places the bundled dummy team saves where Dolphin expects the netplay
      * GBA saves, so hosting works out of the box. Never overwrites.
      */
-    private fun seedTeamSaves() {
+    private fun seedTeamSaves(): Boolean {
         val rom = StringSetting.MAIN_GBA_ROM_2.string
             .ifEmpty { StringSetting.MAIN_GBA_ROM_3.string }
-        if (rom.isEmpty()) return
-        try {
+        if (rom.isEmpty()) return false
+        return try {
             val savesDir = File(
                 DirectoryInitialization.getUserDirectory(),
                 "GBA" + File.separator + "Saves"
             )
             savesDir.mkdirs()
+            var allPresent = true
             for (role in TeamRole.entries) {
                 val target = File(SaveNaming.deriveSavePath(savesDir.path, rom, role.deviceNumber))
                 if (!target.exists()) {
@@ -141,9 +142,12 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                         target.outputStream().use { input.copyTo(it) }
                     }
                 }
+                allPresent = allPresent && target.exists()
             }
+            allPresent
         } catch (_: Exception) {
             // Non-fatal: the team editor can still create saves on demand.
+            false
         }
     }
 
