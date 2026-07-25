@@ -46,6 +46,7 @@ private:
   u64 m_last_auto_reset = 0;
   u64 m_last_data_cmd = 0;
   bool m_link_was_enabled = false;
+  bool m_link_established = false;
   u16 m_keys = 0;
 
   std::shared_ptr<HW::GBA::Core> m_core;

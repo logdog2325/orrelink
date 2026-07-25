@@ -89,11 +89,26 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
 
     const u64 tps = static_cast<u64>(m_system.GetSystemTimers().GetTicksPerSecond());
     const bool link_now = m_core->IsLinkEnabled();
+
+    // Latch once the joybus link is up AND real data (READ/WRITE) has flowed:
+    // the party read is done and the battle is underway. Never auto-reset after
+    // this. Otherwise a rare coincidence during turn 1 -- Emerald briefly leaves
+    // JOYBUS mode at the "Link standby -> battle scene" transition (link_now
+    // false) while an 8s+ animation has let handshake_active lapse and a
+    // STATUS/RESET probe lands in that window -- would satisfy the guard below
+    // and reboot Emerald out from under XD, dropping the link and crashing the
+    // fight with no message. Pre-battle window-reopening is unaffected: during
+    // pure copyright-screen probing XD sends only STATUS/RESET, so m_last_data_cmd
+    // is still 0 and the brief JOYBUS blip does not trip the latch early.
+    if (link_now && m_last_data_cmd != 0)
+      m_link_established = true;
+
     const bool probing = m_last_cmd == EBufferCommands::CMD_RESET ||
                          m_last_cmd == EBufferCommands::CMD_STATUS;
     const bool handshake_active =
         m_last_data_cmd != 0 && (m_timestamp_sent - m_last_data_cmd) < tps * 8;
-    if (probing && !link_now && !handshake_active && !NetPlay::IsNetPlayRunning())
+    if (probing && !link_now && !handshake_active && !m_link_established &&
+        !NetPlay::IsNetPlayRunning())
     {
       const u64 min_interval = tps * 4;
       const bool window_just_closed = m_link_was_enabled;
@@ -178,14 +193,28 @@ DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
   {
     pad_status = Pad::GetGBAStatus(m_device_number);
 
-    // Practice dummy: rhythmically press A on GBA port 3 so a single player
-    // can spar against a scripted opponent without netplay.
+    // Practice dummy: drive GBA port 3 so a single player can spar against a
+    // scripted opponent without netplay. Press A to confirm/attack, and inject
+    // a D-pad tap between A presses so XD's "select a Pokemon" screen advances
+    // to a *different* Pokemon each cycle instead of re-confirming the same
+    // slot forever (which never completes team selection).
     if (m_device_number == 2 && Config::Get(Config::MAIN_GBA_PRACTICE_DUMMY))
     {
       const u64 tenths = m_system.GetCoreTiming().GetTicks() /
                          (m_system.GetSystemTimers().GetTicksPerSecond() / 10);
-      if (tenths % 7 < 2)
+      const u64 phase = tenths % 7;
+      if (phase < 2)
+      {
         pad_status.button |= PadButton::PAD_BUTTON_A;
+      }
+      else if (phase == 4)
+      {
+        // Move the cursor in the A-release gap. Alternate Right/Down each cycle
+        // to sweep a 2D roster grid and avoid wedging against an edge; a single
+        // 0.1s tap steps exactly one slot (too short to trigger auto-repeat).
+        pad_status.button |= (tenths / 7 % 2 == 0) ? PadButton::PAD_BUTTON_RIGHT
+                                                   : PadButton::PAD_BUTTON_DOWN;
+      }
     }
   }
   SerialInterface::CSIDevice_GCController::HandleMoviePadStatus(m_system.GetMovie(),
