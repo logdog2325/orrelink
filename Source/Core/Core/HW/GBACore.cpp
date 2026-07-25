@@ -569,11 +569,27 @@ void Core::PushEvent(SyncEvent event)
   m_event_thread.Push(event);
 }
 
+void Core::RequestReset(u64 gc_ticks)
+{
+  PushEvent({
+      .event_type = SyncEventType::RequestReset,
+      .keys = m_keys,
+      .run_until_ticks = gc_ticks,
+  });
+}
+
 void Core::HandleEvent(SyncEvent event)
 {
   m_keys = event.keys;
 
   RunUntil(event.run_until_ticks);
+
+  if (event.event_type == SyncEventType::RequestReset)
+  {
+    if (IsStarted())
+      m_core->reset(m_core);
+    return;
+  }
 
   if (event.event_type != SyncEventType::RunCommand)
     return;
