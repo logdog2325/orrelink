@@ -74,6 +74,7 @@ public:
   void Stop();
   void Reset();
   bool IsStarted() const;
+  bool IsLinkEnabled() const { return m_link_enabled; }
   CoreInfo GetCoreInfo() const;
 
   void SetHost(std::weak_ptr<GBAHostInterface> host);
