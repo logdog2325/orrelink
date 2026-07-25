@@ -75,13 +75,27 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     // instead of a coarse fixed timer. Never reset while the link is open (an
     // in-progress handshake holds the window), nor faster than the core's
     // reset->copyright boot time, nor during netplay (host drives resets).
+    // A READ/WRITE command means XD is mid-handshake (uploading its multiboot
+    // client / exchanging data), not just idle-probing. Record it so the
+    // auto-reset backs off and lets the connection complete instead of
+    // rebooting the GBA out from under an active handshake (the failure mode:
+    // XD reports "checking connection... connection failed" and the GBA loops
+    // its boot screen).
+    if (m_last_cmd == EBufferCommands::CMD_READ_GBA ||
+        m_last_cmd == EBufferCommands::CMD_WRITE_GBA)
+    {
+      m_last_data_cmd = m_timestamp_sent;
+    }
+
+    const u64 tps = static_cast<u64>(m_system.GetSystemTimers().GetTicksPerSecond());
     const bool link_now = m_core->IsLinkEnabled();
     const bool probing = m_last_cmd == EBufferCommands::CMD_RESET ||
                          m_last_cmd == EBufferCommands::CMD_STATUS;
-    if (probing && !link_now && !NetPlay::IsNetPlayRunning())
+    const bool handshake_active =
+        m_last_data_cmd != 0 && (m_timestamp_sent - m_last_data_cmd) < tps * 8;
+    if (probing && !link_now && !handshake_active && !NetPlay::IsNetPlayRunning())
     {
-      const u64 min_interval =
-          static_cast<u64>(m_system.GetSystemTimers().GetTicksPerSecond()) * 4;
+      const u64 min_interval = tps * 4;
       const bool window_just_closed = m_link_was_enabled;
       const bool cooldown_elapsed =
           m_last_auto_reset == 0 || m_timestamp_sent - m_last_auto_reset > min_interval;
