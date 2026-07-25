@@ -62,23 +62,36 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     m_last_cmd = static_cast<EBufferCommands>(buffer[0]);
     m_timestamp_sent = m_system.GetCoreTiming().GetTicks();
 
-    // Colosseum/XD only detect a GBA during the official BIOS's joybus boot
-    // window (the desktop workflow is "reset the GBA at the connection
-    // screen"). When the game probes this port while the core never entered
-    // joybus mode, reboot the core so the BIOS handshake can happen without
-    // any manual ritual. Driven purely by emulated state, so netplay-safe.
-    if ((m_last_cmd == EBufferCommands::CMD_RESET ||
-         m_last_cmd == EBufferCommands::CMD_STATUS) &&
-        !m_core->IsLinkEnabled() && !NetPlay::IsNetPlayRunning())
+    // Colosseum/XD detect a GBA only while the connected game's joybus link is
+    // open. In Emerald that window is the copyright screen: its cartridge code
+    // writes RCNT=0xC000 (link on) at boot and clears it a second or two later
+    // unless the GC's 0xFF reset has already begun the handshake. So detection
+    // needs XD's probe to land inside that short window. Resetting the core
+    // re-runs the copyright screen to reopen it; this replaces the desktop
+    // "reset the GBA at the connection screen" ritual, with no user action.
+    //
+    // Re-arm the reset the moment the window closes (link true -> false) so a
+    // fresh window opens every couple seconds until the handshake catches,
+    // instead of a coarse fixed timer. Never reset while the link is open (an
+    // in-progress handshake holds the window), nor faster than the core's
+    // reset->copyright boot time, nor during netplay (host drives resets).
+    const bool link_now = m_core->IsLinkEnabled();
+    const bool probing = m_last_cmd == EBufferCommands::CMD_RESET ||
+                         m_last_cmd == EBufferCommands::CMD_STATUS;
+    if (probing && !link_now && !NetPlay::IsNetPlayRunning())
     {
-      const u64 cooldown =
-          static_cast<u64>(m_system.GetSystemTimers().GetTicksPerSecond()) * 10;
-      if (m_last_auto_reset == 0 || m_timestamp_sent - m_last_auto_reset > cooldown)
+      const u64 min_interval =
+          static_cast<u64>(m_system.GetSystemTimers().GetTicksPerSecond()) * 4;
+      const bool window_just_closed = m_link_was_enabled;
+      const bool cooldown_elapsed =
+          m_last_auto_reset == 0 || m_timestamp_sent - m_last_auto_reset > min_interval;
+      if (window_just_closed || cooldown_elapsed)
       {
         m_core->Reset();
         m_last_auto_reset = m_timestamp_sent;
       }
     }
+    m_link_was_enabled = link_now;
     m_core->SendJoybusCommand(m_timestamp_sent, TransferInterval(), buffer, m_keys);
 
     auto& si = m_system.GetSerialInterface();
