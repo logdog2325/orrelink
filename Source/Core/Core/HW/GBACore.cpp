@@ -5,6 +5,8 @@
 
 #include "Core/HW/GBACore.h"
 
+#include <fmt/format.h>
+
 #include <mgba-util/vfs.h>
 #include <mgba/core/log.h>
 #include <mgba/core/timing.h>
@@ -36,6 +38,8 @@
 #include "Core/Host.h"
 #include "Core/NetPlayProto.h"
 #include "Core/System.h"
+
+#include "VideoCommon/OnScreenDisplay.h"
 
 #ifdef ANDROID
 #include "jni/AndroidCommon/AndroidCommon.h"
@@ -194,15 +198,22 @@ bool Core::Start(u64 gc_ticks)
   }};
 
   m_rom_path = Config::Get(Config::MAIN_GBA_ROM_PATHS[m_device_number]);
+  OSD::AddMessage(fmt::format("[XD] GBA{} rom path: '{}'", m_device_number + 1,
+                              m_rom_path.empty() ? "(none)" : m_rom_path),
+                  OSD::Duration::VERY_LONG);
   if (!m_rom_path.empty())
   {
     rom = OpenROM(m_rom_path.c_str());
     if (!rom)
     {
+      OSD::AddMessage(fmt::format("[XD] GBA{} OpenROM FAILED", m_device_number + 1),
+                      OSD::Duration::VERY_LONG, OSD::Color::RED);
       PanicAlertFmtT("Error: GBA{0} failed to open the ROM in {1}", m_device_number + 1,
                      m_rom_path);
       return false;
     }
+    OSD::AddMessage(fmt::format("[XD] GBA{} OpenROM ok", m_device_number + 1),
+                    OSD::Duration::VERY_LONG, OSD::Color::GREEN);
     m_rom_hash = GetROMHash(rom);
   }
 
@@ -238,6 +249,9 @@ bool Core::Start(u64 gc_ticks)
       if (File::Exists(sys_bios))
         bios_path = sys_bios;
     }
+    OSD::AddMessage(fmt::format("[XD] GBA{} BIOS: '{}' exists={}", m_device_number + 1,
+                                bios_path, File::Exists(bios_path) ? "Y" : "N"),
+                    OSD::Duration::VERY_LONG);
     LoadBIOS(bios_path.c_str());
   }
 
@@ -245,6 +259,8 @@ bool Core::Start(u64 gc_ticks)
   {
     if (!m_core->loadROM(m_core, rom))
     {
+      OSD::AddMessage(fmt::format("[XD] GBA{} loadROM FAILED", m_device_number + 1),
+                      OSD::Duration::VERY_LONG, OSD::Color::RED);
       PanicAlertFmtT("Error: GBA{0} failed to load the ROM in {1}", m_device_number + 1,
                      m_rom_path);
       return false;
@@ -254,12 +270,21 @@ bool Core::Start(u64 gc_ticks)
     mGameInfo info;
     m_core->getGameInfo(m_core, &info);
     m_game_title = info.title;
+    OSD::AddMessage(fmt::format("[XD] GBA{} loaded game: '{}'", m_device_number + 1, m_game_title),
+                    OSD::Duration::VERY_LONG, OSD::Color::GREEN);
 
     m_save_path = NetPlay::IsNetPlayRunning() ? NetPlay::GetGBASavePath(m_device_number) :
                                                 GetSavePath(m_rom_path, m_device_number);
     if (!m_save_path.empty() && !LoadSave(m_save_path.c_str()))
+    {
+      OSD::AddMessage(fmt::format("[XD] GBA{} LoadSave FAILED: '{}'", m_device_number + 1,
+                                  m_save_path),
+                      OSD::Duration::VERY_LONG, OSD::Color::RED);
       return false;
+    }
   }
+  OSD::AddMessage(fmt::format("[XD] GBA{} started OK", m_device_number + 1),
+                  OSD::Duration::VERY_LONG, OSD::Color::GREEN);
 
   m_last_gc_ticks = gc_ticks;
   m_gc_ticks_remainder = 0;
