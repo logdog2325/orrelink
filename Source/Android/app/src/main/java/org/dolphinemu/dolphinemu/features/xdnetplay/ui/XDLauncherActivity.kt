@@ -15,6 +15,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplaySetupActivity
 import java.io.File
+import java.security.MessageDigest
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
 import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
@@ -39,6 +40,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var emeraldRomSet by mutableStateOf(false)
     private var teamSavesReady by mutableStateOf(false)
     private var controllerMapped by mutableStateOf(false)
+    private var biosLinkReady by mutableStateOf(false)
 
     private val pickXdFolder =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -49,6 +51,19 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                 )
                 GameFileCache.addGameFolder(uri.toString())
                 GameFileCacheManager.startRescan()
+            }
+        }
+
+    private val pickGbaBios =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+                StringSetting.MAIN_GBA_BIOS_PATH.setString(NativeConfig.LAYER_BASE, uri.toString())
+                NativeConfig.save(NativeConfig.LAYER_BASE)
+                refreshChecks()
             }
         }
 
@@ -94,7 +109,9 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     emeraldRomSet = emeraldRomSet,
                     teamSavesReady = teamSavesReady,
                     controllerMapped = controllerMapped,
+                    biosLinkReady = biosLinkReady,
                     onPickXdFolder = { pickXdFolder.launch(null) },
+                    onPickGbaBios = { pickGbaBios.launch(arrayOf("*/*")) },
                     onPickEmeraldRom = { pickEmeraldRom.launch(arrayOf("*/*")) },
                     onTeamEditor = { TeamEditorActivity.launch(this) },
                     onBattle = { NetplaySetupActivity.launch(this) },
@@ -128,6 +145,34 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         }
         controllerMapped = try {
             AutoMapper.isMapped() || AutoMapper.autoMap()
+        } catch (_: Exception) {
+            false
+        }
+        biosLinkReady = checkOfficialBios()
+    }
+
+    /**
+     * XD/Colosseum GBA link only works with the official GBA BIOS boot
+     * handshake; the open-source BIOS bundled for Game Boy Player use has no
+     * joybus code. Verify whichever BIOS Dolphin would actually load.
+     */
+    private fun checkOfficialBios(): Boolean {
+        return try {
+            val configured = StringSetting.MAIN_GBA_BIOS_PATH.string
+            val bytes: ByteArray? = when {
+                configured.startsWith("content://") ->
+                    contentResolver.openInputStream(android.net.Uri.parse(configured))
+                        ?.use { it.readBytes() }
+                configured.isNotEmpty() -> File(configured).takeIf { it.exists() }?.readBytes()
+                else -> {
+                    val userBios = File(DirectoryInitialization.getUserDirectory(), "GBA/gba_bios.bin")
+                    if (userBios.exists()) userBios.readBytes() else null
+                }
+            }
+            if (bytes == null || bytes.size != 16384) return false
+            val sha1 = MessageDigest.getInstance("SHA-1").digest(bytes)
+                .joinToString("") { "%02x".format(it) }
+            sha1 == OFFICIAL_GBA_BIOS_SHA1
         } catch (_: Exception) {
             false
         }
@@ -184,6 +229,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
 
     companion object {
         const val XD_GAME_ID = "GXXE01"
+        const val OFFICIAL_GBA_BIOS_SHA1 = "300c20df6731a33952ded8c436f7f186d25d3492"
 
         @JvmStatic
         fun launch(context: Context) {
