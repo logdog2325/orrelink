@@ -43,6 +43,7 @@ private:
   NextAction m_next_action = NextAction::SendCommand;
   EBufferCommands m_last_cmd{};
   u64 m_timestamp_sent = 0;
+  u64 m_last_auto_reset = 0;
   u16 m_keys = 0;
 
   std::shared_ptr<HW::GBA::Core> m_core;
