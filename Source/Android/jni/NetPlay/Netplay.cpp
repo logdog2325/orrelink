@@ -8,10 +8,13 @@
 #include <jni.h>
 
 #include "Common/CommonTypes.h"
+#include "Common/Config/Config.h"
 #include "Common/TraversalClient.h"
 #include "Core/Boot/Boot.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/Config/NetplaySettings.h"
 #include "Core/NetPlayClient.h"
+#include "Core/NetPlayProto.h"
 #include "Core/NetPlayCommon.h"
 #include "Core/NetPlayServer.h"
 #include "UICommon/GameFile.h"
@@ -194,6 +197,63 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
   auto* server = GetServerPointer(env, obj);
   if (!server)
     return;
+
+  // Assign the XD GBA-vs-GBA ports before starting. Dolphin's netplay config
+  // loader rebuilds every SI channel and every GBA ROM path at boot purely from
+  // the session's pad_map + gba_config (NetPlayConfigLoader.cpp:136-208),
+  // ignoring each machine's local SIDevice/GBA settings. The Android UI never
+  // populated those (grep of Source/Android for SetPadMapping/SetGBAConfig is
+  // empty), so without this every channel collapsed to SIDEVICE_NONE and the
+  // GBA ROM paths were blanked -- the "config wipe" that made hosted battles
+  // fail while solo boot worked. Mirror the desktop "Assign Ports" wiring
+  // (NetPlayDialog.cpp:340-341) for our fixed two-player layout:
+  //   port 1 (idx0) = host GC controller -> pad_map[0] = host pid, gba off
+  //   port 2 (idx1) = host GBA           -> pad_map[1] = host pid, gba on
+  //   port 3 (idx2) = guest GBA          -> pad_map[2] = guest pid, gba on
+  //   port 4 (idx3) = unused             -> pad_map[3] = 0
+  // A slot becomes a GBA iff gba_config[i].enabled && pad_map[i] > 0
+  // (NetPlayConfigLoader.cpp:144-147); a mapped-but-not-GBA slot owned by the
+  // local player becomes its GC controller, and one owned by a remote player a
+  // remote controller. The host is always pid 1 (its loopback client connects
+  // first, Client::IsHost() == pid==1) and XD is a strict two-player game, so
+  // the guest is pid 2. This runs on every start, which also re-applies the
+  // mapping after a disconnect/reconnect (which wipes it, NetPlayServer.cpp:
+  // 581-590, and refills the slot as a plain controller, not a GBA).
+  constexpr NetPlay::PlayerId HOST_PID = 1;
+  constexpr NetPlay::PlayerId GUEST_PID = 2;
+
+  NetPlay::PadMappingArray pad_map{};
+  pad_map[0] = HOST_PID;
+  pad_map[1] = HOST_PID;
+  pad_map[2] = GUEST_PID;
+  pad_map[3] = 0;
+
+  NetPlay::GBAConfigArray gba_config{};
+  gba_config[1].enabled = true;
+  gba_config[2].enabled = true;
+
+  // Sync the host's two GBA team saves to the guest so both sides emulate
+  // identical teams (SyncSaves, default true), and give each player only their
+  // own GBA window instead of both (HideRemoteGBAs, default false). Set both
+  // explicitly so a stale user config can't break the session.
+  Config::SetBaseOrCurrent(Config::NETPLAY_SAVEDATA_LOAD, true);
+  Config::SetBaseOrCurrent(Config::NETPLAY_HIDE_REMOTE_GBAS, true);
+
+  // The stable XDNetplay bundle plays with the $XD OU Fixes AR code active, so
+  // XD's battle setup runs the way the format expects. Enable cheats on the
+  // host and sync the enabled-code list to the guest -- if only one side ran
+  // the code the two would emulate XD differently and desync on turn 1. Both
+  // sides carry the same GXXE01.ini (bundled) that defines and enables it.
+  Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, true);
+  Config::SetBaseOrCurrent(Config::NETPLAY_SYNC_CODES, true);
+
+  // SetGBAConfig(update_rom=true) reads MAIN_GBA_ROM_PATHS[1]/[2] (pointed at
+  // the shared Emerald dump by the launcher) to fill each enabled slot's
+  // hash/title, which the guest hash-matches against its identical local copy.
+  // Order relative to SetPadMapping does not matter (each broadcasts its own
+  // packet), but both must precede RequestStartGame.
+  server->SetPadMapping(pad_map);
+  server->SetGBAConfig(gba_config, /*update_rom=*/true);
 
   server->RequestStartGame();
 }
