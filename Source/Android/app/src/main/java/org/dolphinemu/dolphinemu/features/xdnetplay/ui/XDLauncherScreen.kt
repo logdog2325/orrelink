@@ -40,7 +40,9 @@ fun XDLauncherScreen(
     emeraldRomSet: Boolean,
     teamSavesReady: Boolean,
     controllerMapped: Boolean,
+    biosLinkReady: Boolean,
     onPickXdFolder: () -> Unit,
+    onPickGbaBios: () -> Unit,
     onPickEmeraldRom: () -> Unit,
     onTeamEditor: () -> Unit,
     onBattle: () -> Unit,
@@ -81,7 +83,9 @@ fun XDLauncherScreen(
                     emeraldRomSet = emeraldRomSet,
                     teamSavesReady = teamSavesReady,
                     controllerMapped = controllerMapped,
+                    biosLinkReady = biosLinkReady,
                     onPickXdFolder = onPickXdFolder,
+                    onPickGbaBios = onPickGbaBios,
                     onPickEmeraldRom = onPickEmeraldRom,
                     onOpenSettings = onOpenSettings
                 )
@@ -128,7 +132,9 @@ private fun ReadinessCard(
     emeraldRomSet: Boolean,
     teamSavesReady: Boolean,
     controllerMapped: Boolean,
+    biosLinkReady: Boolean,
     onPickXdFolder: () -> Unit,
+    onPickGbaBios: () -> Unit,
     onPickEmeraldRom: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
@@ -168,8 +174,15 @@ private fun ReadinessCard(
                 onFix = onOpenSettings
             )
             CheckRow(
+                ok = biosLinkReady,
+                okText = "Official GBA BIOS configured (link-ready)",
+                missingText = "Official GBA BIOS needed for XD link — dump yours or copy from another emulator's system folder",
+                fixLabel = "Choose BIOS…",
+                onFix = onPickGbaBios
+            )
+            CheckRow(
                 ok = true,
-                okText = "GBA BIOS + XD OU rules bundled",
+                okText = "XD OU rules bundled",
                 missingText = "",
                 fixLabel = "",
                 onFix = null
