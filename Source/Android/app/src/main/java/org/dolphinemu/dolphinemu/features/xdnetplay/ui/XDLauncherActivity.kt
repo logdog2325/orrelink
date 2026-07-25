@@ -41,6 +41,50 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var teamSavesReady by mutableStateOf(false)
     private var controllerMapped by mutableStateOf(false)
     private var biosLinkReady by mutableStateOf(false)
+    private var statusMessage by mutableStateOf<String?>(null)
+
+    /**
+     * Reads a picked file (extracting the first ROM out of a zip if needed),
+     * validates it, and writes it to the app's private GBA folder as a real,
+     * memory-mappable file. Returns the absolute path, or null on failure.
+     */
+    private fun importToPrivateFile(
+        uri: android.net.Uri,
+        destName: String,
+        validate: (ByteArray) -> Boolean
+    ): String? {
+        return try {
+            var bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+            if (bytes.size >= 4 && bytes[0].toInt() == 0x50 && bytes[1].toInt() == 0x4B) {
+                bytes = extractFirstZipEntry(bytes) ?: return null
+            }
+            if (!validate(bytes)) return null
+            val dest = File(DirectoryInitialization.getUserDirectory(), "GBA/$destName")
+            dest.parentFile?.mkdirs()
+            dest.writeBytes(bytes)
+            dest.absolutePath
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun extractFirstZipEntry(zip: ByteArray): ByteArray? {
+        java.util.zip.ZipInputStream(zip.inputStream()).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                if (!entry.isDirectory) {
+                    val out = zis.readBytes()
+                    if (out.isNotEmpty()) return out
+                }
+                entry = zis.nextEntry
+            }
+        }
+        return null
+    }
+
+    /** A GBA ROM carries a fixed 0x96 byte at header offset 0xB2. */
+    private fun looksLikeGbaRom(bytes: ByteArray): Boolean =
+        bytes.size >= 0xC0 && (bytes[0xB2].toInt() and 0xFF) == 0x96
 
     private val pickXdFolder =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -57,12 +101,16 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private val pickGbaBios =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
-                contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-                StringSetting.MAIN_GBA_BIOS_PATH.setString(NativeConfig.LAYER_BASE, uri.toString())
-                NativeConfig.save(NativeConfig.LAYER_BASE)
+                // Copy to a real file path: mGBA memory-maps these, and content://
+                // fds are not reliably mappable.
+                val path = importToPrivateFile(uri, "gba_bios.bin") { it.size == 16384 }
+                if (path != null) {
+                    StringSetting.MAIN_GBA_BIOS_PATH.setString(NativeConfig.LAYER_BASE, path)
+                    NativeConfig.save(NativeConfig.LAYER_BASE)
+                    statusMessage = null
+                } else {
+                    statusMessage = "That file isn't a 16 KB GBA BIOS."
+                }
                 refreshChecks()
             }
         }
@@ -70,13 +118,19 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private val pickEmeraldRom =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
-                contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
+                // Copy the ROM into private storage as a real, mmappable file.
+                // A content:// URI often yields a non-seekable fd that mGBA
+                // silently fails to load, so XD never sees the GBA.
+                val path = importToPrivateFile(uri, "EMERALD.gba", ::looksLikeGbaRom)
+                if (path == null) {
+                    statusMessage = "That doesn't look like a GBA ROM. Use a raw .gba (or a .zip containing one)."
+                    refreshChecks()
+                    return@registerForActivityResult
+                }
+                statusMessage = null
                 // Same ROM in both linkable slots, mirroring the desktop XD Netplay config.
-                StringSetting.MAIN_GBA_ROM_2.setString(NativeConfig.LAYER_BASE, uri.toString())
-                StringSetting.MAIN_GBA_ROM_3.setString(NativeConfig.LAYER_BASE, uri.toString())
+                StringSetting.MAIN_GBA_ROM_2.setString(NativeConfig.LAYER_BASE, path)
+                StringSetting.MAIN_GBA_ROM_3.setString(NativeConfig.LAYER_BASE, path)
                 NativeConfig.save(NativeConfig.LAYER_BASE)
                 refreshChecks()
             }
@@ -110,6 +164,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     teamSavesReady = teamSavesReady,
                     controllerMapped = controllerMapped,
                     biosLinkReady = biosLinkReady,
+                    statusMessage = statusMessage,
                     onPickXdFolder = { pickXdFolder.launch(null) },
                     onPickGbaBios = { pickGbaBios.launch(arrayOf("*/*")) },
                     onPickEmeraldRom = { pickEmeraldRom.launch(arrayOf("*/*")) },
