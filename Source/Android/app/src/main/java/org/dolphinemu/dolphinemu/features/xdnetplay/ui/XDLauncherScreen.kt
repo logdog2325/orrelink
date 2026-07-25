@@ -41,6 +41,7 @@ fun XDLauncherScreen(
     teamSavesReady: Boolean,
     controllerMapped: Boolean,
     biosLinkReady: Boolean,
+    statusMessage: String?,
     onPickXdFolder: () -> Unit,
     onPickGbaBios: () -> Unit,
     onPickEmeraldRom: () -> Unit,
@@ -89,6 +90,14 @@ fun XDLauncherScreen(
                     onPickEmeraldRom = onPickEmeraldRom,
                     onOpenSettings = onOpenSettings
                 )
+                if (statusMessage != null) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = statusMessage,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
                 Spacer(Modifier.height(24.dp))
 
                 FilledTonalButton(
