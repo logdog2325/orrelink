@@ -298,11 +298,16 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         if (StringSetting.MAIN_GBA_ROM_3.string != romPath) {
             StringSetting.MAIN_GBA_ROM_3.setString(NativeConfig.LAYER_BASE, romPath); changed = true
         }
+        // Port 2 (SIDevice1) = the local GBA, always on. Port 3 (SIDevice2) is
+        // the opponent's GBA — only meaningful in a 2-player netplay session.
+        // In solo it has no peer and would loop its own boot screen forever
+        // (its auto-reset never links), stealing CPU, so leave it None here;
+        // the netplay host flow enables it before a match.
         if (IntSetting.MAIN_SI_DEVICE_1.int != 13) {
             IntSetting.MAIN_SI_DEVICE_1.setInt(NativeConfig.LAYER_BASE, 13); changed = true
         }
-        if (IntSetting.MAIN_SI_DEVICE_2.int != 13) {
-            IntSetting.MAIN_SI_DEVICE_2.setInt(NativeConfig.LAYER_BASE, 13); changed = true
+        if (IntSetting.MAIN_SI_DEVICE_2.int != 0) {
+            IntSetting.MAIN_SI_DEVICE_2.setInt(NativeConfig.LAYER_BASE, 0); changed = true
         }
         if (changed) {
             NativeConfig.save(NativeConfig.LAYER_BASE)
