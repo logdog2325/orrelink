@@ -87,7 +87,11 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
           m_last_auto_reset == 0 || m_timestamp_sent - m_last_auto_reset > min_interval;
       if (window_just_closed || cooldown_elapsed)
       {
-        m_core->Reset();
+        // Async: reset on the GBA's own event thread. Calling Reset() here
+        // would Flush() (block the CPU thread until the event thread drains),
+        // which deadlocks the whole emulator on Android where the event
+        // thread can stall in the synchronous frame callback.
+        m_core->RequestReset(m_timestamp_sent);
         m_last_auto_reset = m_timestamp_sent;
       }
     }
