@@ -24,6 +24,7 @@ import org.dolphinemu.dolphinemu.features.xdnetplay.input.AutoMapper
 import org.dolphinemu.dolphinemu.features.settings.ui.MenuTag
 import org.dolphinemu.dolphinemu.features.settings.ui.SettingsActivity
 import org.dolphinemu.dolphinemu.model.GameFileCache
+import org.dolphinemu.dolphinemu.activities.EmulationActivity
 import org.dolphinemu.dolphinemu.services.GameFileCacheManager
 import org.dolphinemu.dolphinemu.ui.main.MainActivity
 import org.dolphinemu.dolphinemu.ui.main.ThemeProvider
@@ -169,6 +170,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     onPickGbaBios = { pickGbaBios.launch(arrayOf("*/*")) },
                     onPickEmeraldRom = { pickEmeraldRom.launch(arrayOf("*/*")) },
                     onTeamEditor = { TeamEditorActivity.launch(this) },
+                    onPlayXd = { bootXd() },
                     onBattle = { NetplaySetupActivity.launch(this) },
                     onFindBattles = { FindBattlesActivity.launch(this) },
                     onOpenSettings = {
@@ -179,6 +181,17 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     }
                 )
             }
+        }
+    }
+
+    /** Boot Pokemon XD directly by game ID, bypassing the game picker (which
+     * would otherwise default to whatever ISO sorts first in the folder). */
+    private fun bootXd() {
+        val xd = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID)
+        if (xd != null) {
+            EmulationActivity.launch(this, xd.path, false)
+        } else {
+            statusMessage = "Pokémon XD not found — choose the folder with your ISO first."
         }
     }
 
