@@ -97,6 +97,13 @@ void Arm64RegCache::LockRegister(ARM64Reg host_reg)
 
 void Arm64RegCache::UnlockRegister(ARM64Reg host_reg)
 {
+  // A conditionally-allocated register can legitimately be INVALID_REG,
+  // meaning nothing was allocated and there is nothing to unlock. Treat it
+  // as a no-op, matching ScopedARM64Reg's behavior, instead of asserting.
+  // (Pokemon XD's SI/JoyBus code exercises such a path.)
+  if (host_reg == ARM64Reg::INVALID_REG)
+    return;
+
   auto reg = std::ranges::find(m_host_registers, host_reg, &HostReg::GetReg);
   ASSERT_MSG(DYNA_REC, reg != m_host_registers.end(),
              "Don't try unlocking a register that isn't in the cache. Reg {}",
