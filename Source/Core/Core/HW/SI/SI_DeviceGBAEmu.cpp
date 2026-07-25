@@ -61,6 +61,24 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
 #endif
     m_last_cmd = static_cast<EBufferCommands>(buffer[0]);
     m_timestamp_sent = m_system.GetCoreTiming().GetTicks();
+
+    // Colosseum/XD only detect a GBA during the official BIOS's joybus boot
+    // window (the desktop workflow is "reset the GBA at the connection
+    // screen"). When the game probes this port while the core never entered
+    // joybus mode, reboot the core so the BIOS handshake can happen without
+    // any manual ritual. Driven purely by emulated state, so netplay-safe.
+    if ((m_last_cmd == EBufferCommands::CMD_RESET ||
+         m_last_cmd == EBufferCommands::CMD_STATUS) &&
+        !m_core->IsLinkEnabled() && !NetPlay::IsNetPlayRunning())
+    {
+      const u64 cooldown =
+          static_cast<u64>(m_system.GetSystemTimers().GetTicksPerSecond()) * 10;
+      if (m_last_auto_reset == 0 || m_timestamp_sent - m_last_auto_reset > cooldown)
+      {
+        m_core->Reset();
+        m_last_auto_reset = m_timestamp_sent;
+      }
+    }
     m_core->SendJoybusCommand(m_timestamp_sent, TransferInterval(), buffer, m_keys);
 
     auto& si = m_system.GetSerialInterface();
