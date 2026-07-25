@@ -113,6 +113,7 @@ private:
   {
     TimeSync,
     RunCommand,
+    RequestReset,
   };
   struct SyncEvent
   {
@@ -122,6 +123,10 @@ private:
   };
   void PushEvent(SyncEvent event);
   void HandleEvent(SyncEvent event);
+  // Queue a reset to run on the core's own event thread, so the caller (the
+  // CPU thread) never blocks on Flush() while the event thread may be stuck
+  // in a synchronous host frame callback.
+  void RequestReset(u64 gc_ticks);
 
   bool LoadBIOS(const char* bios_path);
   bool LoadSave(const char* save_path);
