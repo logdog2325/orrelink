@@ -46,6 +46,7 @@ fun XDLauncherScreen(
     onPickGbaBios: () -> Unit,
     onPickEmeraldRom: () -> Unit,
     onTeamEditor: () -> Unit,
+    onPlayXd: () -> Unit,
     onBattle: () -> Unit,
     onFindBattles: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -105,6 +106,14 @@ fun XDLauncherScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Team Editor", style = MaterialTheme.typography.titleMedium)
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = onPlayXd,
+                    enabled = xdGameFound,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Boot Pokémon XD (solo)", style = MaterialTheme.typography.titleMedium)
                 }
                 Spacer(Modifier.height(12.dp))
                 Button(
