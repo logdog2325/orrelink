@@ -73,6 +73,10 @@ public:
   bool Start(u64 gc_ticks);
   void Stop();
   void Reset();
+  // Queue a reset to run on the core's own event thread, so the caller (the
+  // CPU thread) never blocks on Flush() while the event thread may be stuck
+  // in a synchronous host frame callback.
+  void RequestReset(u64 gc_ticks);
   bool IsStarted() const;
   bool IsLinkEnabled() const { return m_link_enabled; }
   CoreInfo GetCoreInfo() const;
@@ -123,10 +127,6 @@ private:
   };
   void PushEvent(SyncEvent event);
   void HandleEvent(SyncEvent event);
-  // Queue a reset to run on the core's own event thread, so the caller (the
-  // CPU thread) never blocks on Flush() while the event thread may be stuck
-  // in a synchronous host frame callback.
-  void RequestReset(u64 gc_ticks);
 
   bool LoadBIOS(const char* bios_path);
   bool LoadSave(const char* save_path);
