@@ -94,6 +94,15 @@ android {
             version = "3.22.1+"
         }
     }
+
+    packaging {
+        jniLibs {
+            // arm64-only app: drop foreign-ABI libs that dependencies' AARs bundle.
+            excludes += "**/armeabi-v7a/**"
+            excludes += "**/x86/**"
+            excludes += "**/x86_64/**"
+        }
+    }
     namespace = "org.dolphinemu.dolphinemu"
 
     defaultConfig {
