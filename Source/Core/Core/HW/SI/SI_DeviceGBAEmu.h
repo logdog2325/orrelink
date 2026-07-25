@@ -44,6 +44,7 @@ private:
   EBufferCommands m_last_cmd{};
   u64 m_timestamp_sent = 0;
   u64 m_last_auto_reset = 0;
+  bool m_link_was_enabled = false;
   u16 m_keys = 0;
 
   std::shared_ptr<HW::GBA::Core> m_core;
