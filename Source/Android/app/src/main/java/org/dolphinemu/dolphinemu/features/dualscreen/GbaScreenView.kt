@@ -100,6 +100,8 @@ class GbaScreenView @JvmOverloads constructor(
             drawStatusText(canvas)
         }
 
+        drawLinkDiagnostic(canvas)
+
         if (titleVisible && title.isNotEmpty()) {
             canvas.drawText(title, width / 2f, sp(34f), textPaint)
         }
@@ -155,8 +157,9 @@ class GbaScreenView @JvmOverloads constructor(
             if (bitmap != null) {
                 scheduleTitleHide()
             }
-            invalidate()
         }
+        // Always repaint so the link diagnostic reflects every core's state.
+        invalidate()
     }
 
     override fun onGbaVisibleDeviceChanged(deviceNumber: Int, info: GbaHostBridge.CoreInfo?) {
@@ -395,6 +398,36 @@ class GbaScreenView @JvmOverloads constructor(
                 context.getString(R.string.gba_screen_waiting_for_frame, visibleDevice + 1)
         }
         canvas.drawText(text, width / 2f, height / 2f, textPaint)
+    }
+
+    /**
+     * Always-visible readout of each GBA core's state, so a link failure is
+     * diagnosable on-device (OSD messages fire at boot and expire). Rendered
+     * on the plain Android canvas, independent of frame delivery.
+     */
+    private fun drawLinkDiagnostic(canvas: Canvas) {
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFFEE55.toInt()
+            textSize = sp(13f)
+            textAlign = Paint.Align.LEFT
+        }
+        var y = sp(16f)
+        for (d in 0..3) {
+            val info = GbaHostBridge.snapshot(d)
+            val line = if (info == null) {
+                "GBA${d + 1}: no core"
+            } else {
+                "GBA${d + 1}: rom=${info.hasRom} gba=${info.isGba} \"${info.title}\""
+            }
+            canvas.drawText(line, sp(6f), y, paint)
+            y += sp(15f)
+        }
+        canvas.drawText(
+            "visible=${visibleDevice + 1}",
+            sp(6f),
+            y,
+            paint
+        )
     }
 
     private fun displayTitle(info: GbaHostBridge.CoreInfo?): String {
