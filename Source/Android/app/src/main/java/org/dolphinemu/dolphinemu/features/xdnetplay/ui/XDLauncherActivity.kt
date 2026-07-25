@@ -16,6 +16,7 @@ import androidx.compose.runtime.setValue
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplaySetupActivity
 import java.io.File
 import java.security.MessageDigest
+import org.dolphinemu.dolphinemu.features.settings.model.BooleanSetting
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
 import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
@@ -308,6 +309,14 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         }
         if (IntSetting.MAIN_SI_DEVICE_2.int != 13) {
             IntSetting.MAIN_SI_DEVICE_2.setInt(NativeConfig.LAYER_BASE, 13); changed = true
+        }
+        // The 2-year-stable papajefe XDNetplay bundle runs with cheats ON so the
+        // $XD OU Fixes AR code (enabled in the bundled GXXE01.ini) actually
+        // applies -- it patches XD's battle-setup code and the OU GBA-vs-GBA
+        // format depends on it. Match that for both solo boot and hosting; in
+        // netplay the host's EnableCheats + SyncCodes carry it to the guest.
+        if (!BooleanSetting.MAIN_ENABLE_CHEATS.boolean) {
+            BooleanSetting.MAIN_ENABLE_CHEATS.setBoolean(NativeConfig.LAYER_BASE, true); changed = true
         }
         if (changed) {
             NativeConfig.save(NativeConfig.LAYER_BASE)
