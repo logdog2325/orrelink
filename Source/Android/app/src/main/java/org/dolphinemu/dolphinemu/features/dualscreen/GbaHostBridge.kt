@@ -33,6 +33,10 @@ object GbaHostBridge {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val infos = arrayOfNulls<CoreInfo>(DEVICE_COUNT)
 
+    /** Per-device core state, for the on-screen link diagnostic. */
+    fun snapshot(device: Int): CoreInfo? =
+        if (device in infos.indices) infos[device] else null
+
     private val listeners = CopyOnWriteArraySet<Listener>()
     private val frameLock = Any()
     private var pendingFrame: Frame? = null
