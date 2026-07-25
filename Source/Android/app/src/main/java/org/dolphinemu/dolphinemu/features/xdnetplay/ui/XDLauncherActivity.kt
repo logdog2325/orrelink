@@ -190,7 +190,36 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         }
     }
 
+    /**
+     * mGBA memory-maps the ROM and BIOS, which content:// fds don't support,
+     * and File::Exists() returns false for content:// so GBACore falls back to
+     * the joybus-less bundled BIOS. Migrate any stored content:// path to a
+     * real file so both actually load — no re-pick needed.
+     */
+    private fun migrateContentPaths() {
+        migrateOne(StringSetting.MAIN_GBA_BIOS_PATH, "gba_bios.bin")
+        migrateOne(StringSetting.MAIN_GBA_ROM_2, "EMERALD.gba")
+        migrateOne(StringSetting.MAIN_GBA_ROM_3, "EMERALD.gba")
+    }
+
+    private fun migrateOne(setting: StringSetting, destName: String) {
+        val cur = setting.string
+        if (!cur.startsWith("content://")) return
+        try {
+            val bytes = contentResolver.openInputStream(android.net.Uri.parse(cur))
+                ?.use { it.readBytes() } ?: return
+            val dest = File(DirectoryInitialization.getUserDirectory(), "GBA/$destName")
+            dest.parentFile?.mkdirs()
+            dest.writeBytes(bytes)
+            setting.setString(NativeConfig.LAYER_BASE, dest.absolutePath)
+            NativeConfig.save(NativeConfig.LAYER_BASE)
+        } catch (_: Exception) {
+            // Permission may have lapsed; the checklist picker re-copies correctly.
+        }
+    }
+
     private fun refreshChecks() {
+        migrateContentPaths()
         emeraldRomSet = StringSetting.MAIN_GBA_ROM_2.string.isNotEmpty() ||
             StringSetting.MAIN_GBA_ROM_3.string.isNotEmpty()
         xdGameFound = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID) != null
