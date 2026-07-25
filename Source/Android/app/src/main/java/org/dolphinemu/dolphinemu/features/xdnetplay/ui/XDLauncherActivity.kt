@@ -15,6 +15,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplaySetupActivity
 import java.io.File
+import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
 import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.SaveNaming
@@ -122,10 +123,31 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
             StringSetting.MAIN_GBA_ROM_3.string.isNotEmpty()
         xdGameFound = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID) != null
         teamSavesReady = if (emeraldRomSet) seedTeamSaves() else false
+        if (emeraldRomSet) {
+            configureGbaPorts()
+        }
         controllerMapped = try {
             AutoMapper.isMapped() || AutoMapper.autoMap()
         } catch (_: Exception) {
             false
+        }
+    }
+
+    /**
+     * XD's GBA-vs-GBA mode needs controller ports 2 and 3 to be integrated
+     * GBAs. Only upgrades ports that are still Disabled so deliberate
+     * configurations survive.
+     */
+    private fun configureGbaPorts() {
+        var changed = false
+        for (setting in listOf(IntSetting.MAIN_SI_DEVICE_1, IntSetting.MAIN_SI_DEVICE_2)) {
+            if (setting.int == 0) {
+                setting.setInt(NativeConfig.LAYER_BASE, 13)
+                changed = true
+            }
+        }
+        if (changed) {
+            NativeConfig.save(NativeConfig.LAYER_BASE)
         }
     }
 
