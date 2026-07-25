@@ -220,13 +220,9 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
 
     private fun refreshChecks() {
         migrateContentPaths()
-        emeraldRomSet = StringSetting.MAIN_GBA_ROM_2.string.isNotEmpty() ||
-            StringSetting.MAIN_GBA_ROM_3.string.isNotEmpty()
+        emeraldRomSet = ensureGbaConfig()
         xdGameFound = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID) != null
         teamSavesReady = if (emeraldRomSet) seedTeamSaves() else false
-        if (emeraldRomSet) {
-            configureGbaPorts()
-        }
         controllerMapped = try {
             AutoMapper.isMapped() || AutoMapper.autoMap()
         } catch (_: Exception) {
@@ -263,21 +259,42 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     }
 
     /**
-     * XD's GBA-vs-GBA mode needs controller ports 2 and 3 to be integrated
-     * GBAs. Only upgrades ports that are still Disabled so deliberate
-     * configurations survive.
+     * Force the XD GBA-link config on every launch rather than trusting
+     * Dolphin's settings to persist (they were observed reverting to blank
+     * across restarts): point both linkable GBA slots at the copied Emerald
+     * ROM and set ports 2/3 to Emulated GBA (SIDevice 13). Runs before the
+     * user can boot XD, so the cores are configured at boot — never a fragile
+     * mid-game change. Returns true when a valid Emerald ROM is configured.
      */
-    private fun configureGbaPorts() {
-        var changed = false
-        for (setting in listOf(IntSetting.MAIN_SI_DEVICE_1, IntSetting.MAIN_SI_DEVICE_2)) {
-            if (setting.int == 0) {
-                setting.setInt(NativeConfig.LAYER_BASE, 13)
-                changed = true
+    private fun ensureGbaConfig(): Boolean {
+        val copied = File(DirectoryInitialization.getUserDirectory(), "GBA/EMERALD.gba")
+        val romPath = when {
+            copied.exists() -> copied.absolutePath
+            else -> {
+                val existing = StringSetting.MAIN_GBA_ROM_2.string
+                    .ifEmpty { StringSetting.MAIN_GBA_ROM_3.string }
+                if (existing.isNotEmpty() && !existing.startsWith("content://") &&
+                    File(existing).exists()) existing else null
             }
+        } ?: return false
+
+        var changed = false
+        if (StringSetting.MAIN_GBA_ROM_2.string != romPath) {
+            StringSetting.MAIN_GBA_ROM_2.setString(NativeConfig.LAYER_BASE, romPath); changed = true
+        }
+        if (StringSetting.MAIN_GBA_ROM_3.string != romPath) {
+            StringSetting.MAIN_GBA_ROM_3.setString(NativeConfig.LAYER_BASE, romPath); changed = true
+        }
+        if (IntSetting.MAIN_SI_DEVICE_1.int != 13) {
+            IntSetting.MAIN_SI_DEVICE_1.setInt(NativeConfig.LAYER_BASE, 13); changed = true
+        }
+        if (IntSetting.MAIN_SI_DEVICE_2.int != 13) {
+            IntSetting.MAIN_SI_DEVICE_2.setInt(NativeConfig.LAYER_BASE, 13); changed = true
         }
         if (changed) {
             NativeConfig.save(NativeConfig.LAYER_BASE)
         }
+        return true
     }
 
     /**
