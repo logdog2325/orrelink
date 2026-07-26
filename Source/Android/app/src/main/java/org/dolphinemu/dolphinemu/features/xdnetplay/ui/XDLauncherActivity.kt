@@ -318,6 +318,14 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         if (!BooleanSetting.MAIN_ENABLE_CHEATS.boolean) {
             BooleanSetting.MAIN_ENABLE_CHEATS.setBoolean(NativeConfig.LAYER_BASE, true); changed = true
         }
+        // When hosting, netplay defaults its game to the FIRST entry in the
+        // GameCube library (setInitialGame -> gameFiles.firstOrNull()), which is
+        // whatever sorts first (e.g. Call of Duty), not XD. Pin the netplay game
+        // to Pokemon XD so the host lands on it automatically; the lobby's game
+        // row can still change it.
+        if (StringSetting.NETPLAY_GAME.string != XD_GAME_ID) {
+            StringSetting.NETPLAY_GAME.setString(NativeConfig.LAYER_BASE, XD_GAME_ID); changed = true
+        }
         if (changed) {
             NativeConfig.save(NativeConfig.LAYER_BASE)
         }
