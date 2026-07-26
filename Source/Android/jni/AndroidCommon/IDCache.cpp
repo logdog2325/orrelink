@@ -778,7 +778,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved)
       env->FindClass("org/dolphinemu/dolphinemu/features/dualscreen/GbaHostBridge");
   s_gba_host_bridge_class = reinterpret_cast<jclass>(env->NewGlobalRef(gba_host_bridge_class));
   s_gba_host_bridge_on_game_changed = env->GetStaticMethodID(
-      s_gba_host_bridge_class, "onGameChanged", "(IIIZZLjava/lang/String;)V");
+      s_gba_host_bridge_class, "onGameChanged", "(IIIZZZLjava/lang/String;)V");
   s_gba_host_bridge_on_core_stopped =
       env->GetStaticMethodID(s_gba_host_bridge_class, "onCoreStopped", "(I)V");
   s_gba_host_bridge_on_frame =
