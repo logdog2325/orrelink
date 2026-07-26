@@ -15,6 +15,10 @@ enum class StringSetting(
     MAIN_DEFAULT_ISO(Settings.FILE_DOLPHIN, Settings.SECTION_INI_CORE, "DefaultISO", ""),
     MAIN_BBA_MAC(Settings.FILE_DOLPHIN, Settings.SECTION_INI_CORE, "BBA_MAC", ""),
     MAIN_BBA_XLINK_IP(Settings.FILE_DOLPHIN, Settings.SECTION_INI_CORE, "BBA_XLINK_IP", ""),
+    // The Wii's wireless MAC (Dolphin.ini [General] WirelessMac). No Android UI
+    // exposes it; the PBR mode sets it to the real console MAC before the first
+    // online connect (a wrong/empty MAC breaks the WFC/Wiimmfi console identity).
+    MAIN_WIRELESS_MAC(Settings.FILE_DOLPHIN, Settings.SECTION_INI_GENERAL, "WirelessMac", ""),
 
     // Schthack PSO Server - https://schtserv.com/
     MAIN_BBA_BUILTIN_DNS(
