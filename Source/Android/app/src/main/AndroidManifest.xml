@@ -52,19 +52,31 @@
             android:shell="true"
             tools:targetApi="29" />
 
+        <!-- App entry hub: pick XD or PBR. Each mode's own launcher (below) is
+             opened from here and force-applies its own config. -->
         <activity
-            android:name=".features.xdnetplay.ui.XDLauncherActivity"
+            android:name=".features.xdnetplay.ui.PokemonHubActivity"
             android:exported="true"
             android:label="XD Netplay"
             android:theme="@style/Theme.Dolphin.Splash.Main">
 
-            <!-- This intentfilter marks this Activity as the one that gets launched from Home screen. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- XD launcher (code unchanged); now opened from the hub. -->
+        <activity
+            android:name=".features.xdnetplay.ui.XDLauncherActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Dolphin.Splash.Main" />
+
+        <activity
+            android:name=".features.xdnetplay.ui.PbrLauncherActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Dolphin.Splash.Main" />
 
         <activity
             android:name=".features.xdnetplay.ui.TeamEditorActivity"
