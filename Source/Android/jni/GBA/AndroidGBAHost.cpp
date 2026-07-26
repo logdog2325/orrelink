@@ -13,6 +13,7 @@
 
 #include "Common/CommonTypes.h"
 #include "Core/HW/GBACore.h"
+#include "Core/NetPlayProto.h"
 #include "jni/AndroidCommon/AndroidCommon.h"
 #include "jni/AndroidCommon/IDCache.h"
 
@@ -68,6 +69,18 @@ public:
       return;
 
     const HW::GBA::CoreInfo info = core->GetCoreInfo();
+
+    // In netplay each player must see only the GBA they own on the bottom screen
+    // (host = port 2, joiner = port 3). device_number is the SI channel, i.e. the
+    // pad index NetPlay::GetPadDetails() indexes. Guard the query to the 4-slot
+    // pad map -- the GB Player pseudo-device is index 4 and would index
+    // pad_map[4] out of bounds -- and treat every core as local outside netplay
+    // so the solo path is unchanged.
+    const bool is_local =
+        (info.device_number < 0 || info.device_number >= 4 || !NetPlay::IsNetPlayRunning()) ?
+            true :
+            NetPlay::GetPadDetails(info.device_number).is_local;
+
     JNIEnv* env = IDCache::GetEnvForThread();
     jstring title = ToJString(env, info.game_title);
     if (env->ExceptionCheck())
@@ -80,7 +93,8 @@ public:
                               IDCache::GetGbaHostBridgeOnGameChanged(),
                               static_cast<jint>(info.device_number), static_cast<jint>(info.width),
                               static_cast<jint>(info.height), static_cast<jboolean>(info.is_gba),
-                              static_cast<jboolean>(info.has_rom), title);
+                              static_cast<jboolean>(info.has_rom),
+                              static_cast<jboolean>(is_local), title);
     env->DeleteLocalRef(title);
     ClearPendingException(env, "GbaHostBridge.onGameChanged");
   }
