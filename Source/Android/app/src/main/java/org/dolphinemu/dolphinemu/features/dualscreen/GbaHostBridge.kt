@@ -21,6 +21,7 @@ object GbaHostBridge {
         val height: Int,
         val isGba: Boolean,
         val hasRom: Boolean,
+        val isLocal: Boolean,
         val title: String
     )
 
@@ -76,10 +77,17 @@ object GbaHostBridge {
         if (visibleDeviceNumber in infos.indices) infos[visibleDeviceNumber] else null
 
     private fun refreshVisibleDevice() {
+        // In netplay, prefer the GBA WE own (isLocal) so each player sees their
+        // own bottom screen -- host port 2, joiner port 3. The fallbacks are
+        // load-bearing: in solo every core is local (native passes isLocal=true
+        // outside netplay) so the first clause is identical to the old
+        // first-with-ROM pick, and a mistimed/edge case degrades to showing *a*
+        // GBA rather than a black screen. Never select a non-local GBA outright.
         val nextDevice = when {
             frameConsumerCount == 0 -> NO_DEVICE
             infos[GB_PLAYER_DEVICE]?.hasRom == true -> GB_PLAYER_DEVICE
-            else -> LINK_DEVICE_RANGE.firstOrNull { infos[it]?.hasRom == true }
+            else -> LINK_DEVICE_RANGE.firstOrNull { infos[it]?.hasRom == true && infos[it]?.isLocal == true }
+                ?: LINK_DEVICE_RANGE.firstOrNull { infos[it]?.hasRom == true }
                 ?: LINK_DEVICE_RANGE.firstOrNull { infos[it]?.isGba == true }
                 ?: NO_DEVICE
         }
@@ -102,10 +110,11 @@ object GbaHostBridge {
         height: Int,
         isGba: Boolean,
         hasRom: Boolean,
+        isLocal: Boolean,
         title: String
     ) {
         mainHandler.post {
-            val info = CoreInfo(deviceNumber, width, height, isGba, hasRom, title)
+            val info = CoreInfo(deviceNumber, width, height, isGba, hasRom, isLocal, title)
             infos[deviceNumber] = info
             refreshVisibleDevice()
             for (listener in listeners) {

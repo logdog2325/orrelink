@@ -417,7 +417,7 @@ class GbaScreenView @JvmOverloads constructor(
             val line = if (info == null) {
                 "GBA${d + 1}: no core"
             } else {
-                "GBA${d + 1}: rom=${info.hasRom} gba=${info.isGba} \"${info.title}\""
+                "GBA${d + 1}: rom=${info.hasRom} gba=${info.isGba} loc=${info.isLocal} \"${info.title}\""
             }
             canvas.drawText(line, sp(6f), y, paint)
             y += sp(15f)
