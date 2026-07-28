@@ -1460,6 +1460,12 @@ void MainWindow::ShowNetPlayBrowser()
 
 void MainWindow::ShowXDLauncher()
 {
+  // Finder/Dock file-association boots arrive as a QFileOpenEvent after the
+  // event loop starts, so m_pending_boot is still null when the startup timer
+  // is armed. Bail if a game got going in the meantime.
+  if (!Core::IsUninitialized(m_system))
+    return;
+
   m_xd_launcher->show();
   m_xd_launcher->raise();
   m_xd_launcher->activateWindow();
