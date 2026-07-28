@@ -154,7 +154,7 @@ void XDLauncherDialog::CreateMainLayout()
     checklist_layout->addWidget(target->fix_button, row, 2);
     row++;
   };
-  add_row(&m_game_row, tr("Pokémon XD (USA) in game list"), tr("Add Folder..."));
+  add_row(&m_game_row, tr("Pokémon XD (USA) — choose your XD ISO file"), tr("Choose ISO..."));
   add_row(&m_rom_row, tr("Emerald ROM configured"), tr("Choose ROM..."));
   add_row(&m_team_saves_row, tr("Team saves installed"), tr("Install"));
   add_row(&m_vs_save_row, tr("XD VS-mode save (memory card)"), tr("Install"));
@@ -185,6 +185,10 @@ void XDLauncherDialog::CreateMainLayout()
   battle_box->setLayout(battle_layout);
   layout->addWidget(battle_box);
 
+  m_show_on_startup_check = new QCheckBox(tr("Show this launcher at startup"));
+  m_show_on_startup_check->setChecked(ShowOnStartup());
+  layout->addWidget(m_show_on_startup_check);
+
   setLayout(layout);
 }
 
@@ -207,6 +211,17 @@ void XDLauncherDialog::ConnectWidgets()
     Config::SetBaseOrCurrent(Config::MAIN_GBA_PRACTICE_DUMMY, checked);
     Config::Save();
   });
+
+  connect(m_show_on_startup_check, &QCheckBox::toggled, this, [](bool checked) {
+    Settings::GetQSettings().setValue(QStringLiteral("xdnetplay/showlauncheronstartup"), checked);
+  });
+}
+
+bool XDLauncherDialog::ShowOnStartup()
+{
+  return Settings::GetQSettings()
+      .value(QStringLiteral("xdnetplay/showlauncheronstartup"), true)
+      .toBool();
 }
 
 void XDLauncherDialog::showEvent(QShowEvent* event)
@@ -289,10 +304,19 @@ std::shared_ptr<const UICommon::GameFile> XDLauncherDialog::FindXdGame() const
 
 void XDLauncherDialog::OnFixGamePath()
 {
-  const QString dir =
-      QFileDialog::getExistingDirectory(this, tr("Select the folder containing Pokémon XD"));
-  if (!dir.isEmpty())
-    Settings::Instance().AddPath(dir);
+  // A file picker, not a folder picker: users know where their ISO is, not
+  // what a "game folder" means. The game list still works on directories, so
+  // register the file's parent directory.
+  const QString path = QFileDialog::getOpenFileName(
+      this, tr("Select your Pokémon XD ISO"), QString(),
+      tr("GameCube disc images (*.iso *.ciso *.rvz *.gcm *.gcz *.wia)"));
+  if (!path.isEmpty())
+  {
+    std::string parent_dir;
+    SplitPath(path.toStdString(), &parent_dir, nullptr, nullptr);
+    if (!parent_dir.empty())
+      Settings::Instance().AddPath(QString::fromStdString(parent_dir));
+  }
   RefreshChecklist();
 }
 

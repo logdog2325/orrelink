@@ -32,6 +32,11 @@ class XDLauncherDialog : public QDialog
 public:
   explicit XDLauncherDialog(const GameListModel& game_list_model, QWidget* parent);
 
+  // Whether the launcher should open automatically in front of the main
+  // window at startup (QSettings xdnetplay/showlauncheronstartup, default
+  // true; the dialog's "Show this launcher at startup" checkbox writes it).
+  static bool ShowOnStartup();
+
 signals:
   void BootXD(const QString& path);
   void HostXD(const UICommon::GameFile& game);
@@ -75,6 +80,7 @@ private:
   ChecklistRow m_gba_input_row;
 
   QCheckBox* m_practice_dummy_check;
+  QCheckBox* m_show_on_startup_check;
   QPushButton* m_boot_button;
   QPushButton* m_host_button;
   QLineEdit* m_join_code_edit;
