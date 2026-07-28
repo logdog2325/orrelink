@@ -14,6 +14,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QShowEvent;
+class TeamEditorDialog;
 
 namespace UICommon
 {
@@ -70,6 +71,7 @@ private:
   void OnBootSolo();
   void OnHost();
   void OnJoin();
+  void OnTeamEditor();
 
   const GameListModel& m_game_list_model;
 
@@ -86,4 +88,6 @@ private:
   QLineEdit* m_join_code_edit;
   QPushButton* m_join_button;
   QPushButton* m_browse_button;
+  QPushButton* m_team_editor_button;
+  TeamEditorDialog* m_team_editor = nullptr;
 };

@@ -31,6 +31,7 @@
 #include "DolphinQt/QtUtils/ModalMessageBox.h"
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 #include "DolphinQt/Settings.h"
+#include "DolphinQt/XDNetplay/TeamEditorDialog.h"
 #include "DolphinQt/XDNetplay/XDNetplayConfig.h"
 
 #include "UICommon/GameFile.h"
@@ -176,12 +177,14 @@ void XDLauncherDialog::CreateMainLayout()
   m_join_code_edit->setPlaceholderText(tr("Host code"));
   m_join_button = new NonDefaultQPushButton(tr("Join Battle"));
   m_browse_button = new NonDefaultQPushButton(tr("Browse Public Sessions"));
+  m_team_editor_button = new NonDefaultQPushButton(tr("Team Editor..."));
   battle_layout->addWidget(m_boot_button, 0, 0);
   battle_layout->addWidget(m_practice_dummy_check, 0, 1);
   battle_layout->addWidget(m_host_button, 1, 0, 1, 2);
   battle_layout->addWidget(m_join_code_edit, 2, 0);
   battle_layout->addWidget(m_join_button, 2, 1);
   battle_layout->addWidget(m_browse_button, 3, 0, 1, 2);
+  battle_layout->addWidget(m_team_editor_button, 4, 0, 1, 2);
   battle_box->setLayout(battle_layout);
   layout->addWidget(battle_box);
 
@@ -206,6 +209,7 @@ void XDLauncherDialog::ConnectWidgets()
   connect(m_host_button, &QPushButton::clicked, this, &XDLauncherDialog::OnHost);
   connect(m_join_button, &QPushButton::clicked, this, &XDLauncherDialog::OnJoin);
   connect(m_browse_button, &QPushButton::clicked, this, [this] { emit BrowsePublic(); });
+  connect(m_team_editor_button, &QPushButton::clicked, this, &XDLauncherDialog::OnTeamEditor);
 
   connect(m_practice_dummy_check, &QCheckBox::toggled, this, [](bool checked) {
     Config::SetBaseOrCurrent(Config::MAIN_GBA_PRACTICE_DUMMY, checked);
@@ -374,6 +378,15 @@ void XDLauncherDialog::OnGbaInputInfo()
       this, tr("GBA Input"),
       tr("Map the GBA buttons in the main Controllers settings: ports 2 and 3 are set to "
          "Emulated GBA by the launcher; only the button mapping is up to you."));
+}
+
+void XDLauncherDialog::OnTeamEditor()
+{
+  if (!m_team_editor)
+    m_team_editor = new TeamEditorDialog(this);
+  m_team_editor->show();
+  m_team_editor->raise();
+  m_team_editor->activateWindow();
 }
 
 void XDLauncherDialog::OnBootSolo()
