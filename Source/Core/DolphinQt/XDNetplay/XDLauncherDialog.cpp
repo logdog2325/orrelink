@@ -158,6 +158,7 @@ void XDLauncherDialog::CreateMainLayout()
   };
   add_row(&m_game_row, tr("Pokémon XD (USA) — choose your XD ISO file"), tr("Choose ISO..."));
   add_row(&m_rom_row, tr("Emerald ROM configured"), tr("Choose ROM..."));
+  add_row(&m_bios_row, tr("Official GBA BIOS"), tr("Choose BIOS..."));
   add_row(&m_team_saves_row, tr("Team saves installed"), tr("Install"));
   add_row(&m_vs_save_row, tr("XD VS-mode save (memory card)"), tr("Install"));
   add_row(&m_gba_input_row, tr("GBA input"), tr("Controllers..."));
@@ -207,6 +208,7 @@ void XDLauncherDialog::ConnectWidgets()
 
   connect(m_game_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixGamePath);
   connect(m_rom_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixEmeraldRom);
+  connect(m_bios_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixBios);
   connect(m_team_saves_row.fix_button, &QPushButton::clicked, this,
           &XDLauncherDialog::OnFixTeamSaves);
   connect(m_vs_save_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixVsSave);
@@ -252,6 +254,11 @@ void XDLauncherDialog::RefreshChecklist()
 
   SetRowState(m_game_row.status, FindXdGame() != nullptr);
   SetRowState(m_rom_row.status, EmeraldRomConfigured());
+  SetRowState(m_bios_row.status, XDNetplay::CheckOfficialBios(nullptr));
+  m_bios_row.description->setText(
+      XDNetplay::CheckOfficialBios(nullptr) ?
+          tr("Official GBA BIOS (XD can detect the GBA)") :
+          tr("Official GBA BIOS required — XD cannot detect the GBA without it"));
   SetRowState(m_team_saves_row.status, TeamSavesInstalled());
   SetRowState(m_vs_save_row.status, VsSaveInstalled());
   // m_gba_input_row stays informational.
@@ -328,6 +335,25 @@ void XDLauncherDialog::OnFixGamePath()
     SplitPath(path.toStdString(), &parent_dir, nullptr, nullptr);
     if (!parent_dir.empty())
       Settings::Instance().AddPath(QString::fromStdString(parent_dir));
+  }
+  RefreshChecklist();
+}
+
+
+void XDLauncherDialog::OnFixBios()
+{
+  const QString path = QFileDialog::getOpenFileName(this, tr("Select the official GBA BIOS"),
+                                                    QString(), tr("GBA BIOS (*.bin)"));
+  if (path.isEmpty())
+    return;
+
+  if (!XDNetplay::ImportOfficialBios(path.toStdString()))
+  {
+    ModalMessageBox::warning(
+        this, tr("XD Netplay"),
+        tr("That file is not the official GBA BIOS (16 KB, must match the known hash). "
+           "XD cannot detect the GBA without the official dump."));
+    return;
   }
   RefreshChecklist();
 }

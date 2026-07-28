@@ -146,6 +146,23 @@ bool IsOfficialBiosFile(const std::string& path)
   return Common::CaseInsensitiveEquals(digest, OFFICIAL_GBA_BIOS_SHA1);
 }
 
+bool ImportOfficialBios(const std::string& path)
+{
+  if (!IsOfficialBiosFile(path))
+    return false;
+
+  const std::string destination = File::GetUserPath(D_GBAUSER_IDX) + GBA_BIOS;
+  if (path != destination)
+  {
+    File::CreateFullPath(destination);
+    if (!File::CopyRegularFile(path, destination))
+      return false;
+  }
+  Config::SetBaseOrCurrent(Config::MAIN_GBA_BIOS_PATH, destination);
+  Config::Save();
+  return true;
+}
+
 bool AutoImportOfficialBios(const std::string& directory)
 {
   if (CheckOfficialBios(nullptr))
