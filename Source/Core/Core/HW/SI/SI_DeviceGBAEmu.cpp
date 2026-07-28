@@ -140,6 +140,15 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     // seconds later, a boot-time link window; latching on that coincidence wedged
     // the port for the rest of the session (auto-reset off, window never reopens,
     // "checking connection" forever). That is the socket-3 detection failure.
+    // Session-permanent on purpose. A timed recovery clear was tried here and
+    // it fired during team preview -- the player thinking about their pick
+    // starves the link of data with no upper bound, the latch cleared, and the
+    // auto-reset rebooted Emerald out from under a live session. There is no
+    // in-band way to tell "human deciding slowly" from "session over", so once
+    // a port has genuinely linked it never auto-resets again this session; a
+    // rematch is a fresh boot (netplay boots per-session anyway), and the old
+    // pre-battle wedge this would have recovered from was the missing official
+    // BIOS, which the launchers now require up front.
     if (link_now && handshake_active)
       m_link_established = true;
 
@@ -152,25 +161,6 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     if (m_data_cmd_count >= DATA_CMDS_FOR_BATTLE)
       m_battle_locked = true;
 
-    // The lock releases only when the battle is unambiguously over: XD probing
-    // again with nothing flowing for a full minute. In-battle animations starve
-    // data for seconds, never that long, so this cannot fire mid-fight -- but
-    // without it a rematch could never re-link, which is the same wedge from the
-    // other direction.
-    if (m_battle_locked && probing && !link_now && elapsed_since(m_last_data_cmd) > tps * 60)
-      m_battle_locked = false;
-
-    // ...and the latch is not permanent. If XD is probing again with no data
-    // having flowed for half a minute, the battle this latch was protecting is
-    // over (or never started) and the port has to be recoverable. The threshold
-    // is deliberately far longer than the 8 s handshake window: in-battle
-    // animations can starve data commands for a while, and re-arming the reset
-    // mid-fight is exactly the crash the latch exists to prevent.
-    if (m_link_established && !m_battle_locked && probing && !link_now &&
-        (m_last_data_cmd == 0 || elapsed_since(m_last_data_cmd) > tps * 30))
-    {
-      m_link_established = false;
-    }
 
     // Silence the GBA until its link is actually established: the boot jingle
     // otherwise replays on every auto-reset while XD probes. Under netplay,
