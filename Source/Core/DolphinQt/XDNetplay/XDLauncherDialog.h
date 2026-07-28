@@ -64,6 +64,7 @@ private:
 
   void OnFixGamePath();
   void OnFixEmeraldRom();
+  void OnFixBios();
   void OnFixTeamSaves();
   void OnFixVsSave();
   void OnGbaInputInfo();
@@ -77,6 +78,7 @@ private:
 
   ChecklistRow m_game_row;
   ChecklistRow m_rom_row;
+  ChecklistRow m_bios_row;
   ChecklistRow m_team_saves_row;
   ChecklistRow m_vs_save_row;
   ChecklistRow m_gba_input_row;
