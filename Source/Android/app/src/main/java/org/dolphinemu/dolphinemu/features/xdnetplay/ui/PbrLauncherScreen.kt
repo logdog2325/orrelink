@@ -80,7 +80,7 @@ fun PbrLauncherScreen(
                     )
                     CheckRow(
                         ok = pbrFound,
-                        okText = "Patched PBR found (RPBE01)",
+                        okText = "Patched PBR ISO found",
                         missingText = "Patched PBR not found — choose the folder with your UPA ISO",
                         fixLabel = "Choose folder…",
                         onFix = onPickPbrFolder

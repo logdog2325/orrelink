@@ -90,7 +90,7 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
         }
 
         GameFileCacheManager.getGameFiles().observe(this) {
-            pbrFound = GameFileCacheManager.getGameFileByGameId(PBR_GAME_ID) != null
+            pbrFound = findPbrGame() != null
         }
 
         setContent {
@@ -120,7 +120,7 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
     private fun refreshChecks() {
         ensurePbrConfig()
         nandImported = checkNandImported()
-        pbrFound = GameFileCacheManager.getGameFileByGameId(PBR_GAME_ID) != null
+        pbrFound = findPbrGame() != null
     }
 
     private fun checkNandImported(): Boolean = try {
@@ -157,17 +157,22 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
     }
 
     private fun bootPbr() {
-        val pbr = GameFileCacheManager.getGameFileByGameId(PBR_GAME_ID)
+        val pbr = findPbrGame()
         if (pbr != null) {
             EmulationActivity.launch(this, pbr.getPath(), false)
         } else {
             statusMessage =
-                "Patched Pokémon Battle Revolution (RPBE01) not found — choose the folder with your UPA ISO."
+                "Pokémon Battle Revolution not found (any region) — choose the folder with your UPA ISO."
         }
     }
 
     companion object {
-        const val PBR_GAME_ID = "RPBE01"
+        // The UPA server pack is built from the PAL disc (RPBP01), while stock
+        // dumps are usually USA (RPBE01) -- accept every region's ID.
+        val PBR_GAME_IDS = listOf("RPBE01", "RPBP01", "RPBJ01")
+
+        fun findPbrGame() =
+            PBR_GAME_IDS.firstNotNullOfOrNull { GameFileCacheManager.getGameFileByGameId(it) }
 
         @JvmStatic
         fun launch(context: Context) {
