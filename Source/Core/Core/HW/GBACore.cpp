@@ -471,11 +471,12 @@ void Core::AddCallbacks()
 }
 
 static void ReadAudioBufferIntoMixer(mAudioBuffer* audio_buffer, Mixer* mixer,
-                                     std::size_t device_number)
+                                     std::size_t device_number, bool force_mute)
 {
   std::array<s16, AUDIO_BUFFER_SIZE> sample_buffer;
   const bool mute_link_audio =
-      device_number != Config::GBPLAYER_GBA_INDEX && Config::Get(Config::MAIN_GBA_LINK_MUTED);
+      force_mute ||
+      (device_number != Config::GBPLAYER_GBA_INDEX && Config::Get(Config::MAIN_GBA_LINK_MUTED));
   const auto read_size = sample_buffer.size() / audio_buffer->channels;
   while (true)
   {
@@ -502,12 +503,14 @@ void Core::SetAVStream()
     auto* const av_stream = static_cast<AVStream*>(stream);
     auto* const core = av_stream->core;
     auto* const audio_buffer = core->GetAudioBuffer();
-    ReadAudioBufferIntoMixer(audio_buffer, av_stream->mixer, av_stream->core->m_device_number);
+    ReadAudioBufferIntoMixer(audio_buffer, av_stream->mixer, av_stream->core->m_device_number,
+                             av_stream->core->IsLinkAudioMuted());
     av_stream->mixer->SetGBAInputSampleRate(core->m_device_number, rate);
   };
   m_stream.postAudioBuffer = [](mAVStream* stream, mAudioBuffer* audio_buffer) {
     auto* const av_stream = static_cast<AVStream*>(stream);
-    ReadAudioBufferIntoMixer(audio_buffer, av_stream->mixer, av_stream->core->m_device_number);
+    ReadAudioBufferIntoMixer(audio_buffer, av_stream->mixer, av_stream->core->m_device_number,
+                             av_stream->core->IsLinkAudioMuted());
   };
 
   m_core->setAVStream(m_core, &m_stream);
