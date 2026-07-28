@@ -90,18 +90,71 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     const u64 tps = static_cast<u64>(m_system.GetSystemTimers().GetTicksPerSecond());
     const bool link_now = m_core->IsLinkEnabled();
 
-    // Latch once the joybus link is up AND real data (READ/WRITE) has flowed:
-    // the party read is done and the battle is underway. Never auto-reset after
+    const bool probing = m_last_cmd == EBufferCommands::CMD_RESET ||
+                         m_last_cmd == EBufferCommands::CMD_STATUS;
+    // Savestate loads can leave a recorded tick ahead of the current one, so
+    // never let these differences wrap around into a huge elapsed time.
+    const auto elapsed_since = [this](u64 then) -> u64 {
+      return (then == 0 || m_timestamp_sent < then) ? 0 : m_timestamp_sent - then;
+    };
+    const bool handshake_active = m_last_data_cmd != 0 && elapsed_since(m_last_data_cmd) < tps * 8;
+
+    // Count data commands only while the link is actually up, and only within
+    // one unbroken burst: a failed handshake also pushes READ/WRITE at a dead
+    // socket, so a lifetime total would creep to the battle threshold purely
+    // from XD retrying, and lock the port out exactly like the bug below.
+    const bool data_cmd_now =
+        m_last_cmd == EBufferCommands::CMD_READ_GBA || m_last_cmd == EBufferCommands::CMD_WRITE_GBA;
+    if (!handshake_active)
+      m_data_cmd_count = 0;
+    else if (data_cmd_now && link_now && m_data_cmd_count < DATA_CMDS_FOR_BATTLE)
+      ++m_data_cmd_count;
+
+    // Latch once the joybus link is up AND real data (READ/WRITE) is flowing:
+    // the party read is done and the battle is underway. Don't auto-reset after
     // this. Otherwise a rare coincidence during turn 1 -- Emerald briefly leaves
     // JOYBUS mode at the "Link standby -> battle scene" transition (link_now
     // false) while an 8s+ animation has let handshake_active lapse and a
     // STATUS/RESET probe lands in that window -- would satisfy the guard below
     // and reboot Emerald out from under XD, dropping the link and crashing the
-    // fight with no message. Pre-battle window-reopening is unaffected: during
-    // pure copyright-screen probing XD sends only STATUS/RESET, so m_last_data_cmd
-    // is still 0 and the brief JOYBUS blip does not trip the latch early.
-    if (link_now && m_last_data_cmd != 0)
+    // fight with no message.
+    //
+    // The data command must be RECENT. XD reads the two sockets in sequence, so
+    // the port it isn't working on yet can see an old stray data command and,
+    // seconds later, a boot-time link window; latching on that coincidence wedged
+    // the port for the rest of the session (auto-reset off, window never reopens,
+    // "checking connection" forever). That is the socket-3 detection failure.
+    if (link_now && handshake_active)
       m_link_established = true;
+
+    // Once this much traffic has crossed a live link in one burst, XD has
+    // genuinely read a party and the battle is underway: lock the port so no
+    // auto-reset can fire for the duration. Rebooting Emerald mid-battle drops
+    // the link and kills the fight with no message, so that has to be
+    // impossible rather than merely unlikely, and a party is hundreds of
+    // commands where a failed probe is a handful.
+    if (m_data_cmd_count >= DATA_CMDS_FOR_BATTLE)
+      m_battle_locked = true;
+
+    // The lock releases only when the battle is unambiguously over: XD probing
+    // again with nothing flowing for a full minute. In-battle animations starve
+    // data for seconds, never that long, so this cannot fire mid-fight -- but
+    // without it a rematch could never re-link, which is the same wedge from the
+    // other direction.
+    if (m_battle_locked && probing && !link_now && elapsed_since(m_last_data_cmd) > tps * 60)
+      m_battle_locked = false;
+
+    // ...and the latch is not permanent. If XD is probing again with no data
+    // having flowed for half a minute, the battle this latch was protecting is
+    // over (or never started) and the port has to be recoverable. The threshold
+    // is deliberately far longer than the 8 s handshake window: in-battle
+    // animations can starve data commands for a while, and re-arming the reset
+    // mid-fight is exactly the crash the latch exists to prevent.
+    if (m_link_established && !m_battle_locked && probing && !link_now &&
+        (m_last_data_cmd == 0 || elapsed_since(m_last_data_cmd) > tps * 30))
+    {
+      m_link_established = false;
+    }
 
     // Silence the GBA until its link is actually established: the boot jingle
     // otherwise replays on every auto-reset while XD probes. Under netplay,
@@ -113,25 +166,20 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
       m_netplay_pad_is_local = NetPlay::GetPadDetails(m_device_number).is_local;
       m_netplay_locality_cached = true;
     }
-    m_core->SetLinkAudioMuted(!m_link_established ||
+    m_core->SetLinkAudioMuted((!m_link_established && !m_battle_locked) ||
                               (m_netplay_locality_cached && !m_netplay_pad_is_local));
 
-    const bool probing = m_last_cmd == EBufferCommands::CMD_RESET ||
-                         m_last_cmd == EBufferCommands::CMD_STATUS;
-    const bool handshake_active =
-        m_last_data_cmd != 0 && (m_timestamp_sent - m_last_data_cmd) < tps * 8;
-    if (probing && !link_now && !handshake_active && !m_link_established)
+    if (probing && !link_now && !handshake_active && !m_link_established && !m_battle_locked)
     {
-      // Must exceed the slowest reset->link-window-open time or the cooldown
-      // resets the core before Emerald's window ever opens (livelock).
-      // Measured: bundled open-source BIOS 2.35 s, official BIOS 4.78 s --
-      // 6 s clears the worst case with margin. Steady-state reset cadence is
-      // driven by the window_just_closed edge, so this only affects the
-      // bootstrap/missed-edge recovery path.
+      // Must exceed the slowest reset->link-window-open time, or the cooldown
+      // resets the core before Emerald's window ever opens (livelock). Measured:
+      // bundled open-source BIOS 2.35 s, official BIOS 4.78 s. The steady-state
+      // cadence comes from the window_just_closed edge, so this floor only
+      // gates the bootstrap and missed-edge recovery paths.
       const u64 min_interval = tps * 6;
       const bool window_just_closed = m_link_was_enabled;
       const bool cooldown_elapsed =
-          m_last_auto_reset == 0 || m_timestamp_sent - m_last_auto_reset > min_interval;
+          m_last_auto_reset == 0 || elapsed_since(m_last_auto_reset) > min_interval;
       if (window_just_closed || cooldown_elapsed)
       {
         if (!NetPlay::IsNetPlayRunning())
@@ -154,6 +202,7 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
           Pad::SetGBAReset(details.local_pad, true);
         }
         m_last_auto_reset = m_timestamp_sent;
+        m_data_cmd_count = 0;
       }
     }
     m_link_was_enabled = link_now;
@@ -230,7 +279,11 @@ DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
     // a D-pad tap between A presses so XD's "select a Pokemon" screen advances
     // to a *different* Pokemon each cycle instead of re-confirming the same
     // slot forever (which never completes team selection).
-    if (m_device_number == 2 && Config::Get(Config::MAIN_GBA_PRACTICE_DUMMY))
+    // Not before the link is up: Emerald's joybus window lives on the copyright
+    // screen, and holding A walks straight past it, so a dummy that starts
+    // mashing at boot stops socket 3 from ever being detected.
+    if (m_device_number == 2 && (m_link_established || m_battle_locked) &&
+        Config::Get(Config::MAIN_GBA_PRACTICE_DUMMY))
     {
       const u64 tenths = m_system.GetCoreTiming().GetTicks() /
                          (m_system.GetSystemTimers().GetTicksPerSecond() / 10);
