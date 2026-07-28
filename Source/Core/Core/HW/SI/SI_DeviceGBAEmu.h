@@ -5,6 +5,9 @@
 
 #ifdef HAS_LIBMGBA
 
+#include <array>
+#include <atomic>
+#include <cstddef>
 #include <memory>
 
 #include "Common/CommonTypes.h"
@@ -19,6 +22,40 @@ class GBAHostInterface;
 
 namespace SerialInterface
 {
+// One entry per SI channel; must match MAX_SI_CHANNELS (static_assert in the
+// .cpp, which is where SI.h is included -- pulling SI.h in here would be
+// circular).
+constexpr size_t GBA_LINK_DIAG_CHANNELS = 4;
+
+// Purely observational snapshot of one GBA port's joybus link state, published
+// for the Android on-screen diagnostic (and anything else that wants ground
+// truth on why XD is or isn't detecting a socket). Written from the emulation
+// thread inside the existing poll, read from the UI thread, hence atomics --
+// the fields are independent counters, so a torn set across fields is fine.
+//
+// NOTHING here feeds back into the link/reset logic: this is a tap, not a
+// control input. Keep it that way.
+struct GBALinkDiag
+{
+  // Joybus link window currently open (Core::IsLinkEnabled()).
+  std::atomic<bool> link{false};
+  // Number of times the link window has opened (false -> true edges).
+  std::atomic<u32> window_count{0};
+  // Auto-resets actually issued for this port (solo + netplay + X-button).
+  std::atomic<u32> reset_count{0};
+  // m_link_established: XD handshake seen over a live link.
+  std::atomic<bool> established{false};
+  // m_battle_locked: sustained traffic latched the port against auto-reset.
+  std::atomic<bool> locked{false};
+  // Last joybus command byte XD sent (0xFF reset / 0x00 status / 0x14 read...).
+  std::atomic<u8> last_cmd{0};
+  // Polls where XD was probing (RESET/STATUS) -- i.e. XD is looking at us.
+  std::atomic<u32> probe_count{0};
+};
+
+// Defined once in SI_DeviceGBAEmu.cpp.
+extern std::array<GBALinkDiag, GBA_LINK_DIAG_CHANNELS> g_gba_link_diag;
+
 class CSIDevice_GBAEmu final : public ISIDevice
 {
 public:
@@ -54,6 +91,11 @@ private:
   bool m_netplay_pad_is_local = true;
   bool m_netplay_locality_cached = false;
   u16 m_keys = 0;
+
+  // Diagnostic-only mirror of the previous poll's link state, so window_count
+  // can count open edges without reading (or perturbing) m_link_was_enabled,
+  // which the auto-reset guard above depends on.
+  bool m_diag_prev_link = false;
 
   std::shared_ptr<HW::GBA::Core> m_core;
   std::shared_ptr<GBAHostInterface> m_gbahost;
