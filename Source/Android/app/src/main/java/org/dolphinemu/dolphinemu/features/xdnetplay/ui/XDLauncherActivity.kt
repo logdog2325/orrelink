@@ -318,6 +318,12 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         if (!BooleanSetting.MAIN_ENABLE_CHEATS.boolean) {
             BooleanSetting.MAIN_ENABLE_CHEATS.setBoolean(NativeConfig.LAYER_BASE, true); changed = true
         }
+        // PBR mode turns the touch overlay on for the Wii Remote pointer. XD is
+        // played with the handheld's physical buttons, so put it back.
+        if (BooleanSetting.MAIN_SHOW_INPUT_OVERLAY.boolean) {
+            BooleanSetting.MAIN_SHOW_INPUT_OVERLAY.setBoolean(NativeConfig.LAYER_BASE, false)
+            changed = true
+        }
         // When hosting, netplay defaults its game to the FIRST entry in the
         // GameCube library (setInitialGame -> gameFiles.firstOrNull()), which is
         // whatever sorts first (e.g. Call of Duty), not XD. Pin the netplay game
