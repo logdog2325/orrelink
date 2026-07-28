@@ -31,17 +31,22 @@ import org.dolphinemu.dolphinemu.utils.ThreadUtil
 import org.dolphinemu.dolphinemu.utils.WiiUtils
 
 /**
- * Pokémon Battle Revolution online mode (UPA private server). Fully separate
- * from the XD launcher: it drives a different game (RPBE01) and its own config
- * only. The XD launcher force-applies its own setup every time it opens, so
- * nothing here can degrade XD -- see ensurePbrConfig().
+ * Pokémon Battle Revolution online mode (Wiimmfi). Fully separate from the XD
+ * launcher: it drives a different game and its own config only. The XD launcher
+ * force-applies its own setup every time it opens, so nothing here can degrade
+ * XD -- see ensurePbrConfig().
+ *
+ * Bring a CLEAN dump in any format (iso/wbfs/rvz/ciso). The Wiimmfi redirect is
+ * applied in RAM at boot by Core/XDNetplay/PbrWiimmfi, so no pre-patched disc,
+ * no conversion, and no writing to your dump. A disc that is already patched is
+ * detected and left alone.
  */
 class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
     override var themeId: Int = 0
 
     private var initialized by mutableStateOf(false)
     private var nandImported by mutableStateOf(false)
-    private var pbrFound by mutableStateOf(false)
+    private var pbrGameId by mutableStateOf<String?>(null)
     private var statusMessage by mutableStateOf<String?>(null)
 
     private val pickPbrFolder =
@@ -60,7 +65,7 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
             if (uri != null) importNand(uri)
         }
 
-    /** Imports the UPA-provided nand.bin (NAND + appended keys) into the app's
+    /** Imports the user's own nand.bin (NAND + appended keys) into the app's
      *  Wii/ dir on a background thread. Success is silent; the native side pops
      *  a panic on failure. */
     private fun importNand(uri: Uri) {
@@ -90,7 +95,7 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
         }
 
         GameFileCacheManager.getGameFiles().observe(this) {
-            pbrFound = findPbrGame() != null
+            pbrGameId = findPbrGame()?.getGameId()
         }
 
         setContent {
@@ -98,7 +103,8 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
                 PbrLauncherScreen(
                     initialized = initialized,
                     nandImported = nandImported,
-                    pbrFound = pbrFound,
+                    pbrGameId = pbrGameId,
+                    pbrSupported = isSupported(pbrGameId),
                     statusMessage = statusMessage,
                     onImportNand = { pickNand.launch("*/*") },
                     onPickPbrFolder = { pickPbrFolder.launch(null) },
@@ -120,8 +126,11 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
     private fun refreshChecks() {
         ensurePbrConfig()
         nandImported = checkNandImported()
-        pbrFound = findPbrGame() != null
+        pbrGameId = findPbrGame()?.getGameId()
     }
+
+    private fun isSupported(gameId: String?): Boolean =
+        gameId != null && SUPPORTED_PBR_GAME_IDS.contains(gameId)
 
     private fun checkNandImported(): Boolean = try {
         File(DirectoryInitialization.getUserDirectory(), "Wii/title").listFiles()?.isNotEmpty() == true
@@ -134,11 +143,11 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
      *  - Turn the emulated-GBA SI ports OFF (XD sets them to 13 for its GBA-vs-
      *    GBA link; PBR is a Wii game and must not spin up Emerald cores). The XD
      *    launcher flips them back to 13 whenever it opens, so XD is unaffected.
-     *  - Cheats on so RPBE01.ini's on-frame black-screen fix applies (same flag
-     *    XD already forces, so no conflict). RPBE01.ini also forces the EFB
-     *    graphics fix so battle-pass avatars render.
-     * The UPA route needs no SSL certs, no DNS change, and no activation wait --
-     * the patched ISO reaches the server directly.
+     *  - Cheats on so the disc's on-frame black-screen fix applies (same flag
+     *    XD already forces, so no conflict). RPBE01.ini/RPBP01.ini also force
+     *    the EFB graphics fix so battle-pass avatars render.
+     * The Wiimmfi route needs no SSL certs, no DNS change, and no activation
+     * wait -- the redirect is baked into the game's own hostname strings.
      */
     private fun ensurePbrConfig() {
         var changed = false
@@ -156,20 +165,37 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
         }
     }
 
+    /**
+     * Boots the disc as-is. The Wiimmfi redirect is not applied here: it is
+     * attached to the BootParameters natively in BootManager::BootCore, so it
+     * covers this button, the game grid and any other entry point, and it never
+     * touches the file on disk.
+     */
     private fun bootPbr() {
         val pbr = findPbrGame()
-        if (pbr != null) {
-            EmulationActivity.launch(this, pbr.getPath(), false)
-        } else {
+        if (pbr == null) {
             statusMessage =
-                "Pokémon Battle Revolution not found (any region) — choose the folder with your UPA ISO."
+                "Pokémon Battle Revolution not found (any region) — choose the folder " +
+                    "holding your dump."
+            return
         }
+        if (!isSupported(pbr.getGameId())) {
+            statusMessage =
+                "Pokémon Battle Revolution (${pbr.getGameId()}) is an unsupported region — " +
+                    "online play needs the US (RPBE01) or European (RPBP01) disc."
+            return
+        }
+        statusMessage = null
+        EmulationActivity.launch(this, pbr.getPath(), false)
     }
 
     companion object {
-        // The UPA server pack is built from the PAL disc (RPBP01), while stock
-        // dumps are usually USA (RPBE01) -- accept every region's ID.
+        // Stock dumps are usually USA (RPBE01) or PAL (RPBP01) -- look for every
+        // region's ID so the checklist can explain an unsupported one.
         val PBR_GAME_IDS = listOf("RPBE01", "RPBP01", "RPBJ01")
+
+        // Regions we carry a Wiimmfi payload for; keep in sync with PbrWiimmfiData.h.
+        val SUPPORTED_PBR_GAME_IDS = listOf("RPBE01", "RPBP01")
 
         fun findPbrGame() =
             PBR_GAME_IDS.firstNotNullOfOrNull { GameFileCacheManager.getGameFileByGameId(it) }
