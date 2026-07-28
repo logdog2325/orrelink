@@ -19,6 +19,18 @@ add_library(uicommon
   ResourcePack/ResourcePack.h
   UICommon.cpp
   UICommon.h
+  XDNetplay/Gen3Data.cpp
+  XDNetplay/Gen3Data.h
+  XDNetplay/Gen3Mon.cpp
+  XDNetplay/Gen3Mon.h
+  XDNetplay/Gen3Save.cpp
+  XDNetplay/Gen3Save.h
+  XDNetplay/Gen3Text.cpp
+  XDNetplay/Gen3Text.h
+  XDNetplay/MonFactory.cpp
+  XDNetplay/MonFactory.h
+  XDNetplay/ShowdownParser.cpp
+  XDNetplay/ShowdownParser.h
 )
 
 target_link_libraries(uicommon
