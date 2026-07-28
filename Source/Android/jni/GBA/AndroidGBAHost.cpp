@@ -14,6 +14,9 @@
 #include "Common/CommonTypes.h"
 #include "Core/HW/GBACore.h"
 #include "Core/NetPlayProto.h"
+#ifdef HAS_LIBMGBA
+#include "Core/HW/SI/SI_DeviceGBAEmu.h"
+#endif
 #include "jni/AndroidCommon/AndroidCommon.h"
 #include "jni/AndroidCommon/IDCache.h"
 
@@ -163,5 +166,48 @@ Java_org_dolphinemu_dolphinemu_features_dualscreen_GbaHostBridge_setVisibleDevic
     JNIEnv*, jclass, jint device_number)
 {
   s_visible_device.store(static_cast<int>(device_number), std::memory_order_relaxed);
+}
+
+// Packed per-port joybus link diagnostic, for the on-screen readout:
+//   bit  0      link window open now
+//   bit  1      link established
+//   bit  2      battle locked
+//   bits 8-15   last joybus command byte
+//   bits 16-31  auto-reset count   (saturated at 0xffff)
+//   bits 32-47  link window count  (saturated at 0xffff)
+//   bits 48-63  probe count        (saturated at 0xffff)
+// One long instead of a struct/array keeps this allocation-free on the draw
+// path. Returns 0 for a device that is not an SI channel.
+JNIEXPORT jlong JNICALL
+Java_org_dolphinemu_dolphinemu_features_dualscreen_GbaHostBridge_getLinkDiag(
+    JNIEnv*, jclass, jint device_number)
+{
+#ifdef HAS_LIBMGBA
+  const int device = static_cast<int>(device_number);
+  if (device < 0 || static_cast<size_t>(device) >= SerialInterface::g_gba_link_diag.size())
+    return 0;
+
+  const SerialInterface::GBALinkDiag& diag =
+      SerialInterface::g_gba_link_diag[static_cast<size_t>(device)];
+
+  const auto saturate16 = [](u32 value) -> u64 {
+    return value > 0xffff ? u64{0xffff} : static_cast<u64>(value);
+  };
+
+  u64 packed = 0;
+  if (diag.link.load(std::memory_order_relaxed))
+    packed |= u64{1} << 0;
+  if (diag.established.load(std::memory_order_relaxed))
+    packed |= u64{1} << 1;
+  if (diag.locked.load(std::memory_order_relaxed))
+    packed |= u64{1} << 2;
+  packed |= static_cast<u64>(diag.last_cmd.load(std::memory_order_relaxed)) << 8;
+  packed |= saturate16(diag.reset_count.load(std::memory_order_relaxed)) << 16;
+  packed |= saturate16(diag.window_count.load(std::memory_order_relaxed)) << 32;
+  packed |= saturate16(diag.probe_count.load(std::memory_order_relaxed)) << 48;
+  return static_cast<jlong>(packed);
+#else
+  return 0;
+#endif
 }
 }

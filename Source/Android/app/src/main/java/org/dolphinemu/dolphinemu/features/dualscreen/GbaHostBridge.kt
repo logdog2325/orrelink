@@ -5,6 +5,7 @@ package org.dolphinemu.dolphinemu.features.dualscreen
 import android.os.Handler
 import android.os.Looper
 import androidx.annotation.Keep
+import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
 import java.util.concurrent.CopyOnWriteArraySet
 
 object GbaHostBridge {
@@ -48,8 +49,39 @@ object GbaHostBridge {
     var visibleDeviceNumber: Int = NO_DEVICE
         private set
 
+    /**
+     * Manual bottom-screen override set by [cycleVisibleDevice], or [NO_DEVICE]
+     * for the automatic pick. Only ever holds a device this player owns; see
+     * [isSwitchable].
+     */
+    private var manualDevice: Int = NO_DEVICE
+
     @JvmStatic
     external fun setVisibleDevice(deviceNumber: Int)
+
+    /**
+     * Packed joybus link diagnostic for one SI channel, or 0 for a device that
+     * has none. See the bit layout in AndroidGBAHost.cpp; decode with the
+     * `LinkDiag*` helpers below.
+     */
+    @JvmStatic
+    external fun getLinkDiag(deviceNumber: Int): Long
+
+    // Decoders for the packed value above. `ushr` matters: probe_count occupies
+    // the top 16 bits, so a busy port makes the Long negative.
+    fun linkDiagLinkOpen(diag: Long): Boolean = (diag and 0x1L) != 0L
+
+    fun linkDiagEstablished(diag: Long): Boolean = (diag and 0x2L) != 0L
+
+    fun linkDiagLocked(diag: Long): Boolean = (diag and 0x4L) != 0L
+
+    fun linkDiagLastCommand(diag: Long): Int = ((diag ushr 8) and 0xFFL).toInt()
+
+    fun linkDiagResetCount(diag: Long): Int = ((diag ushr 16) and 0xFFFFL).toInt()
+
+    fun linkDiagWindowCount(diag: Long): Int = ((diag ushr 32) and 0xFFFFL).toInt()
+
+    fun linkDiagProbeCount(diag: Long): Int = ((diag ushr 48) and 0xFFFFL).toInt()
 
     fun addListener(listener: Listener) {
         listeners.add(listener)
@@ -76,7 +108,67 @@ object GbaHostBridge {
     private fun getVisibleInfo(): CoreInfo? =
         if (visibleDeviceNumber in infos.indices) infos[visibleDeviceNumber] else null
 
+    /**
+     * Whether the manual switch is allowed to select [device].
+     *
+     * `isLocal` is the load-bearing term and is NOT optional: it is computed
+     * natively from `NetPlay::GetPadDetails(n).is_local` (true for everything
+     * outside netplay), so in a netplay battle exactly one link device passes
+     * this test -- the one this player owns. Being able to put a remote GBA on
+     * the bottom screen would show the opponent's party and their move choices
+     * live, which is a total cheat, so the switch must never be able to reach
+     * one. In solo every core is local and this reduces to "a core is here".
+     */
+    private fun isSwitchable(device: Int): Boolean {
+        if (device !in LINK_DEVICE_RANGE) {
+            return false
+        }
+        val info = infos[device] ?: return false
+        return (info.isGba || info.hasRom) && info.isLocal
+    }
+
+    /** True while a netplay session exists, lobby included. */
+    private fun isNetplayActive(): Boolean = NetplayManager.activeSession != null
+
+    /**
+     * Advance the bottom screen to the next GBA this player owns, wrapping.
+     * No-op if nothing else is switchable -- which is always the case in
+     * netplay, where the second belt below refuses outright.
+     */
+    fun cycleVisibleDevice() {
+        // Belt 2: never switch at all while netplay is up. Belt 1 (isSwitchable)
+        // already makes a remote GBA unreachable; this makes the whole feature
+        // inert in the only situation where peeking would matter.
+        if (isNetplayActive()) {
+            return
+        }
+
+        val deviceCount = LINK_DEVICE_RANGE.count()
+        val current = visibleDeviceNumber
+        val start = if (current in LINK_DEVICE_RANGE) {
+            current - LINK_DEVICE_RANGE.first
+        } else {
+            deviceCount - 1
+        }
+
+        for (step in 1..deviceCount) {
+            val candidate = LINK_DEVICE_RANGE.first + (start + step) % deviceCount
+            if (isSwitchable(candidate)) {
+                manualDevice = candidate
+                refreshVisibleDevice()
+                return
+            }
+        }
+    }
+
     private fun refreshVisibleDevice() {
+        // Belt 3: a manual pick only survives while it stays a local, present
+        // core, and never into a netplay session. Anything else drops straight
+        // back to the automatic pick below.
+        if (isNetplayActive() || !isSwitchable(manualDevice)) {
+            manualDevice = NO_DEVICE
+        }
+
         // In netplay, prefer the GBA WE own (isLocal) so each player sees their
         // own bottom screen -- host port 2, joiner port 3. The fallbacks are
         // load-bearing: in solo every core is local (native passes isLocal=true
@@ -85,6 +177,7 @@ object GbaHostBridge {
         // GBA rather than a black screen. Never select a non-local GBA outright.
         val nextDevice = when {
             frameConsumerCount == 0 -> NO_DEVICE
+            manualDevice != NO_DEVICE -> manualDevice
             infos[GB_PLAYER_DEVICE]?.hasRom == true -> GB_PLAYER_DEVICE
             else -> LINK_DEVICE_RANGE.firstOrNull { infos[it]?.hasRom == true && infos[it]?.isLocal == true }
                 ?: LINK_DEVICE_RANGE.firstOrNull { infos[it]?.hasRom == true }
