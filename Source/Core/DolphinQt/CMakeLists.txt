@@ -420,6 +420,10 @@ add_executable(dolphin-emu
   Updater.h
   WiiUpdate.cpp
   WiiUpdate.h
+  XDNetplay/XDLauncherDialog.cpp
+  XDNetplay/XDLauncherDialog.h
+  XDNetplay/XDNetplayConfig.cpp
+  XDNetplay/XDNetplayConfig.h
 )
 
 if (WIN32)

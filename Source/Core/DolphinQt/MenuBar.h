@@ -75,6 +75,7 @@ signals:
   void Screenshot();
   void StartNetPlay();
   void BrowseNetPlay();
+  void ShowXDLauncher();
   void StateLoad();
   void StateSave();
   void StateLoadSlot();
