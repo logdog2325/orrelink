@@ -5,6 +5,8 @@
 
 #include "Core/HW/SI/SI_DeviceGBAEmu.h"
 
+#include <array>
+#include <atomic>
 #include <vector>
 
 #include "Common/ChunkFile.h"
@@ -25,6 +27,20 @@
 
 namespace SerialInterface
 {
+static_assert(GBA_LINK_DIAG_CHANNELS == static_cast<size_t>(MAX_SI_CHANNELS),
+              "The link diagnostic needs one slot per SI channel");
+
+std::array<GBALinkDiag, GBA_LINK_DIAG_CHANNELS> g_gba_link_diag;
+
+// Read-only lookup for the diagnostic tap. Returns nullptr for anything that is
+// not a real SI channel, so no caller can index out of bounds.
+static GBALinkDiag* DiagSlot(int device_number)
+{
+  if (device_number < 0 || static_cast<size_t>(device_number) >= g_gba_link_diag.size())
+    return nullptr;
+  return &g_gba_link_diag[static_cast<size_t>(device_number)];
+}
+
 static s64 GetSyncInterval(const SystemTimers::SystemTimersManager& timers)
 {
   return timers.GetTicksPerSecond() / 1000;
@@ -189,6 +205,8 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
           // which deadlocks the whole emulator on Android where the event
           // thread can stall in the synchronous frame callback.
           m_core->RequestReset(m_timestamp_sent);
+          if (GBALinkDiag* diag = DiagSlot(m_device_number))
+            diag->reset_count.fetch_add(1, std::memory_order_relaxed);
         }
         else if (const NetPlay::PadDetails details = NetPlay::GetPadDetails(m_device_number);
                  details.is_local && details.local_pad < 4)
@@ -200,11 +218,29 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
           // to everyone, and every client resets this core at the same synced
           // poll (the PAD_BUTTON_X handler below).
           Pad::SetGBAReset(details.local_pad, true);
+          if (GBALinkDiag* diag = DiagSlot(m_device_number))
+            diag->reset_count.fetch_add(1, std::memory_order_relaxed);
         }
         m_last_auto_reset = m_timestamp_sent;
         m_data_cmd_count = 0;
       }
     }
+    // Diagnostic tap. Strictly a mirror of the state decided above -- no branch
+    // below this point reads any of it, and nothing above it was moved or
+    // changed. Placed here so it sees the final values of this poll.
+    if (GBALinkDiag* diag = DiagSlot(m_device_number))
+    {
+      if (link_now && !m_diag_prev_link)
+        diag->window_count.fetch_add(1, std::memory_order_relaxed);
+      if (probing)
+        diag->probe_count.fetch_add(1, std::memory_order_relaxed);
+      diag->link.store(link_now, std::memory_order_relaxed);
+      diag->established.store(m_link_established, std::memory_order_relaxed);
+      diag->locked.store(m_battle_locked, std::memory_order_relaxed);
+      diag->last_cmd.store(static_cast<u8>(m_last_cmd), std::memory_order_relaxed);
+    }
+    m_diag_prev_link = link_now;
+
     m_link_was_enabled = link_now;
     m_core->SendJoybusCommand(m_timestamp_sent, TransferInterval(), buffer, m_keys);
 
@@ -328,7 +364,11 @@ DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
   // (the core runs to the given GC timestamp before resetting), so every
   // netplay client still resets this core at the same emulated time.
   if (pad_status.button & PadButton::PAD_BUTTON_X)
+  {
     m_core->RequestReset(m_timestamp_sent);
+    if (GBALinkDiag* diag = DiagSlot(m_device_number))
+      diag->reset_count.fetch_add(1, std::memory_order_relaxed);
+  }
 
   return DataResponse::NoData;
 }
