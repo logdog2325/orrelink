@@ -122,7 +122,13 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
         m_last_data_cmd != 0 && (m_timestamp_sent - m_last_data_cmd) < tps * 8;
     if (probing && !link_now && !handshake_active && !m_link_established)
     {
-      const u64 min_interval = tps * 4;
+      // Must exceed the slowest reset->link-window-open time or the cooldown
+      // resets the core before Emerald's window ever opens (livelock).
+      // Measured: bundled open-source BIOS 2.35 s, official BIOS 4.78 s --
+      // 6 s clears the worst case with margin. Steady-state reset cadence is
+      // driven by the window_just_closed edge, so this only affects the
+      // bootstrap/missed-edge recovery path.
+      const u64 min_interval = tps * 6;
       const bool window_just_closed = m_link_was_enabled;
       const bool cooldown_elapsed =
           m_last_auto_reset == 0 || m_timestamp_sent - m_last_auto_reset > min_interval;
