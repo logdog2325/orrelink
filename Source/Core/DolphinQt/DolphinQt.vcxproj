@@ -246,6 +246,8 @@
     <ClCompile Include="Translation.cpp" />
     <ClCompile Include="Updater.cpp" />
     <ClCompile Include="WiiUpdate.cpp" />
+    <ClCompile Include="XDNetplay\XDLauncherDialog.cpp" />
+    <ClCompile Include="XDNetplay\XDNetplayConfig.cpp" />
   </ItemGroup>
   <!--
     Put C/C++ headers here. If moc needs to be run for the file (only needed if
@@ -283,6 +285,7 @@
     <ClInclude Include="TAS\TASSlider.h" />
     <ClInclude Include="Translation.h" />
     <ClInclude Include="WiiUpdate.h" />
+    <ClInclude Include="XDNetplay\XDNetplayConfig.h" />
     <QtMoc Include="AboutDialog.h" />
     <QtMoc Include="CheatSearchFactoryWidget.h" />
     <QtMoc Include="CheatSearchWidget.h" />
@@ -460,6 +463,7 @@
     <QtMoc Include="TAS\WiiTASInputWindow.h" />
     <QtMoc Include="ToolBar.h" />
     <QtMoc Include="Updater.h" />
+    <QtMoc Include="XDNetplay\XDLauncherDialog.h" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="CMakeLists.txt" />

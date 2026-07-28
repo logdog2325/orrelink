@@ -125,6 +125,7 @@
 #include "DolphinQt/TAS/WiiTASInputWindow.h"
 #include "DolphinQt/ToolBar.h"
 #include "DolphinQt/WiiUpdate.h"
+#include "DolphinQt/XDNetplay/XDLauncherDialog.h"
 
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/GameFile.h"
@@ -566,6 +567,7 @@ void MainWindow::ConnectMenuBar()
   connect(m_menu_bar, &MenuBar::BootWiiSystemMenu, this, &MainWindow::BootWiiSystemMenu);
   connect(m_menu_bar, &MenuBar::StartNetPlay, this, &MainWindow::ShowNetPlaySetupDialog);
   connect(m_menu_bar, &MenuBar::BrowseNetPlay, this, &MainWindow::ShowNetPlayBrowser);
+  connect(m_menu_bar, &MenuBar::ShowXDLauncher, this, &MainWindow::ShowXDLauncher);
   connect(m_menu_bar, &MenuBar::ShowFIFOPlayer, this, &MainWindow::ShowFIFOPlayer);
   connect(m_menu_bar, &MenuBar::ShowSkylanderPortal, this, &MainWindow::ShowSkylanderPortal);
   connect(m_menu_bar, &MenuBar::ShowInfinityBase, this, &MainWindow::ShowInfinityBase);
@@ -1443,6 +1445,13 @@ void MainWindow::ShowNetPlayBrowser()
   browser->exec();
 }
 
+void MainWindow::ShowXDLauncher()
+{
+  m_xd_launcher->show();
+  m_xd_launcher->raise();
+  m_xd_launcher->activateWindow();
+}
+
 void MainWindow::ShowFIFOPlayer()
 {
   if (!m_fifo_window)
@@ -1616,6 +1625,7 @@ void MainWindow::NetPlayInit()
       [this](const std::string& path, std::unique_ptr<BootSessionData> boot_session_data) {
         StartGame(path, ScanForSecondDisc::Yes, std::move(boot_session_data));
       });
+  m_xd_launcher = new XDLauncherDialog(game_list_model, this);
 #ifdef USE_DISCORD_PRESENCE
   m_netplay_discord = new DiscordHandler(this);
 #endif
@@ -1624,6 +1634,11 @@ void MainWindow::NetPlayInit()
   connect(m_netplay_dialog, &NetPlayDialog::rejected, this, &MainWindow::NetPlayQuit);
   connect(m_netplay_setup_dialog, &NetPlaySetupDialog::Join, this, &MainWindow::NetPlayJoin);
   connect(m_netplay_setup_dialog, &NetPlaySetupDialog::Host, this, &MainWindow::NetPlayHost);
+  connect(m_xd_launcher, &XDLauncherDialog::BootXD, this,
+          [this](const QString& path) { StartGame(path, ScanForSecondDisc::Yes); });
+  connect(m_xd_launcher, &XDLauncherDialog::HostXD, this, &MainWindow::NetPlayHost);
+  connect(m_xd_launcher, &XDLauncherDialog::JoinXD, this, &MainWindow::NetPlayJoin);
+  connect(m_xd_launcher, &XDLauncherDialog::BrowsePublic, this, &MainWindow::ShowNetPlayBrowser);
 #ifdef USE_DISCORD_PRESENCE
   connect(m_netplay_discord, &DiscordHandler::Join, this, &MainWindow::NetPlayJoin);
 
