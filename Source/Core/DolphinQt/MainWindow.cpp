@@ -15,6 +15,7 @@
 #include <QMimeData>
 #include <QStackedWidget>
 #include <QStyleHints>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWindow>
 
@@ -326,6 +327,18 @@ MainWindow::MainWindow(Core::System& system, std::unique_ptr<BootParameters> boo
   }
 
   Host::GetInstance()->SetMainWindowHandle(reinterpret_cast<void*>(winId()));
+
+  // Launcher-first startup: open the XD Netplay Launcher in front of the main
+  // window once the event loop is running, so a new player lands directly in
+  // the configure/host/join flow with Dolphin behind it. Skipped when a
+  // game/file was passed on the command line, in batch mode, when a netplay
+  // session is somehow already active, and when the user unchecked "Show this
+  // launcher at startup" (QSettings, see XDLauncherDialog::ShowOnStartup).
+  if (m_pending_boot == nullptr && !Settings::Instance().IsBatchModeEnabled() &&
+      !Settings::Instance().GetNetPlayClient() && XDLauncherDialog::ShowOnStartup())
+  {
+    QTimer::singleShot(0, this, &MainWindow::ShowXDLauncher);
+  }
 
   if (m_pending_boot != nullptr)
   {
