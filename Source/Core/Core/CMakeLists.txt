@@ -589,6 +589,9 @@ add_library(core
   WiiRoot.h
   WiiUtils.cpp
   WiiUtils.h
+  XDNetplay/PbrWiimmfi.cpp
+  XDNetplay/PbrWiimmfi.h
+  XDNetplay/PbrWiimmfiData.h
 )
 
 if(_M_X86_64)

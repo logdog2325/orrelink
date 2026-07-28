@@ -495,6 +495,8 @@
     <ClInclude Include="Core\WC24PatchEngine.h" />
     <ClInclude Include="Core\WiiRoot.h" />
     <ClInclude Include="Core\WiiUtils.h" />
+    <ClInclude Include="Core\XDNetplay\PbrWiimmfi.h" />
+    <ClInclude Include="Core\XDNetplay\PbrWiimmfiData.h" />
     <ClInclude Include="DiscIO\Blob.h" />
     <ClInclude Include="DiscIO\CISOBlob.h" />
     <ClInclude Include="DiscIO\CachedBlob.h" />
@@ -1210,6 +1212,7 @@
     <ClCompile Include="Core\WiiRoot.cpp" />
     <ClCompile Include="Core\WiiUtils.cpp" />
     <ClCompile Include="Core\WC24PatchEngine.cpp" />
+    <ClCompile Include="Core\XDNetplay\PbrWiimmfi.cpp" />
     <ClCompile Include="DiscIO\Blob.cpp" />
     <ClCompile Include="DiscIO\CISOBlob.cpp" />
     <ClCompile Include="DiscIO\CachedBlob.cpp" />

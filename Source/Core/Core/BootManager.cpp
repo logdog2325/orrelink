@@ -39,6 +39,7 @@
 #include "Core/NetPlayProto.h"
 #include "Core/System.h"
 #include "Core/WiiRoot.h"
+#include "Core/XDNetplay/PbrWiimmfi.h"
 
 #include "DiscIO/Enums.h"
 
@@ -133,6 +134,11 @@ bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
   // Disable loading time emulation for Riivolution-patched games until we have proper emulation.
   if (!boot->riivolution_patches.empty())
     Config::SetCurrent(Config::MAIN_FAST_DISC_SPEED, true);
+
+  // Redirect Pokemon Battle Revolution's online mode to Wiimmfi so a clean dump works. This has
+  // to come after the check above: it only adds <memory> patches, which leave the disc image
+  // untouched, so there is no reason to also skip loading time emulation.
+  XDNetplay::PbrWiimmfi::ApplyToBootParameters(boot.get());
 
   if (system.IsTriforce())
   {
