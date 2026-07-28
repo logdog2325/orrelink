@@ -295,6 +295,7 @@ void MenuBar::AddToolsMenu()
 
   tools_menu->addAction(tr("Start &NetPlay..."), this, &MenuBar::StartNetPlay);
   tools_menu->addAction(tr("Browse &NetPlay Sessions...."), this, &MenuBar::BrowseNetPlay);
+  tools_menu->addAction(tr("XD &Netplay Launcher..."), this, [this] { emit ShowXDLauncher(); });
 
   tools_menu->addSeparator();
 
