@@ -58,6 +58,7 @@
 #include "DolphinQt/Resources.h"
 #include "DolphinQt/Settings.h"
 #include "DolphinQt/Settings/GameCubePane.h"
+#include "DolphinQt/XDNetplay/XDNetplayConfig.h"
 
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/GameFile.h"
@@ -484,6 +485,15 @@ void NetPlayDialog::OnStart()
   {
     PanicAlertFmtT("Selected game doesn't exist in game list!");
     return;
+  }
+
+  // When hosting Pokemon XD, force the fixed two-player GBA layout (host pad +
+  // host GBA + guest GBA) and the session settings the link needs before the
+  // start request. Non-XD sessions are completely untouched.
+  if (const auto server = Settings::Instance().GetNetPlayServer();
+      server && XDNetplay::IsXdGameId(game->GetGameID()))
+  {
+    XDNetplay::ApplyStartForcing(server.get());
   }
 
   if (Settings::Instance().GetNetPlayServer()->RequestStartGame())
