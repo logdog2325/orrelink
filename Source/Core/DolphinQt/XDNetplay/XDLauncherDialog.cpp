@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 
+#include <QAbstractItemModel>
 #include <QCheckBox>
 #include <QFileDialog>
 #include <QGridLayout>
@@ -197,6 +198,13 @@ void XDLauncherDialog::CreateMainLayout()
 
 void XDLauncherDialog::ConnectWidgets()
 {
+  // The game scan is asynchronous: without this the XD row stays red until the
+  // user reopens the dialog, even though the pick succeeded.
+  connect(&m_game_list_model, &QAbstractItemModel::rowsInserted, this,
+          [this] { RefreshChecklist(); });
+  connect(&m_game_list_model, &QAbstractItemModel::modelReset, this,
+          [this] { RefreshChecklist(); });
+
   connect(m_game_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixGamePath);
   connect(m_rom_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixEmeraldRom);
   connect(m_team_saves_row.fix_button, &QPushButton::clicked, this,
