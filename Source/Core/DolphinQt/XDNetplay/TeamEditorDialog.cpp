@@ -13,6 +13,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QShowEvent>
@@ -283,17 +284,28 @@ void TeamEditorDialog::OnImport()
   const std::string url = match.captured(0).toStdString() + "/raw";
   SetMessages({tr("Fetching %1…").arg(match.captured(0))});
   m_fetching = true;
-  std::thread([this, url] {
+  // QPointer, not a raw this: the worker outlives the dialog if Dolphin quits
+  // mid-fetch, and QueueOnObject on a destroyed receiver is undefined.
+  QPointer<TeamEditorDialog> self(this);
+  std::thread([self, url] {
     Common::HttpRequest request;
+    // pokepast.es answers the bare paste URL with a 301 to its canonical form.
+    request.FollowRedirects();
     Common::HttpRequest::Response response = request.Get(url);
-    QueueOnObject(this, [this, response = std::move(response)] {
-      m_fetching = false;
+    if (!self)
+      return;
+    // QueueOnObject takes a raw receiver; the QPointer copy inside the lambda
+    // is what guards the deferred call.
+    QueueOnObject(self.data(), [self, response = std::move(response)] {
+      if (!self)
+        return;
+      self->m_fetching = false;
       if (!response)
       {
-        SetMessages({tr("Could not fetch the paste (network error).")});
+        self->SetMessages({tr("Could not fetch the paste (network error).")});
         return;
       }
-      ApplyImportText(std::string(response->begin(), response->end()));
+      self->ApplyImportText(std::string(response->begin(), response->end()));
     });
   }).detach();
 }
