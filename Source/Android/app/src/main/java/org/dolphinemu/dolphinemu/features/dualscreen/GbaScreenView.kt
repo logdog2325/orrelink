@@ -13,8 +13,10 @@ import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
 import android.util.TypedValue
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
 import androidx.core.view.isVisible
@@ -25,7 +27,9 @@ import org.dolphinemu.dolphinemu.features.settings.model.BooleanSetting
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
 import org.dolphinemu.dolphinemu.overlay.InputOverlayDrawableButton
 import org.dolphinemu.dolphinemu.overlay.InputOverlayDrawableDpad
+import kotlin.math.abs
 import kotlin.math.floor
+import kotlin.math.max
 
 class GbaScreenView @JvmOverloads constructor(
     context: Context,
@@ -44,6 +48,16 @@ class GbaScreenView @JvmOverloads constructor(
         textSize = sp(22f)
     }
 
+    // Hoisted out of drawLinkDiagnostic(): this view repaints every GBA frame,
+    // so the diagnostic must not allocate a Paint/StringBuilder 60 times a
+    // second. Only the finished line Strings are unavoidable.
+    private val diagPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFFFEE55.toInt()
+        textAlign = Paint.Align.LEFT
+    }
+    private val diagBuilder = StringBuilder(96)
+    private val diagLines = arrayOfNulls<String>(DIAG_LINE_COUNT)
+
     private var bitmap: Bitmap? = null
     private var visibleDevice = GbaHostBridge.NO_DEVICE
     private var visibleInfo: GbaHostBridge.CoreInfo? = null
@@ -60,6 +74,21 @@ class GbaScreenView @JvmOverloads constructor(
         invalidate()
     }
 
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+    private var longPressArmed = false
+    private var longPressConsumed = false
+    private var longPressDownX = 0f
+    private var longPressDownY = 0f
+    private val longPressRunnable = Runnable {
+        longPressArmed = false
+        longPressConsumed = true
+        // Drop anything this finger was holding before the screen changes under
+        // it, so no control is left stuck on the outgoing device.
+        clearGbaInput()
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        GbaHostBridge.cycleVisibleDevice()
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         GbaHostBridge.addListener(this)
@@ -70,6 +99,8 @@ class GbaScreenView @JvmOverloads constructor(
         setFrameConsumerEnabled(false)
         clearGbaInput()
         mainHandler.removeCallbacks(hideTitleRunnable)
+        cancelSwitchLongPress()
+        longPressConsumed = false
         inputFocusRequested = false
         GbaInputFocusManager.clearFocus(visibleDevice)
         unregisterVisibleGba()
@@ -112,7 +143,24 @@ class GbaScreenView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        // Runs before the early return so the switch is reachable even when no
+        // GBA is on screen yet. It only ever arms on empty canvas (see
+        // canLongPressAt), so held buttons are untouched.
+        trackLongPress(event)
+
         if (visibleDevice !in 0..3) {
+            return true
+        }
+
+        if (longPressConsumed) {
+            // A long press already switched screens; swallow the rest of this
+            // gesture so the same finger does not also press a button on the
+            // GBA that just appeared, and so no click is reported for it.
+            if (event.actionMasked == MotionEvent.ACTION_UP ||
+                event.actionMasked == MotionEvent.ACTION_CANCEL
+            ) {
+                clearGbaInput()
+            }
             return true
         }
 
@@ -147,6 +195,65 @@ class GbaScreenView @JvmOverloads constructor(
     override fun performClick(): Boolean {
         super.performClick()
         return true
+    }
+
+    /**
+     * Long-press-to-switch-GBA gesture, kept entirely separate from the button
+     * forwarding above so a tap behaves exactly as it always did.
+     *
+     * The timer only arms on a first finger that landed on bare screen: holding
+     * A for half a second is completely normal play and must never swap the
+     * display out from under the player.
+     */
+    private fun trackLongPress(event: MotionEvent) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                longPressConsumed = false
+                longPressDownX = event.x
+                longPressDownY = event.y
+                if (canLongPressAt(event.x, event.y)) {
+                    longPressArmed = true
+                    mainHandler.postDelayed(longPressRunnable, LONG_PRESS_MILLIS)
+                }
+            }
+
+            // A second finger means the player is using the pad, not gesturing.
+            MotionEvent.ACTION_POINTER_DOWN -> cancelSwitchLongPress()
+
+            MotionEvent.ACTION_MOVE -> {
+                if (longPressArmed &&
+                    (abs(event.x - longPressDownX) > touchSlop ||
+                            abs(event.y - longPressDownY) > touchSlop)
+                ) {
+                    cancelSwitchLongPress()
+                }
+            }
+
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL -> cancelSwitchLongPress()
+        }
+    }
+
+    private fun canLongPressAt(x: Float, y: Float): Boolean {
+        if (!shouldDrawTouchButtons()) {
+            return true
+        }
+
+        for (rect in buttons.values) {
+            if (rect.contains(x, y)) {
+                return false
+            }
+        }
+        return true
+    }
+
+    /** Disarms the pending long press. Leaves [longPressConsumed] alone: it is
+     *  cleared on the next ACTION_DOWN, after the gesture has been swallowed. */
+    private fun cancelSwitchLongPress() {
+        if (longPressArmed) {
+            longPressArmed = false
+            mainHandler.removeCallbacks(longPressRunnable)
+        }
     }
 
     override fun onGbaGameChanged(info: GbaHostBridge.CoreInfo) {
@@ -406,29 +513,69 @@ class GbaScreenView @JvmOverloads constructor(
      * on the plain Android canvas, independent of frame delivery.
      */
     private fun drawLinkDiagnostic(canvas: Canvas) {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFEE55.toInt()
-            textSize = sp(13f)
-            textAlign = Paint.Align.LEFT
-        }
-        var y = sp(16f)
         for (d in 0..3) {
             val info = GbaHostBridge.snapshot(d)
-            val line = if (info == null) {
-                "GBA${d + 1}: no core"
+            val diag = GbaHostBridge.getLinkDiag(d)
+            diagBuilder.setLength(0)
+            diagBuilder.append("GBA").append(d + 1).append(':')
+            if (info == null) {
+                diagBuilder.append(" no core")
             } else {
-                "GBA${d + 1}: rom=${info.hasRom} gba=${info.isGba} loc=${info.isLocal} \"${info.title}\""
+                diagBuilder.append(" rom=").append(bit(info.hasRom))
+                    .append(" gba=").append(bit(info.isGba))
+                    .append(" loc=").append(bit(info.isLocal))
             }
-            canvas.drawText(line, sp(6f), y, paint)
-            y += sp(15f)
+            // The link state is printed even without a CoreInfo: a port whose
+            // core never announced itself is exactly the case worth seeing.
+            diagBuilder.append(" lk=").append(bit(GbaHostBridge.linkDiagLinkOpen(diag)))
+                .append(" win=").append(GbaHostBridge.linkDiagWindowCount(diag))
+                .append(" rst=").append(GbaHostBridge.linkDiagResetCount(diag))
+                .append(" prb=").append(GbaHostBridge.linkDiagProbeCount(diag))
+                .append(" est=").append(bit(GbaHostBridge.linkDiagEstablished(diag)))
+                .append(" lck=").append(bit(GbaHostBridge.linkDiagLocked(diag)))
+                .append(" cmd=").append(
+                    Integer.toHexString(GbaHostBridge.linkDiagLastCommand(diag))
+                )
+            if (info != null && info.title.isNotEmpty()) {
+                diagBuilder.append(' ').append(truncate(info.title))
+            }
+            diagLines[d] = diagBuilder.toString()
         }
-        canvas.drawText(
-            "visible=${visibleDevice + 1}",
-            sp(6f),
-            y,
-            paint
-        )
+
+        diagBuilder.setLength(0)
+        diagBuilder.append("visible=")
+        if (visibleDevice in 0..3) {
+            diagBuilder.append(visibleDevice + 1)
+        } else {
+            diagBuilder.append('-')
+        }
+        diagBuilder.append("  (long-press to switch GBA)")
+        diagLines[DIAG_LINE_COUNT - 1] = diagBuilder.toString()
+
+        // These lines are long and the view can be narrow, so shrink to fit
+        // rather than run off the edge -- an unreadable diagnostic is no
+        // diagnostic. measureText() allocates nothing.
+        diagPaint.textSize = sp(DIAG_TEXT_SP)
+        var widest = 0f
+        for (line in diagLines) {
+            widest = max(widest, diagPaint.measureText(line ?: ""))
+        }
+        val available = width - sp(12f)
+        if (widest > available && available > 0f) {
+            diagPaint.textSize = max(sp(DIAG_TEXT_SP) * available / widest, sp(6f))
+        }
+
+        var y = diagPaint.textSize * 1.2f
+        for (line in diagLines) {
+            canvas.drawText(line ?: "", sp(6f), y, diagPaint)
+            y += diagPaint.textSize * 1.2f
+        }
     }
+
+    private fun bit(value: Boolean): Char = if (value) '1' else '0'
+
+    private fun truncate(title: String): String =
+        if (title.length <= DIAG_TITLE_CHARS) title else title.substring(0, DIAG_TITLE_CHARS)
 
     private fun displayTitle(info: GbaHostBridge.CoreInfo?): String {
         if (info == null || info.deviceNumber !in 0..3) {
@@ -491,7 +638,10 @@ class GbaScreenView @JvmOverloads constructor(
 
     private fun requestGbaInputFocus() {
         inputFocusRequested = true
-        if (visibleDevice in 0..3) {
+        // Never steer a GBA this player does not own. Outside netplay isLocal is
+        // always true, so solo is unchanged; in netplay the remote player's
+        // handheld stays theirs no matter what ends up on screen.
+        if (visibleDevice in 0..3 && visibleInfo?.isLocal != false) {
             GbaInputFocusManager.requestFocus(visibleDevice)
         }
     }
@@ -619,5 +769,11 @@ class GbaScreenView @JvmOverloads constructor(
 
     companion object {
         private const val TITLE_VISIBLE_MILLIS = 10_000L
+
+        // Four link ports plus the "visible=" footer.
+        private const val DIAG_LINE_COUNT = 5
+        private const val DIAG_TEXT_SP = 12f
+        private const val DIAG_TITLE_CHARS = 10
+        private val LONG_PRESS_MILLIS = ViewConfiguration.getLongPressTimeout().toLong()
     }
 }
