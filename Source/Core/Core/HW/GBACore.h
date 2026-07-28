@@ -81,6 +81,13 @@ public:
   bool IsLinkEnabled() const { return m_link_enabled; }
   CoreInfo GetCoreInfo() const;
 
+  // Host-side audio gate: while true this core's samples are dropped before
+  // they reach the mixer. Starts muted so the boot jingle stays silent through
+  // the auto-reset churn; the SI device unmutes once the joybus link is
+  // established (and keeps remote players' GBAs muted under netplay).
+  void SetLinkAudioMuted(bool muted) { m_link_audio_muted = muted; }
+  bool IsLinkAudioMuted() const { return m_link_audio_muted; }
+
   void SetHost(std::weak_ptr<GBAHostInterface> host);
   void SetForceDisconnect(bool force_disconnect);
   void EReaderQueueCard(std::string_view card_path);
@@ -172,6 +179,9 @@ private:
   // Set by the GBA thread after filling in the above buffer.
   u8 m_response_size{};  // State saved.
   std::atomic_bool m_command_pending{};
+
+  // Host-side only (audio), not part of saved state.
+  std::atomic_bool m_link_audio_muted{true};
 
   // The entire threaded GBA runs within events pushed to this queue.
   Common::WorkQueueThreadSP<SyncEvent> m_event_thread;
