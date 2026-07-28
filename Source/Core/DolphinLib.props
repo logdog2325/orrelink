@@ -593,6 +593,12 @@
     <ClInclude Include="UICommon\ResourcePack\Manifest.h" />
     <ClInclude Include="UICommon\ResourcePack\ResourcePack.h" />
     <ClInclude Include="UICommon\UICommon.h" />
+    <ClInclude Include="UICommon\XDNetplay\Gen3Data.h" />
+    <ClInclude Include="UICommon\XDNetplay\Gen3Mon.h" />
+    <ClInclude Include="UICommon\XDNetplay\Gen3Save.h" />
+    <ClInclude Include="UICommon\XDNetplay\Gen3Text.h" />
+    <ClInclude Include="UICommon\XDNetplay\MonFactory.h" />
+    <ClInclude Include="UICommon\XDNetplay\ShowdownParser.h" />
     <ClInclude Include="UpdaterCommon\UI.h" />
     <ClInclude Include="UpdaterCommon\UpdaterCommon.h" />
     <ClInclude Include="VideoBackends\D3D\D3DBase.h" />
@@ -1294,6 +1300,12 @@
     <ClCompile Include="UICommon\ResourcePack\Manifest.cpp" />
     <ClCompile Include="UICommon\ResourcePack\ResourcePack.cpp" />
     <ClCompile Include="UICommon\UICommon.cpp" />
+    <ClCompile Include="UICommon\XDNetplay\Gen3Data.cpp" />
+    <ClCompile Include="UICommon\XDNetplay\Gen3Mon.cpp" />
+    <ClCompile Include="UICommon\XDNetplay\Gen3Save.cpp" />
+    <ClCompile Include="UICommon\XDNetplay\Gen3Text.cpp" />
+    <ClCompile Include="UICommon\XDNetplay\MonFactory.cpp" />
+    <ClCompile Include="UICommon\XDNetplay\ShowdownParser.cpp" />
     <ClCompile Include="UpdaterCommon\UpdaterCommon.cpp" />
     <ClCompile Include="VideoBackends\D3D\D3DBase.cpp" />
     <ClCompile Include="VideoBackends\D3D\D3DBoundingBox.cpp" />
