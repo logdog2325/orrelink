@@ -53,6 +53,10 @@ bool IsOfficialBiosFile(const std::string& path);
 // Returns true once an official BIOS is configured.
 bool AutoImportOfficialBios(const std::string& directory);
 
+// Validates the given file as the official BIOS and installs it (copy into the
+// GBA user dir + config). Returns false if it is not the official dump.
+bool ImportOfficialBios(const std::string& path);
+
 // Copy the bundled EMERALD-2/3.sav templates next to the imported Emerald
 // dump's derived save paths for ports 2 and 3. Existing saves are never
 // overwritten; missing Sys templates are tolerated.
