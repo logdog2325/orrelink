@@ -103,12 +103,24 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     if (link_now && m_last_data_cmd != 0)
       m_link_established = true;
 
+    // Silence the GBA until its link is actually established: the boot jingle
+    // otherwise replays on every auto-reset while XD probes. Under netplay,
+    // remote players' GBAs additionally stay muted for the whole session so
+    // each player hears only their own handheld. Host-side audio only -- no
+    // effect on emulation state, so no desync concern.
+    if (NetPlay::IsNetPlayRunning() && !m_netplay_locality_cached)
+    {
+      m_netplay_pad_is_local = NetPlay::GetPadDetails(m_device_number).is_local;
+      m_netplay_locality_cached = true;
+    }
+    m_core->SetLinkAudioMuted(!m_link_established ||
+                              (m_netplay_locality_cached && !m_netplay_pad_is_local));
+
     const bool probing = m_last_cmd == EBufferCommands::CMD_RESET ||
                          m_last_cmd == EBufferCommands::CMD_STATUS;
     const bool handshake_active =
         m_last_data_cmd != 0 && (m_timestamp_sent - m_last_data_cmd) < tps * 8;
-    if (probing && !link_now && !handshake_active && !m_link_established &&
-        !NetPlay::IsNetPlayRunning())
+    if (probing && !link_now && !handshake_active && !m_link_established)
     {
       const u64 min_interval = tps * 4;
       const bool window_just_closed = m_link_was_enabled;
@@ -116,11 +128,25 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
           m_last_auto_reset == 0 || m_timestamp_sent - m_last_auto_reset > min_interval;
       if (window_just_closed || cooldown_elapsed)
       {
-        // Async: reset on the GBA's own event thread. Calling Reset() here
-        // would Flush() (block the CPU thread until the event thread drains),
-        // which deadlocks the whole emulator on Android where the event
-        // thread can stall in the synchronous frame callback.
-        m_core->RequestReset(m_timestamp_sent);
+        if (!NetPlay::IsNetPlayRunning())
+        {
+          // Async: reset on the GBA's own event thread. Calling Reset() here
+          // would Flush() (block the CPU thread until the event thread drains),
+          // which deadlocks the whole emulator on Android where the event
+          // thread can stall in the synchronous frame callback.
+          m_core->RequestReset(m_timestamp_sent);
+        }
+        else if (const NetPlay::PadDetails details = NetPlay::GetPadDetails(m_device_number);
+                 details.is_local && details.local_pad < 4)
+        {
+          // Netplay: resetting only the local mirror of this core would desync
+          // the other players' copies of it. Ride the input stream instead --
+          // the pad's owner injects the X-button reset signal (the same path
+          // the desktop GBA window's Reset action uses), netplay replicates it
+          // to everyone, and every client resets this core at the same synced
+          // poll (the PAD_BUTTON_X handler below).
+          Pad::SetGBAReset(details.local_pad, true);
+        }
         m_last_auto_reset = m_timestamp_sent;
       }
     }
@@ -237,9 +263,13 @@ DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
   for (size_t i = 0; i < buttons_map.size(); ++i)
     m_keys |= static_cast<u16>(static_cast<bool>((pad_status.button & buttons_map[i]))) << i;
 
-  // Use X button as a reset signal for NetPlay/Movies
+  // Use X button as a reset signal for NetPlay/Movies. Reset asynchronously on
+  // the core's own event thread -- the synchronous Reset() here can deadlock on
+  // Android exactly like the auto-reset above. RequestReset is tick-anchored
+  // (the core runs to the given GC timestamp before resetting), so every
+  // netplay client still resets this core at the same emulated time.
   if (pad_status.button & PadButton::PAD_BUTTON_X)
-    m_core->Reset();
+    m_core->RequestReset(m_timestamp_sent);
 
   return DataResponse::NoData;
 }
