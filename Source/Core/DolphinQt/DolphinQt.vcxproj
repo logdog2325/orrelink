@@ -246,6 +246,7 @@
     <ClCompile Include="Translation.cpp" />
     <ClCompile Include="Updater.cpp" />
     <ClCompile Include="WiiUpdate.cpp" />
+    <ClCompile Include="XDNetplay\TeamEditorDialog.cpp" />
     <ClCompile Include="XDNetplay\XDLauncherDialog.cpp" />
     <ClCompile Include="XDNetplay\XDNetplayConfig.cpp" />
   </ItemGroup>
@@ -463,6 +464,7 @@
     <QtMoc Include="TAS\WiiTASInputWindow.h" />
     <QtMoc Include="ToolBar.h" />
     <QtMoc Include="Updater.h" />
+    <QtMoc Include="XDNetplay\TeamEditorDialog.h" />
     <QtMoc Include="XDNetplay\XDLauncherDialog.h" />
   </ItemGroup>
   <ItemGroup>
