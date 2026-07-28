@@ -160,6 +160,23 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
         if (!BooleanSetting.MAIN_ENABLE_CHEATS.boolean) {
             BooleanSetting.MAIN_ENABLE_CHEATS.setBoolean(NativeConfig.LAYER_BASE, true); changed = true
         }
+        // PBR is driven by the Wii Remote pointer, and this fork ships the touch
+        // overlay off because XD is played with the handheld's physical buttons.
+        // Without it PBR boots to menus nothing can aim at, so turn the overlay
+        // on and give it a Wii Remote to draw. The XD launcher turns it back off
+        // when that mode opens, so each mode sets up the input it needs.
+        if (!BooleanSetting.MAIN_SHOW_INPUT_OVERLAY.boolean) {
+            BooleanSetting.MAIN_SHOW_INPUT_OVERLAY.setBoolean(NativeConfig.LAYER_BASE, true)
+            changed = true
+        }
+        if (IntSetting.MAIN_OVERLAY_WII_CONTROLLER.int != OVERLAY_WIIMOTE) {
+            IntSetting.MAIN_OVERLAY_WII_CONTROLLER.setInt(NativeConfig.LAYER_BASE, OVERLAY_WIIMOTE)
+            changed = true
+        }
+        if (IntSetting.WIIMOTE_1_SOURCE.int != WIIMOTE_SOURCE_EMULATED) {
+            IntSetting.WIIMOTE_1_SOURCE.setInt(NativeConfig.LAYER_BASE, WIIMOTE_SOURCE_EMULATED)
+            changed = true
+        }
         if (changed) {
             NativeConfig.save(NativeConfig.LAYER_BASE)
         }
@@ -193,6 +210,10 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
         // Stock dumps are usually USA (RPBE01) or PAL (RPBP01) -- look for every
         // region's ID so the checklist can explain an unsupported one.
         val PBR_GAME_IDS = listOf("RPBE01", "RPBP01", "RPBJ01")
+
+        // InputOverlay.OVERLAY_WIIMOTE / emulated Wiimote source.
+        private const val OVERLAY_WIIMOTE = 1
+        private const val WIIMOTE_SOURCE_EMULATED = 1
 
         // Regions we carry a Wiimmfi payload for; keep in sync with PbrWiimmfiData.h.
         val SUPPORTED_PBR_GAME_IDS = listOf("RPBE01", "RPBP01")
