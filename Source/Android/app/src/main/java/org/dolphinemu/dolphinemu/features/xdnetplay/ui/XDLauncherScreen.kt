@@ -191,15 +191,12 @@ private fun ReadinessCard(
                 fixLabel = "Input settings…",
                 onFix = onOpenSettings
             )
-            // No BIOS row: the bundled open-source BIOS links fine (joybus lives
-            // in the cartridge, not the BIOS), so demanding an official dump was
-            // just setup friction. An official BIOS still loads if configured.
             CheckRow(
-                ok = true,
-                okText = "GBA BIOS bundled — no setup needed",
-                missingText = "",
-                fixLabel = "",
-                onFix = null
+                ok = biosLinkReady,
+                okText = "Official GBA BIOS configured (XD can detect the GBA)",
+                missingText = "Official GBA BIOS required — XD cannot detect the GBA without it. Choose your own dump",
+                fixLabel = "Choose BIOS…",
+                onFix = onPickGbaBios
             )
             CheckRow(
                 ok = true,
