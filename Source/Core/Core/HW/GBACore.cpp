@@ -37,6 +37,8 @@
 #include "Core/NetPlayProto.h"
 #include "Core/System.h"
 
+#include "VideoCommon/OnScreenDisplay.h"
+
 #ifdef ANDROID
 #include "jni/AndroidCommon/AndroidCommon.h"
 #endif
@@ -232,22 +234,43 @@ bool Core::Start(u64 gc_ticks)
   {
     std::string bios_path = File::GetUserPath(F_GBABIOS_IDX);
     const std::string sys_bios = File::GetSysDirectory() + "GBA" DIR_SEP "gba_bios.bin";
-    // Netplay: every client mirrors every GBA core, but the BIOS is the one
-    // input netplay never syncs or hash-checks. Two clients on different BIOS
-    // code boot the same core with slightly different timing, the joybus link
-    // window drifts apart between machines, and XD's GBA handshake fails on
-    // the port that relies on a precisely-timed reset. Force the bundled
-    // open-source BIOS (shipped in Sys on every install) for all cores during
-    // netplay: byte-identical everywhere, deterministic by construction.
-    if (NetPlay::IsNetPlayRunning() && File::Exists(sys_bios))
-    {
-      bios_path = sys_bios;
-    }
-    else if (!File::Exists(bios_path))
+    if (!File::Exists(bios_path) && File::Exists(sys_bios))
     {
       // Fall back to a BIOS bundled in the Sys directory, if present.
-      if (File::Exists(sys_bios))
-        bios_path = sys_bios;
+      bios_path = sys_bios;
+    }
+    // Field-verified on device: XD/Colosseum never detect an Emerald booted by
+    // the bundled open-source BIOS on this core -- the link window opens (RCNT
+    // goes joybus) and the GC probes it thousands of times without ever
+    // starting the handshake, while the same setup with an official BIOS dump
+    // links within seconds. An earlier revision forced the bundled BIOS during
+    // netplay for cross-client determinism, which silently guaranteed that
+    // failure for everyone. Netplay clients must instead all supply the same
+    // official dump (the launchers require it); warn loudly when a session is
+    // about to run without one, because the GBA will not be detected.
+    if (NetPlay::IsNetPlayRunning())
+    {
+      bool official = false;
+      File::IOFile f(bios_path, "rb");
+      if (f && f.GetSize() == 16384)
+      {
+        std::vector<u8> data(16384);
+        if (f.ReadBytes(data.data(), data.size()))
+        {
+          static constexpr Common::SHA1::Digest OFFICIAL_GBA_BIOS_SHA1 = {
+              0x30, 0x0c, 0x20, 0xdf, 0x67, 0x31, 0xa3, 0x39, 0x52, 0xde,
+              0xd8, 0xc4, 0x36, 0xf7, 0xf1, 0x86, 0xd2, 0x5d, 0x34, 0x92};
+          official = Common::SHA1::CalculateDigest(data.data(), data.size()) ==
+                     OFFICIAL_GBA_BIOS_SHA1;
+        }
+      }
+      if (!official)
+      {
+        OSD::AddMessage(fmt::format("GBA{}: no official GBA BIOS configured - the game will "
+                                    "likely not detect this GBA. Set one in the launcher.",
+                                    m_device_number + 1),
+                        OSD::Duration::VERY_LONG, OSD::Color::RED);
+      }
     }
     LoadBIOS(bios_path.c_str());
   }
