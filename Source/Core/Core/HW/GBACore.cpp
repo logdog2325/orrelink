@@ -231,10 +231,21 @@ bool Core::Start(u64 gc_ticks)
   if (m_core->platform(m_core) == mPLATFORM_GBA)
   {
     std::string bios_path = File::GetUserPath(F_GBABIOS_IDX);
-    if (!File::Exists(bios_path))
+    const std::string sys_bios = File::GetSysDirectory() + "GBA" DIR_SEP "gba_bios.bin";
+    // Netplay: every client mirrors every GBA core, but the BIOS is the one
+    // input netplay never syncs or hash-checks. Two clients on different BIOS
+    // code boot the same core with slightly different timing, the joybus link
+    // window drifts apart between machines, and XD's GBA handshake fails on
+    // the port that relies on a precisely-timed reset. Force the bundled
+    // open-source BIOS (shipped in Sys on every install) for all cores during
+    // netplay: byte-identical everywhere, deterministic by construction.
+    if (NetPlay::IsNetPlayRunning() && File::Exists(sys_bios))
+    {
+      bios_path = sys_bios;
+    }
+    else if (!File::Exists(bios_path))
     {
       // Fall back to a BIOS bundled in the Sys directory, if present.
-      const std::string sys_bios = File::GetSysDirectory() + "GBA" DIR_SEP "gba_bios.bin";
       if (File::Exists(sys_bios))
         bios_path = sys_bios;
     }
