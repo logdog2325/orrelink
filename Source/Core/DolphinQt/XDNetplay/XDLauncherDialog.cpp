@@ -158,7 +158,7 @@ void XDLauncherDialog::CreateMainLayout()
   };
   add_row(&m_game_row, tr("Pokémon XD (USA) — choose your XD ISO file"), tr("Choose ISO..."));
   add_row(&m_rom_row, tr("Emerald ROM configured"), tr("Choose ROM..."));
-  add_row(&m_bios_row, tr("Official GBA BIOS"), tr("Choose BIOS..."));
+  add_row(&m_bios_row, tr("GBA BIOS (optional)"), tr("Choose BIOS..."));
   add_row(&m_team_saves_row, tr("Team saves installed"), tr("Install"));
   add_row(&m_vs_save_row, tr("XD VS-mode save (memory card)"), tr("Install"));
   add_row(&m_gba_input_row, tr("GBA controls"), tr("Use defaults"));
@@ -254,11 +254,14 @@ void XDLauncherDialog::RefreshChecklist()
 
   SetRowState(m_game_row.status, FindXdGame() != nullptr);
   SetRowState(m_rom_row.status, EmeraldRomConfigured());
-  SetRowState(m_bios_row.status, XDNetplay::CheckOfficialBios(nullptr));
+  // Not a requirement any more: with no BIOS file the GBA boots on mGBA's
+  // built-in HLE BIOS, which XD detects (and which boots faster than a real
+  // dump). An official dump is still honoured if the user has one.
+  const bool official_bios = XDNetplay::CheckOfficialBios(nullptr);
+  SetRowState(m_bios_row.status, true);
   m_bios_row.description->setText(
-      XDNetplay::CheckOfficialBios(nullptr) ?
-          tr("Official GBA BIOS (XD can detect the GBA)") :
-          tr("Official GBA BIOS required — XD cannot detect the GBA without it"));
+      official_bios ? tr("GBA BIOS: using your official dump") :
+                      tr("GBA BIOS: none needed — booting without one (optional)"));
   SetRowState(m_team_saves_row.status, TeamSavesInstalled());
   SetRowState(m_vs_save_row.status, VsSaveInstalled());
   const bool input_mapped = XDNetplay::GbaInputMapped();
