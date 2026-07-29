@@ -266,30 +266,35 @@ bool Core::Start(u64 gc_ticks)
       }
     }
 
+    // Without an official dump, fall back to the BIOS bundled in Sys. That file
+    // is now a current Cult-of-GBA build, which contains the RegisterRamReset
+    // SIO branch (the 0x04000120 reset) that the previous bundled build was
+    // missing -- the missing reset is why the old one could never be detected.
+    // mGBA's HLE BIOS was tried here first and behaved the same as the old
+    // bundled build on device (link window opens, handshake never starts), so
+    // an actual BIOS image it is. Bundled means byte-identical on every client,
+    // which also keeps netplay deterministic when nobody has an official dump.
+    const std::string sys_bios = File::GetSysDirectory() + "GBA" DIR_SEP "gba_bios.bin";
     if (official_bios)
     {
       LoadBIOS(user_bios.c_str());
     }
-    else if (!user_bios.empty() && File::Exists(user_bios))
+    else if (File::Exists(sys_bios))
     {
-      OSD::AddMessage(
-          fmt::format("GBA{}: the configured GBA BIOS is not the official dump - ignoring it and "
-                      "booting without a BIOS, which the game detects correctly.",
-                      m_device_number + 1),
-          OSD::Duration::VERY_LONG, OSD::Color::YELLOW);
+      LoadBIOS(sys_bios.c_str());
     }
 
     // Netplay mirrors every GBA on every client, so all clients have to boot the
     // same way. That holds when everyone has the official dump, and equally when
-    // nobody does (HLE on both sides) -- a mix is what diverges.
+    // nobody does (the bundled image is identical everywhere) -- a mix diverges.
     if (NetPlay::IsNetPlayRunning())
     {
       NOTICE_LOG_FMT(CORE, "GBA{} netplay BIOS mode: {}", m_device_number + 1,
-                     official_bios ? "official dump" : "HLE (no BIOS file)");
+                     official_bios ? "official dump" : "bundled open-source BIOS");
       // Show it, so two players can compare at a glance if a session misbehaves.
       OSD::AddMessage(fmt::format("GBA{}: BIOS mode {} - both players must be on the same mode.",
                                   m_device_number + 1,
-                                  official_bios ? "OFFICIAL" : "HLE (no BIOS file)"),
+                                  official_bios ? "OFFICIAL" : "BUNDLED"),
                       OSD::Duration::VERY_LONG, OSD::Color::CYAN);
     }
   }
