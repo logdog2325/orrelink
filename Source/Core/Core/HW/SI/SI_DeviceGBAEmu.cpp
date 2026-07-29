@@ -113,6 +113,17 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     const auto elapsed_since = [this](u64 then) -> u64 {
       return (then == 0 || m_timestamp_sent < then) ? 0 : m_timestamp_sent - then;
     };
+    // Emerald's GameCubeMultiBoot_Init turns JOYBUS mode OFF and immediately back
+    // ON (two adjacent stores to RCNT) and re-runs that every frame while it
+    // waits for the GameCube. The link flag therefore blinks constantly during a
+    // normal handshake, and an SI probe landing in one of those gaps used to
+    // look exactly like "the window just closed" -- which rebooted Emerald in
+    // the middle of the handshake it was trying to complete, thousands of times
+    // per attempt. Require the link to have been down for a full second before
+    // treating it as genuinely closed; that swallows the per-frame toggling
+    // while still noticing the real close at the end of the connection screen.
+    if (link_now)
+      m_last_link_seen = m_timestamp_sent;
     const bool handshake_active = m_last_data_cmd != 0 && elapsed_since(m_last_data_cmd) < tps * 8;
 
     // Count data commands only while the link is actually up, and only within
@@ -180,13 +191,15 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
       // Must exceed the slowest reset->link-window-open time, or the cooldown
       // resets the core before Emerald's window ever opens (livelock). Measured:
       // bundled open-source BIOS 2.35 s, official BIOS 4.78 s. The steady-state
-      // cadence comes from the window_just_closed edge, so this floor only
-      // gates the bootstrap and missed-edge recovery paths.
+      // cadence is now purely this interval, so keep it comfortably above the
+      // slowest boot while still retrying often enough to catch XD's probes.
       const u64 min_interval = tps * 6;
-      const bool window_just_closed = m_link_was_enabled;
+      // Timer only -- no falling-edge shortcut. The edge trigger is what raced
+      // Emerald's own RCNT toggling; a plain interval cannot.
+      const bool link_idle = m_last_link_seen == 0 || elapsed_since(m_last_link_seen) > tps;
       const bool cooldown_elapsed =
           m_last_auto_reset == 0 || elapsed_since(m_last_auto_reset) > min_interval;
-      if (window_just_closed || cooldown_elapsed)
+      if (link_idle && cooldown_elapsed)
       {
         if (!NetPlay::IsNetPlayRunning())
         {
