@@ -120,6 +120,7 @@ elseif(APPLE)
     ${CARBON_LIBRARY}
     ${COCOA_LIBRARY}
     ${FORCEFEEDBACK_LIBRARY}
+    ${IOK_LIBRARY}
   )
   target_compile_options(inputcommon PRIVATE
     -fobjc-arc
