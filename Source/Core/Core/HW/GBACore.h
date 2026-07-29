@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #ifdef HAS_LIBMGBA
 
 #include <array>
@@ -78,7 +80,7 @@ public:
   // in a synchronous host frame callback.
   void RequestReset(u64 gc_ticks);
   bool IsStarted() const;
-  bool IsLinkEnabled() const { return m_link_enabled; }
+  bool IsLinkEnabled() const { return m_link_enabled.load(std::memory_order_relaxed); }
   CoreInfo GetCoreInfo() const;
 
   // Host-side audio gate: while true this core's samples are dropped before
@@ -164,7 +166,10 @@ private:
   u64 m_last_gc_ticks = 0;
   u64 m_gc_ticks_remainder = 0;
   u16 m_keys = 0;
-  bool m_link_enabled = false;
+  // Written by the GBA event thread on every RCNT mode change, read by the CPU
+  // thread in the SI device. Emerald toggles JOYBUS off/on two instructions
+  // apart, so this flips constantly during a handshake.
+  std::atomic_bool m_link_enabled{false};
   bool m_force_disconnect = false;
 
   std::weak_ptr<GBAHostInterface> m_host;

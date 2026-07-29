@@ -83,6 +83,7 @@ private:
   u64 m_last_auto_reset = 0;
   u64 m_last_data_cmd = 0;
   bool m_link_was_enabled = false;
+  u64 m_last_link_seen = 0;
   bool m_link_established = false;
   // Sustained joybus traffic means a real party exchange, not a stray probe.
   static constexpr u32 DATA_CMDS_FOR_BATTLE = 64;

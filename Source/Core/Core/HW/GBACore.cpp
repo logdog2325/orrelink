@@ -794,7 +794,10 @@ void Core::DoState(PointerWrap& p)
   p.Do(m_last_gc_ticks);
   p.Do(m_gc_ticks_remainder);
   p.Do(m_keys);
-  p.Do(m_link_enabled);
+  // m_link_enabled is atomic (cross-thread), so it can't go through p.Do directly.
+  bool link_enabled = m_link_enabled.load(std::memory_order_relaxed);
+  p.Do(link_enabled);
+  m_link_enabled.store(link_enabled, std::memory_order_relaxed);
   p.Do(m_response_size);
   p.Do(m_joybus_buffer);
 
