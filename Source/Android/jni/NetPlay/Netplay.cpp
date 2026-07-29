@@ -239,12 +239,11 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
   Config::SetBaseOrCurrent(Config::NETPLAY_SAVEDATA_LOAD, true);
   Config::SetBaseOrCurrent(Config::NETPLAY_HIDE_REMOTE_GBAS, true);
 
-  // The stable XDNetplay bundle plays with the $XD OU Fixes AR code active, so
-  // XD's battle setup runs the way the format expects. Enable cheats on the
-  // host and sync the enabled-code list to the guest -- if only one side ran
-  // the code the two would emulate XD differently and desync on turn 1. Both
-  // sides carry the same GXXE01.ini (bundled) that defines and enables it.
-  Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, true);
+  // Cheats are off by default. Sync the enabled-code list from host to guest so
+  // the HOST'S choice governs both sides: if the host enabled the $XD OU Fixes
+  // code (OU format) it carries to the guest; if the host left cheats off, both
+  // run clean. Never force cheats on here -- a host/guest mismatch is exactly
+  // what desyncs turn 1, so the host is the single source of truth.
   Config::SetBaseOrCurrent(Config::NETPLAY_SYNC_CODES, true);
 
   // SetGBAConfig(update_rom=true) reads MAIN_GBA_ROM_PATHS[1]/[2] (pointed at

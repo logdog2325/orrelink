@@ -44,6 +44,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var controllerMapped by mutableStateOf(false)
     private var biosLinkReady by mutableStateOf(false)
     private var statusMessage by mutableStateOf<String?>(null)
+    private var cheatsEnabled by mutableStateOf(false)
 
     /**
      * Reads a picked file (extracting the first ROM out of a zip if needed),
@@ -172,6 +173,12 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     onPickEmeraldRom = { pickEmeraldRom.launch(arrayOf("*/*")) },
                     onTeamEditor = { TeamEditorActivity.launch(this) },
                     onPlayXd = { bootXd() },
+                    cheatsEnabled = cheatsEnabled,
+                    onCheatsChanged = { on ->
+                        cheatsEnabled = on
+                        BooleanSetting.MAIN_ENABLE_CHEATS.setBoolean(NativeConfig.LAYER_BASE, on)
+                        NativeConfig.save(NativeConfig.LAYER_BASE)
+                    },
                     onBattle = { NetplaySetupActivity.launch(this) },
                     onFindBattles = { FindBattlesActivity.launch(this) },
                     onOpenSettings = {
@@ -233,6 +240,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     }
 
     private fun refreshChecks() {
+        cheatsEnabled = BooleanSetting.MAIN_ENABLE_CHEATS.boolean
         migrateContentPaths()
         emeraldRomSet = ensureGbaConfig()
         xdGameFound = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID) != null
@@ -312,12 +320,9 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         }
         // The 2-year-stable papajefe XDNetplay bundle runs with cheats ON so the
         // $XD OU Fixes AR code (enabled in the bundled GXXE01.ini) actually
-        // applies -- it patches XD's battle-setup code and the OU GBA-vs-GBA
-        // format depends on it. Match that for both solo boot and hosting; in
-        // netplay the host's EnableCheats + SyncCodes carry it to the guest.
-        if (!BooleanSetting.MAIN_ENABLE_CHEATS.boolean) {
-            BooleanSetting.MAIN_ENABLE_CHEATS.setBoolean(NativeConfig.LAYER_BASE, true); changed = true
-        }
+        // Cheats are off by default and controlled by the "$XD OU Fixes" switch
+        // on the launcher (host's choice syncs to the guest in netplay). Don't
+        // force them on here.
         // PBR mode turns the touch overlay on for the Wii Remote pointer. XD is
         // played with the handheld's physical buttons, so put it back.
         if (BooleanSetting.MAIN_SHOW_INPUT_OVERLAY.boolean) {

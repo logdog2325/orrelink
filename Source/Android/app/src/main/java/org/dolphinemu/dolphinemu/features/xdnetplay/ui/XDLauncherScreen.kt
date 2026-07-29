@@ -5,6 +5,7 @@ package org.dolphinemu.dolphinemu.features.xdnetplay.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.Switch
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -48,6 +49,8 @@ fun XDLauncherScreen(
     onTeamEditor: () -> Unit,
     onPlayXd: () -> Unit,
     onBattle: () -> Unit,
+    cheatsEnabled: Boolean,
+    onCheatsChanged: (Boolean) -> Unit,
     onFindBattles: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDolphin: () -> Unit
@@ -114,6 +117,20 @@ fun XDLauncherScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Boot Pokémon XD (solo)", style = MaterialTheme.typography.titleMedium)
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("\$XD OU Fixes cheat", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Off by default. When you host, this applies to both players.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(checked = cheatsEnabled, onCheckedChange = onCheatsChanged)
                 }
                 Spacer(Modifier.height(12.dp))
                 Button(
