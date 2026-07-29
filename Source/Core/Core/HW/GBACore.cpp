@@ -233,21 +233,12 @@ bool Core::Start(u64 gc_ticks)
 
   if (m_core->platform(m_core) == mPLATFORM_GBA)
   {
-    // BIOS selection is detection-critical, and the rule is: the official dump
-    // if the user has it, otherwise NO bios file at all (mGBA's HLE BIOS).
-    //
-    // Measured in a standalone mGBA harness at this core's pinned commit, and
-    // consistent with the on-device reports: XD's GameCube-side detection is the
-    // SDK JoyBoot ladder, which requires the JOY-bus status byte to equal exactly
-    // 0x08 (SEND) right after its reset command. That bit is only set when the
-    // GBA writes JOY_TRANS, which Emerald does via RegisterRamReset at startup.
-    // The bundled open-source BIOS is an old build whose RegisterRamReset is
-    // missing the SIO branch, so JOY_TRANS is never written, the status byte
-    // stays 0x00, and the ladder aborts before it ever transfers anything --
-    // exactly the "window opens, thousands of probes, no handshake" telemetry.
-    // mGBA's HLE BIOS performs that SIO reset correctly and was detected on the
-    // first attempt in the harness, with the shortest boot-to-window time of any
-    // mode tested. So loading the bundled BIOS can only hurt: never do it.
+    // BIOS selection. XD detects the emulated GBA with either the official dump
+    // or the bundled open-source BIOS -- confirmed on device once the auto-reset
+    // stopped racing Emerald's connection handshake (that race, not the BIOS,
+    // was why detection used to fail; see SI_DeviceGBAEmu's quiet-window reset).
+    // So an official dump is never required. Solo uses it if present for
+    // accuracy; otherwise the bundled BIOS boots the GBA.
     const std::string user_bios = File::GetUserPath(F_GBABIOS_IDX);
     bool official_bios = false;
     {
@@ -266,36 +257,25 @@ bool Core::Start(u64 gc_ticks)
       }
     }
 
-    // Without an official dump, fall back to the BIOS bundled in Sys. That file
-    // is now a current Cult-of-GBA build, which contains the RegisterRamReset
-    // SIO branch (the 0x04000120 reset) that the previous bundled build was
-    // missing -- the missing reset is why the old one could never be detected.
-    // mGBA's HLE BIOS was tried here first and behaved the same as the old
-    // bundled build on device (link window opens, handshake never starts), so
-    // an actual BIOS image it is. Bundled means byte-identical on every client,
-    // which also keeps netplay deterministic when nobody has an official dump.
     const std::string sys_bios = File::GetSysDirectory() + "GBA" DIR_SEP "gba_bios.bin";
-    if (official_bios)
+
+    // Netplay mirrors every GBA on every client, so every client must boot the
+    // exact same BIOS or they diverge. Force the bundled image, which is
+    // byte-identical everywhere: no player needs a BIOS file, and an official
+    // dump on one side can't desync against a bundled one on the other.
+    if (NetPlay::IsNetPlayRunning() && File::Exists(sys_bios))
+    {
+      LoadBIOS(sys_bios.c_str());
+      NOTICE_LOG_FMT(CORE, "GBA{} netplay: bundled BIOS (identical on all clients)",
+                     m_device_number + 1);
+    }
+    else if (official_bios)
     {
       LoadBIOS(user_bios.c_str());
     }
     else if (File::Exists(sys_bios))
     {
       LoadBIOS(sys_bios.c_str());
-    }
-
-    // Netplay mirrors every GBA on every client, so all clients have to boot the
-    // same way. That holds when everyone has the official dump, and equally when
-    // nobody does (the bundled image is identical everywhere) -- a mix diverges.
-    if (NetPlay::IsNetPlayRunning())
-    {
-      NOTICE_LOG_FMT(CORE, "GBA{} netplay BIOS mode: {}", m_device_number + 1,
-                     official_bios ? "official dump" : "bundled open-source BIOS");
-      // Show it, so two players can compare at a glance if a session misbehaves.
-      OSD::AddMessage(fmt::format("GBA{}: BIOS mode {} - both players must be on the same mode.",
-                                  m_device_number + 1,
-                                  official_bios ? "OFFICIAL" : "BUNDLED"),
-                      OSD::Duration::VERY_LONG, OSD::Color::CYAN);
     }
   }
 
