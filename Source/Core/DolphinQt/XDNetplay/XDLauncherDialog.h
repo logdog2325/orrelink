@@ -85,6 +85,7 @@ private:
   ChecklistRow m_gba_input_row;
 
   QCheckBox* m_practice_dummy_check;
+  QCheckBox* m_cheats_check;
   QCheckBox* m_show_on_startup_check;
   QPushButton* m_boot_button;
   QPushButton* m_host_button;
