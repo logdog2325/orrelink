@@ -84,6 +84,11 @@
             android:theme="@style/Theme.Dolphin.Main" />
 
         <activity
+            android:name=".features.xdnetplay.ui.PbrTeamEditorActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Dolphin.Main" />
+
+        <activity
             android:name=".features.xdnetplay.ui.FindBattlesActivity"
             android:exported="false"
             android:theme="@style/Theme.Dolphin.Main" />

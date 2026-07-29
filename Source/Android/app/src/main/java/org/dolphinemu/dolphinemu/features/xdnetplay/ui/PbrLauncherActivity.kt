@@ -108,6 +108,7 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
                     statusMessage = statusMessage,
                     onImportNand = { pickNand.launch("*/*") },
                     onPickPbrFolder = { pickPbrFolder.launch(null) },
+                    onTeamEditor = { PbrTeamEditorActivity.launch(this) },
                     onPlayPbr = { bootPbr() },
                     onBack = { finish() }
                 )
