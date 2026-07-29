@@ -192,15 +192,9 @@ private fun ReadinessCard(
                 onFix = onOpenSettings
             )
             CheckRow(
-                // Never a blocker: with no BIOS file the GBA boots on the
-                // emulator's built-in HLE BIOS, which XD detects.
-                ok = true,
-                okText = if (biosLinkReady) {
-                    "GBA BIOS: using your official dump"
-                } else {
-                    "GBA BIOS: none needed — booting without one (optional)"
-                },
-                missingText = "",
+                ok = biosLinkReady,
+                okText = "Official GBA BIOS configured",
+                missingText = "Official GBA BIOS required — the game cannot detect the GBA without it",
                 fixLabel = "Choose BIOS…",
                 onFix = onPickGbaBios
             )
