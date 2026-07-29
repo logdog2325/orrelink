@@ -209,9 +209,10 @@ private fun ReadinessCard(
                 onFix = onOpenSettings
             )
             CheckRow(
-                ok = biosLinkReady,
-                okText = "Official GBA BIOS configured",
-                missingText = "Official GBA BIOS required — the game cannot detect the GBA without it",
+                ok = true,
+                okText = if (biosLinkReady) "GBA BIOS: using your official dump"
+                         else "GBA BIOS: none needed — the bundled one works (optional)",
+                missingText = "",
                 fixLabel = "Choose BIOS…",
                 onFix = onPickGbaBios
             )
