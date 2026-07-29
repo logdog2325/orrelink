@@ -57,6 +57,12 @@ bool AutoImportOfficialBios(const std::string& directory);
 // GBA user dir + config). Returns false if it is not the official dump.
 bool ImportOfficialBios(const std::string& path);
 
+// True when the local player's GBA (GBA 1) has at least one button mapped.
+bool GbaInputMapped();
+
+// Loads Dolphin's default keyboard/controller mapping onto GBA 1 and saves it.
+bool ApplyDefaultGbaInput();
+
 // Copy the bundled EMERALD-2/3.sav templates next to the imported Emerald
 // dump's derived save paths for ports 2 and 3. Existing saves are never
 // overwritten; missing Sys templates are tolerated.

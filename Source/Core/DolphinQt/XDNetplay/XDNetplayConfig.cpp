@@ -13,7 +13,15 @@
 #include "Common/IOFile.h"
 #include "Common/StringUtil.h"
 
+#include "InputCommon/ControllerEmu/ControlGroup/ControlGroup.h"
+#include "InputCommon/ControllerEmu/ControllerEmu.h"
+#include "InputCommon/ControllerInterface/ControllerInterface.h"
+#include "InputCommon/ControlReference/ControlReference.h"
+#include "InputCommon/InputConfig.h"
+
 #include "Core/Config/MainSettings.h"
+#include "Core/HW/GBAPad.h"
+#include "Core/HW/GBAPadEmu.h"
 #include "Core/Config/NetplaySettings.h"
 #include "Core/HW/GBACore.h"
 #include "Core/HW/SI/SI_Device.h"
@@ -193,6 +201,38 @@ bool AutoImportOfficialBios(const std::string& directory)
     return true;
   }
   return false;
+}
+
+bool GbaInputMapped()
+{
+  if (!Pad::IsGBAInitialized())
+    return false;
+
+  const ControllerEmu::ControlGroup* buttons = Pad::GetGBAGroup(0, GBAPadGroup::Buttons);
+  if (!buttons)
+    return false;
+
+  for (const auto& control : buttons->controls)
+  {
+    if (control->control_ref && !control->control_ref->GetExpression().empty())
+      return true;
+  }
+  return false;
+}
+
+bool ApplyDefaultGbaInput()
+{
+  if (!Pad::IsGBAInitialized())
+    return false;
+
+  InputConfig* const config = Pad::GetGBAConfig();
+  ControllerEmu::EmulatedController* const controller = config->GetController(0);
+  if (!controller)
+    return false;
+
+  controller->LoadDefaults(g_controller_interface);
+  config->SaveConfig();
+  return GbaInputMapped();
 }
 
 bool SeedTeamSaves()

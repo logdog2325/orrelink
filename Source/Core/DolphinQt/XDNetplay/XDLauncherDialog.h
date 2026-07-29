@@ -65,6 +65,7 @@ private:
   void OnFixGamePath();
   void OnFixEmeraldRom();
   void OnFixBios();
+  void OnFixGbaInput();
   void OnFixTeamSaves();
   void OnFixVsSave();
   void OnGbaInputInfo();
