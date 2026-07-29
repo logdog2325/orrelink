@@ -30,6 +30,8 @@
             <string>Viewer</string>
         </dict>
     </array>
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>Dolphin reads the keyboard directly so it can be used as a game controller. Without this permission keyboard controls do nothing.</string>
     <key>CFBundleExecutable</key>
     <string>DolphinQt</string>
     <key>CFBundleIconFile</key>

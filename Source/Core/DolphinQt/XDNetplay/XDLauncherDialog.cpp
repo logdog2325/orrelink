@@ -161,9 +161,7 @@ void XDLauncherDialog::CreateMainLayout()
   add_row(&m_bios_row, tr("Official GBA BIOS"), tr("Choose BIOS..."));
   add_row(&m_team_saves_row, tr("Team saves installed"), tr("Install"));
   add_row(&m_vs_save_row, tr("XD VS-mode save (memory card)"), tr("Install"));
-  add_row(&m_gba_input_row, tr("GBA input"), tr("Controllers..."));
-  m_gba_input_row.status->setText(QStringLiteral("•"));
-  m_gba_input_row.status->setStyleSheet(QString());
+  add_row(&m_gba_input_row, tr("GBA controls"), tr("Use defaults"));
   checklist_layout->setColumnStretch(1, 1);
   checklist_box->setLayout(checklist_layout);
   layout->addWidget(checklist_box);
@@ -209,6 +207,8 @@ void XDLauncherDialog::ConnectWidgets()
   connect(m_game_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixGamePath);
   connect(m_rom_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixEmeraldRom);
   connect(m_bios_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixBios);
+  connect(m_gba_input_row.fix_button, &QPushButton::clicked, this,
+          &XDLauncherDialog::OnFixGbaInput);
   connect(m_team_saves_row.fix_button, &QPushButton::clicked, this,
           &XDLauncherDialog::OnFixTeamSaves);
   connect(m_vs_save_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixVsSave);
@@ -261,7 +261,11 @@ void XDLauncherDialog::RefreshChecklist()
           tr("Official GBA BIOS required — XD cannot detect the GBA without it"));
   SetRowState(m_team_saves_row.status, TeamSavesInstalled());
   SetRowState(m_vs_save_row.status, VsSaveInstalled());
-  // m_gba_input_row stays informational.
+  const bool input_mapped = XDNetplay::GbaInputMapped();
+  SetRowState(m_gba_input_row.status, input_mapped);
+  m_gba_input_row.description->setText(
+      input_mapped ? tr("GBA controls mapped (your GBA is \"GBA 1\" in Controllers)") :
+                     tr("GBA controls not mapped — your GBA will not respond to input"));
 }
 
 void XDLauncherDialog::AutoDiscoverFromGameFolder()
@@ -339,6 +343,24 @@ void XDLauncherDialog::OnFixGamePath()
   RefreshChecklist();
 }
 
+
+void XDLauncherDialog::OnFixGbaInput()
+{
+  if (!XDNetplay::ApplyDefaultGbaInput())
+  {
+    ModalMessageBox::warning(
+        this, tr("XD Netplay"),
+        tr("Could not set default GBA controls. Map them under Controllers > GBA Ports > GBA 1."));
+    return;
+  }
+  ModalMessageBox::information(
+      this, tr("XD Netplay"),
+      tr("Default GBA controls applied to GBA 1:\n\n"
+         "A = X,  B = Z,  Start = Enter,  Select = Backspace\n"
+         "D-Pad = T / G / F / H,  L = Q,  R = W\n\n"
+         "Change them any time under Controllers > GBA Ports > GBA 1."));
+  RefreshChecklist();
+}
 
 void XDLauncherDialog::OnFixBios()
 {
