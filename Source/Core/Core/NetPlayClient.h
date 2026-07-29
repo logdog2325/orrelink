@@ -221,6 +221,16 @@ protected:
   // speeding up the game to drain the buffer.
   unsigned int m_target_buffer_size = 20;
   bool m_host_input_authority = false;
+
+  // XD latency instrumentation (measurement only -- no protocol, no wire format,
+  // no emulation state; times how long the CPU thread stalls waiting on a remote
+  // pad frame in GetNetPads, which is the netplay input latency itself).
+  double m_lat_wait_ewma_us = 0.0;
+  u64 m_lat_wait_max_us = 0;
+  u32 m_lat_starve_pops = 0;
+  u32 m_lat_pops = 0;
+  u32 m_lat_bucket[7] = {};
+  u64 m_lat_last_emit_us = 0;
   PlayerId m_current_golfer = 1;
 
   // This bool will stall the client at the start of GetNetPads, used for switching input control
