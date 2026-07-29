@@ -226,6 +226,15 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
         }
         m_last_auto_reset = m_timestamp_sent;
         m_data_cmd_count = 0;
+        // Emerald's GameCubeMultiBoot_Main only re-runs its Init after roughly
+        // eleven frames with no serial interrupt: every joybus command the
+        // GameCube sends resets that counter. XD probes a socket it is waiting
+        // on continuously (thousands of times per attempt), which starves the
+        // cartridge of the quiet it needs and leaves it never ready -- windows
+        // open, but the handshake never begins. Hold the commands back until
+        // this core has actually reopened its window, so the reboot lands in
+        // silence the way it does for a socket the game is not yet hammering.
+        m_quiet_until = m_timestamp_sent + tps * 6;
       }
     }
     // Diagnostic tap. Strictly a mirror of the state decided above -- no branch
@@ -245,7 +254,19 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     m_diag_prev_link = link_now;
 
     m_link_was_enabled = link_now;
-    m_core->SendJoybusCommand(m_timestamp_sent, TransferInterval(), buffer, m_keys);
+
+    // The quiet window ends as soon as the link is back up (the cartridge has
+    // run its Init and is listening) or when it times out, so a core that never
+    // reopens can't wedge itself out of contact.
+    if (m_quiet_until != 0 && (link_now || m_timestamp_sent >= m_quiet_until))
+      m_quiet_until = 0;
+
+    // Withhold only the command itself. Everything below still runs, so the
+    // core keeps being time-synced and SI keeps its cadence; the poll simply
+    // finds no response and reports "no GBA answered", exactly as it already
+    // does while a core is booting.
+    if (m_quiet_until == 0)
+      m_core->SendJoybusCommand(m_timestamp_sent, TransferInterval(), buffer, m_keys);
 
     auto& si = m_system.GetSerialInterface();
     si.RemoveEvent(m_device_number);
