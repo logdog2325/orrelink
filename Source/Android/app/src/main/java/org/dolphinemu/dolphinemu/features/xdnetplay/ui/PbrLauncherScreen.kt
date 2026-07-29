@@ -41,6 +41,7 @@ fun PbrLauncherScreen(
     statusMessage: String?,
     onImportNand: () -> Unit,
     onPickPbrFolder: () -> Unit,
+    onTeamEditor: () -> Unit,
     onPlayPbr: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -123,8 +124,8 @@ fun PbrLauncherScreen(
                 text = "Bring a clean dump in any format — the Wiimmfi redirect is applied in " +
                     "memory at boot, so your file is never modified and a disc that is already " +
                     "patched is left alone. No SSL certs, no DNS change, no 1-week wait. " +
-                    "For teams, drop the Restorer save's PbrSaveData in the game's Wii save " +
-                    "folder (or edit with PKHeX).",
+                    "Teams live in the game's own NAND save; the Team Editor below reads and " +
+                    "writes it in place, so PKHeX on a PC is optional.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -144,6 +145,12 @@ fun PbrLauncherScreen(
                     "Import your Wii NAND (online only)",
                     style = MaterialTheme.typography.titleMedium
                 )
+            }
+            Spacer(Modifier.height(12.dp))
+            // Not gated on the disc: the editor works on the NAND save, which
+            // exists (or does not) independently of whether a dump is present.
+            FilledTonalButton(onClick = onTeamEditor, modifier = Modifier.fillMaxWidth()) {
+                Text("Team Editor", style = MaterialTheme.typography.titleMedium)
             }
             Spacer(Modifier.height(12.dp))
             // Deliberately not gated on the NAND: without one the game still boots and plays
