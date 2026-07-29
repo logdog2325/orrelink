@@ -188,6 +188,13 @@ void XDLauncherDialog::CreateMainLayout()
   battle_box->setLayout(battle_layout);
   layout->addWidget(battle_box);
 
+  m_cheats_check = new QCheckBox(tr("Enable $XD OU Fixes cheat (OU format)"));
+  m_cheats_check->setToolTip(
+      tr("Off by default. When you HOST, this choice applies to both players.\n"
+         "Needed for the OU bring-6-pick-4 format; leave off for Orre Colosseum."));
+  m_cheats_check->setChecked(Config::Get(Config::MAIN_ENABLE_CHEATS));
+  layout->addWidget(m_cheats_check);
+
   m_show_on_startup_check = new QCheckBox(tr("Show this launcher at startup"));
   m_show_on_startup_check->setChecked(ShowOnStartup());
   layout->addWidget(m_show_on_startup_check);
@@ -221,6 +228,10 @@ void XDLauncherDialog::ConnectWidgets()
   connect(m_browse_button, &QPushButton::clicked, this, [this] { emit BrowsePublic(); });
   connect(m_team_editor_button, &QPushButton::clicked, this, &XDLauncherDialog::OnTeamEditor);
 
+  connect(m_cheats_check, &QCheckBox::toggled, this, [](bool checked) {
+    Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, checked);
+    Config::Save();
+  });
   connect(m_practice_dummy_check, &QCheckBox::toggled, this, [](bool checked) {
     Config::SetBaseOrCurrent(Config::MAIN_GBA_PRACTICE_DUMMY, checked);
     Config::Save();
