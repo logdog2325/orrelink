@@ -126,6 +126,15 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
       m_last_link_seen = m_timestamp_sent;
     const bool handshake_active = m_last_data_cmd != 0 && elapsed_since(m_last_data_cmd) < tps * 8;
 
+    // Count consecutive polls where XD is probing a DEAD link. A back-out to the
+    // "connect a GBA" screen floods RESET/STATUS at a down link continuously; a
+    // bounded battle animation cannot build a long run, and a lone stale poll
+    // after a polling gap is a run of 1. Corroborates a genuine tear-down.
+    if (link_now)
+      m_probe_link_down_streak = 0;
+    else if (probing && m_probe_link_down_streak < 0xffffffffu)
+      ++m_probe_link_down_streak;
+
     // Count data commands only while the link is actually up, and only within
     // one unbroken burst: a failed handshake also pushes READ/WRITE at a dead
     // socket, so a lifetime total would creep to the battle threshold purely
@@ -151,15 +160,10 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     // seconds later, a boot-time link window; latching on that coincidence wedged
     // the port for the rest of the session (auto-reset off, window never reopens,
     // "checking connection" forever). That is the socket-3 detection failure.
-    // Session-permanent on purpose. A timed recovery clear was tried here and
-    // it fired during team preview -- the player thinking about their pick
-    // starves the link of data with no upper bound, the latch cleared, and the
-    // auto-reset rebooted Emerald out from under a live session. There is no
-    // in-band way to tell "human deciding slowly" from "session over", so once
-    // a port has genuinely linked it never auto-resets again this session; a
-    // rematch is a fresh boot (netplay boots per-session anyway), and the old
-    // pre-battle wedge this would have recovered from was the missing official
-    // BIOS, which the launchers now require up front.
+    // Held until a genuine back-out (see the rematch release below). A timed
+    // clear keyed on DATA recency was tried once and fired during team preview
+    // -- a slow human pick starves data but NOT the link -- so the release below
+    // keys on LINK recency instead, which team preview keeps fresh.
     if (link_now && handshake_active)
       m_link_established = true;
 
@@ -171,6 +175,26 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     // commands where a failed probe is a handful.
     if (m_data_cmd_count >= DATA_CMDS_FOR_BATTLE)
       m_battle_locked = true;
+
+    // Rematch: release the session latches ONLY on a real back-out to XD's
+    // connection screen, so a second battle re-links without a fresh netplay
+    // room. Distinguishing signal, keyed on LINK recency (never data recency):
+    // the joybus link has been continuously down FAR longer than any battle
+    // animation (~8 s worst case) -- team preview holds the link up, so a slow
+    // pick can never reach this -- AND XD is flooding a dead socket with probes.
+    // Reads only synced state, so every netplay client releases on the same
+    // poll. One-shot: clearing the latches makes this false next poll and hands
+    // off to the normal auto-reset guard, which reopens the boot link window.
+    const bool backed_out = (m_battle_locked || m_link_established) && probing && !link_now &&
+                            !handshake_active && m_last_link_seen != 0 &&
+                            elapsed_since(m_last_link_seen) > tps * 45 &&
+                            m_probe_link_down_streak >= 64;
+    if (backed_out)
+    {
+      m_link_established = false;
+      m_battle_locked = false;
+      m_data_cmd_count = 0;
+    }
 
 
     // Silence the GBA until its link is actually established: the boot jingle
