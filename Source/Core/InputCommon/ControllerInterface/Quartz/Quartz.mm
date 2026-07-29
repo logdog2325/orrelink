@@ -3,6 +3,9 @@
 
 #include "InputCommon/ControllerInterface/Quartz/Quartz.h"
 
+#include <IOKit/hidsystem/IOHIDLib.h>
+
+#include "Common/Logging/Log.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "InputCommon/ControllerInterface/Quartz/QuartzKeyboardAndMouse.h"
 
@@ -40,6 +43,32 @@ void InputBackend::PopulateDevices()
   const WindowSystemInfo wsi = GetControllerInterface().GetWindowSystemInfo();
   if (wsi.type != WindowSystemType::MacOS)
     return;
+
+  // The keyboard is read with CGEventSourceKeyState, which macOS silently
+  // answers "nothing is pressed" for until the app holds Input Monitoring
+  // permission -- keyboard controls simply do nothing, with no error anywhere.
+  // Asking for it here surfaces the system prompt (and the entry in Privacy &
+  // Security) the first time input is set up, instead of leaving the user with
+  // a dead keyboard. Only prompts once; later launches return the stored answer.
+  static bool s_requested_input_monitoring = false;
+  if (!s_requested_input_monitoring)
+  {
+    s_requested_input_monitoring = true;
+    if (__builtin_available(macOS 10.15, *))
+    {
+      if (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted)
+      {
+        const bool granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
+        if (!granted)
+        {
+          WARN_LOG_FMT(CONTROLLERINTERFACE,
+                       "Input Monitoring permission not granted; keyboard controls will not "
+                       "respond. Enable Dolphin under System Settings > Privacy & Security > "
+                       "Input Monitoring, then restart Dolphin.");
+        }
+      }
+    }
+  }
 
   GetControllerInterface().AddDevice(std::make_shared<KeyboardAndMouse>(wsi.render_window));
 }
