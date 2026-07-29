@@ -8,6 +8,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -2061,6 +2062,7 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
 
   // Now, we either use the data pushed earlier, or wait for the
   // other clients to send it to us
+  const auto lat_t0 = std::chrono::steady_clock::now();
   while (m_pad_buffer[pad_nb].Size() == 0)
   {
     if (!m_is_running.IsSet())
@@ -2069,6 +2071,53 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
     }
 
     m_gc_pad_event.Wait();
+  }
+
+  // Latency telemetry: how long this pad fetch had to wait for a remote frame,
+  // and how full the buffer was. All CPU-thread-local; nothing here affects the
+  // input stream or emulation. Read the REMOTE pad's numbers: waits piling into
+  // the high buckets with a near-empty buffer means network jitter (raise the
+  // buffer); ~zero waits with the buffer at target means the delay is the buffer
+  // itself (lower it); ~zero waits at target but turns still feel slow means it
+  // is XD's own pacing, which no netcode can shorten.
+  {
+    const u64 wait_us = static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - lat_t0)
+            .count());
+    const u32 depth = static_cast<u32>(m_pad_buffer[pad_nb].Size());
+    const int b = wait_us < 1000 ? 0 : wait_us < 5000 ? 1 : wait_us < 16667 ? 2 :
+                  wait_us < 33334 ? 3 : wait_us < 100000 ? 4 : wait_us < 250000 ? 5 : 6;
+    m_lat_bucket[b]++;
+    m_lat_pops++;
+    if (wait_us > 1000)
+      m_lat_starve_pops++;
+    m_lat_wait_ewma_us = m_lat_wait_ewma_us * 0.98 + static_cast<double>(wait_us) * 0.02;
+    m_lat_wait_max_us = std::max(m_lat_wait_max_us, wait_us);
+
+    const u64 now_us = static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    if (m_lat_last_emit_us == 0)
+      m_lat_last_emit_us = now_us;
+    else if (now_us - m_lat_last_emit_us > 1'000'000)
+    {
+      m_lat_last_emit_us = now_us;
+      const std::string line = fmt::format(
+          "NetLat ping={}ms buf={}/{} wait~{:.0f}ms(max{}) starve={}/{}", GetPlayersMaxPing(),
+          depth, m_target_buffer_size, m_lat_wait_ewma_us / 1000.0, m_lat_wait_max_us / 1000,
+          m_lat_starve_pops, m_lat_pops);
+      OSD::AddTypedMessage(OSD::MessageType::NetPlayLatency, line, 1500, OSD::Color::CYAN);
+      NOTICE_LOG_FMT(NETPLAY, "{} buckets[<1|<5|<16|<33|<100|<250|hi]={},{},{},{},{},{},{}", line,
+                     m_lat_bucket[0], m_lat_bucket[1], m_lat_bucket[2], m_lat_bucket[3],
+                     m_lat_bucket[4], m_lat_bucket[5], m_lat_bucket[6]);
+      m_lat_wait_max_us = 0;
+      m_lat_starve_pops = 0;
+      m_lat_pops = 0;
+      for (u32& bkt : m_lat_bucket)
+        bkt = 0;
+    }
   }
 
   m_pad_buffer[pad_nb].Pop(*pad_status);
