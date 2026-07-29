@@ -75,8 +75,8 @@ bool EnsureGbaConfig()
   Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(2),
                            SerialInterface::SIDEVICE_GC_GBA_EMULATED);
 
-  // The $XD OU Fixes code must be active locally even for solo boots.
-  Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, true);
+  // Cheats (the $XD OU Fixes code) are off by default now and governed by the
+  // launcher's "OU rules ($XD OU Fixes)" toggle; don't force them on here.
 
   // Netplay tuned for the XD link: small fixed-delay buffer, no UPnP noise.
   Config::SetBaseOrCurrent(Config::NETPLAY_BUFFER_SIZE, 5);
@@ -115,11 +115,11 @@ void ApplyStartForcing(NetPlay::NetPlayServer* server)
   gba_config[2].enabled = true;
 
   // Sync the host's team saves to the guest, give each player only their own
-  // GBA window, and keep the $XD OU Fixes code active and synced -- if only
-  // one side ran it the two would desync on turn 1.
+  // Sync codes so the HOST's cheat choice governs both sides (if the host runs
+  // $XD OU Fixes, the guest gets it too; if not, both run clean). We no longer
+  // force cheats on -- the host's launcher toggle decides.
   Config::SetBaseOrCurrent(Config::NETPLAY_SAVEDATA_LOAD, true);
   Config::SetBaseOrCurrent(Config::NETPLAY_HIDE_REMOTE_GBAS, true);
-  Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, true);
   Config::SetBaseOrCurrent(Config::NETPLAY_SYNC_CODES, true);
 
   // SetGBAConfig(update_rom=true) reads MAIN_GBA_ROM_PATHS[1]/[2] to fill each
