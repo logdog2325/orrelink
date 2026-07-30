@@ -53,7 +53,8 @@ fun XDLauncherScreen(
     onCheatsChanged: (Boolean) -> Unit,
     onFindBattles: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenDolphin: () -> Unit
+    onOpenDolphin: () -> Unit,
+    onShareDetectLog: () -> Unit
 ) {
     Scaffold { padding ->
         Column(
@@ -113,7 +114,7 @@ fun XDLauncherScreen(
                 Spacer(Modifier.height(12.dp))
                 Button(
                     onClick = onPlayXd,
-                    enabled = xdGameFound,
+                    enabled = xdGameFound && biosLinkReady,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Boot Pokémon XD (solo)", style = MaterialTheme.typography.titleMedium)
@@ -135,7 +136,7 @@ fun XDLauncherScreen(
                 Spacer(Modifier.height(12.dp))
                 Button(
                     onClick = onBattle,
-                    enabled = xdGameFound,
+                    enabled = xdGameFound && biosLinkReady,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Battle  —  Host or Join", style = MaterialTheme.typography.titleMedium)
@@ -154,6 +155,8 @@ fun XDLauncherScreen(
                     OutlinedButton(onClick = onOpenSettings) { Text("Settings") }
                     Spacer(Modifier.width(12.dp))
                     TextButton(onClick = onOpenDolphin) { Text("Full Dolphin") }
+                    Spacer(Modifier.width(12.dp))
+                    TextButton(onClick = onShareDetectLog) { Text("Share log") }
                 }
             }
             Spacer(Modifier.height(16.dp))
@@ -209,10 +212,9 @@ private fun ReadinessCard(
                 onFix = onOpenSettings
             )
             CheckRow(
-                ok = true,
-                okText = if (biosLinkReady) "GBA BIOS: using your official dump"
-                         else "GBA BIOS: none needed — the bundled one works (optional)",
-                missingText = "",
+                ok = biosLinkReady,
+                okText = "Official GBA BIOS configured",
+                missingText = "Official GBA BIOS required — the game cannot detect the GBA without it",
                 fixLabel = "Choose BIOS…",
                 onFix = onPickGbaBios
             )
