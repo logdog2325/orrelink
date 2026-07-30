@@ -120,7 +120,11 @@ object AutoMapper {
      */
     fun autoMap(): Boolean {
         val gcPad = EmulatedController.getGcPad(0)
-        val gbaPads = listOf(EmulatedController.getGbaPad(1), EmulatedController.getGbaPad(2))
+        // Map ALL four GBA pads, not just 1 and 2. In netplay the JOINER's local
+        // GBA is pad index 0, which was left unmapped -- so the joiner's physical
+        // buttons reached nothing and only on-screen touch worked. Mapping the
+        // unused pads is harmless (only the active local GBA's input is read).
+        val gbaPads = (0..3).map { EmulatedController.getGbaPad(it) }
 
         val gcNeedsMapping = !isControllerMapped(gcPad)
         val gbaNeedingMapping = gbaPads.filterNot { isControllerMapped(it) }
