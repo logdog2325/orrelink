@@ -9,6 +9,8 @@
 #include <atomic>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
@@ -17,6 +19,7 @@
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/GBACore.h"
+#include "Core/HW/GBADetectLog.h"
 #include "Core/HW/GBAPad.h"
 #include "Core/HW/SI/SI.h"
 #include "Core/HW/SI/SI_DeviceGCController.h"
@@ -49,6 +52,7 @@ static s64 GetSyncInterval(const SystemTimers::SystemTimersManager& timers)
 CSIDevice_GBAEmu::CSIDevice_GBAEmu(Core::System& system, SIDevices device, int device_number)
     : ISIDevice(system, device, device_number)
 {
+  GBADetectLog::OnDeviceCreated();  // opens/truncates the file BEFORE Core::Start fires H1
   m_core = std::make_shared<HW::GBA::Core>(system, m_device_number);
   m_core->Start(system.GetCoreTiming().GetTicks());
   m_gbahost = Host_CreateGBAHost(m_core);
@@ -63,6 +67,7 @@ CSIDevice_GBAEmu::~CSIDevice_GBAEmu()
   m_core->Stop();
   m_gbahost.reset();
   m_core.reset();
+  GBADetectLog::OnDeviceDestroyed();
 }
 
 int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
@@ -191,6 +196,10 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
                             m_probe_link_down_streak >= 64;
     if (backed_out)
     {
+      GBADetectLog::LogEvent(
+          m_device_number, m_timestamp_sent, "rematch-release",
+          fmt::format("was_locked={} was_est={} link_down_ago={} down_streak={}", m_battle_locked,
+                      m_link_established, elapsed_since(m_last_link_seen), m_probe_link_down_streak));
       m_link_established = false;
       m_battle_locked = false;
       m_data_cmd_count = 0;
@@ -206,6 +215,11 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     {
       m_netplay_pad_is_local = NetPlay::GetPadDetails(m_device_number).is_local;
       m_netplay_locality_cached = true;
+      // One-shot per socket: makes two clients' logs alignable at a glance
+      // (which machine owns which socket). Uses the same cached value the audio
+      // mute path already trusts, so it inherits its safety.
+      GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "role",
+                             fmt::format("netplay=1 local={}", m_netplay_pad_is_local ? 1 : 0));
     }
     m_core->SetLinkAudioMuted((!m_link_established && !m_battle_locked) ||
                               (m_netplay_locality_cached && !m_netplay_pad_is_local));
@@ -259,6 +273,12 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
         // this core has actually reopened its window, so the reboot lands in
         // silence the way it does for a socket the game is not yet hammering.
         m_quiet_until = m_timestamp_sent + tps * 6;
+        GBADetectLog::LogEvent(
+            m_device_number, m_timestamp_sent, "auto-reset",
+            fmt::format("{} link_idle={} cooldown_elapsed={} last_seen_ago={} quiet_until={}",
+                        NetPlay::IsNetPlayRunning() ? "net" : "solo", link_idle, cooldown_elapsed,
+                        elapsed_since(m_last_link_seen), m_quiet_until));
+        m_diag_cmd_burst = 24;  // capture the commands right after the reboot
       }
     }
     // Diagnostic tap. Strictly a mirror of the state decided above -- no branch
@@ -267,13 +287,47 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     if (GBALinkDiag* diag = DiagSlot(m_device_number))
     {
       if (link_now && !m_diag_prev_link)
+      {
         diag->window_count.fetch_add(1, std::memory_order_relaxed);
+        GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "window-open", {});  // H2
+      }
       if (probing)
         diag->probe_count.fetch_add(1, std::memory_order_relaxed);
       diag->link.store(link_now, std::memory_order_relaxed);
       diag->established.store(m_link_established, std::memory_order_relaxed);
       diag->locked.store(m_battle_locked, std::memory_order_relaxed);
       diag->last_cmd.store(static_cast<u8>(m_last_cmd), std::memory_order_relaxed);
+
+      // H5/H6: latch rising edges. Arm a short command burst on the H5 edge so
+      // the log captures the exact commands crossing the link when XD is
+      // recognized. window-open deliberately does NOT arm a burst (Review #1 I4).
+      if (m_link_established && !m_diag_prev_established)
+      {
+        GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "link-established",
+                               fmt::format("data_cmd_count={}", m_data_cmd_count));
+        if (m_diag_cmd_burst < 16)
+          m_diag_cmd_burst = 16;
+      }
+      if (m_battle_locked && !m_diag_prev_locked)
+        GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "battle-locked",
+                               fmt::format("data_cmd_count={}", m_data_cmd_count));
+      m_diag_prev_established = m_link_established;
+      m_diag_prev_locked = m_battle_locked;
+
+      // <=1/sec summary mirroring the on-screen telemetry. Throttled on emulated
+      // ticks, so no transition rate can push it past one line/sec/channel.
+      if (m_diag_last_summary_tick == 0 ||
+          (m_timestamp_sent > m_diag_last_summary_tick &&
+           m_timestamp_sent - m_diag_last_summary_tick > tps))
+      {
+        GBADetectLog::LogSummary(
+            m_device_number, m_timestamp_sent, m_core->IsStarted(), /*gba=*/true,
+            m_netplay_pad_is_local, link_now, diag->window_count.load(std::memory_order_relaxed),
+            diag->reset_count.load(std::memory_order_relaxed),
+            diag->probe_count.load(std::memory_order_relaxed), m_link_established, m_battle_locked,
+            static_cast<u8>(m_last_cmd));
+        m_diag_last_summary_tick = m_timestamp_sent;
+      }
     }
     m_diag_prev_link = link_now;
 
@@ -283,14 +337,46 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     // run its Init and is listening) or when it times out, so a core that never
     // reopens can't wedge itself out of contact.
     if (m_quiet_until != 0 && (link_now || m_timestamp_sent >= m_quiet_until))
+    {
+      GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "quiet-exit",
+                             link_now ? "reason=link-up" : "reason=timeout");
       m_quiet_until = 0;
+    }
 
     // Withhold only the command itself. Everything below still runs, so the
     // core keeps being time-synced and SI keeps its cadence; the poll simply
     // finds no response and reports "no GBA answered", exactly as it already
     // does while a core is booting.
-    if (m_quiet_until == 0)
+    m_diag_cmd_sent = (m_quiet_until == 0);  // H8/H9: was this poll's command actually sent?
+    if (m_diag_cmd_sent)
       m_core->SendJoybusCommand(m_timestamp_sent, TransferInterval(), buffer, m_keys);
+
+    // H8 (gba_detect.log): bounded joybus command dump. buffer[0..4] still hold
+    // the request here (ReceiveResponse's GetJoybusResponse only overwrites it
+    // on the next poll). Bounded so the hot handshake path never pays per-poll
+    // cost: the first 64 commands of the session, a short count-bounded burst
+    // armed by a rare transition (auto-reset / link-established), OR a
+    // command-class change -- and the class-change path is rate-limited to a
+    // minimum tick gap (Review #1 I4). In the socket-3 failure the class stays
+    // at 1 (STATUS), so class_changed is false and H8 falls silent after the
+    // boot budget; the healthy upload oscillates class and is capped at ~200/s.
+    const u8 cmd_class = probing ? 1u : (data_cmd_now ? 2u : 0u);
+    const bool class_changed = cmd_class != m_diag_prev_cmd_class;
+    m_diag_prev_cmd_class = cmd_class;
+    const bool joy_gap_ok =
+        m_diag_last_joy_tick == 0 || elapsed_since(m_diag_last_joy_tick) > tps / 200;
+    m_diag_log_this_response = false;
+    if (m_diag_cmd_log_count < 64 || m_diag_cmd_burst > 0 || (class_changed && joy_gap_ok))
+    {
+      GBADetectLog::LogJoybus(m_device_number, m_timestamp_sent, '>', buffer, request_length,
+                              m_diag_cmd_sent);
+      m_diag_last_joy_tick = m_timestamp_sent;
+      if (m_diag_cmd_log_count < 64)
+        ++m_diag_cmd_log_count;
+      if (m_diag_cmd_burst > 0)
+        --m_diag_cmd_burst;
+      m_diag_log_this_response = true;  // pair the response in ReceiveResponse
+    }
 
     auto& si = m_system.GetSerialInterface();
     si.RemoveEvent(m_device_number);
@@ -323,6 +409,38 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
   {
     m_next_action = NextAction::SendCommand;
     const auto response_length = m_core->GetJoybusResponse(buffer);
+
+    // H9 (gba_detect.log). A withheld command (m_diag_cmd_sent == false) makes
+    // the core return 0 with nothing having been asked, so it must NEVER be
+    // scored as GBA silence -- only genuinely-sent probes are classified
+    // (Review #3 Q1). buffer now holds the response bytes.
+    {
+      const bool probe_cmd = m_last_cmd == EBufferCommands::CMD_STATUS ||
+                             m_last_cmd == EBufferCommands::CMD_RESET;
+      const bool resp_nonzero = response_length != 0;
+      if (m_diag_cmd_sent && probe_cmd && resp_nonzero != m_diag_prev_resp_nonzero)
+      {
+        GBADetectLog::LogEvent(m_device_number, m_timestamp_sent,
+                               resp_nonzero ? "gba-answering" : "gba-silent",
+                               fmt::format("cmd={:02x}", static_cast<u8>(m_last_cmd)));
+        m_diag_prev_resp_nonzero = resp_nonzero;
+      }
+      if (m_diag_log_this_response)
+      {
+        m_diag_log_this_response = false;
+        if (m_diag_cmd_sent)
+        {
+          if (resp_nonzero)
+            GBADetectLog::LogJoybus(m_device_number, m_timestamp_sent, '<', buffer,
+                                    static_cast<int>(response_length), true);
+          else
+            GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "no-response",
+                                   fmt::format("cmd={:02x}", static_cast<u8>(m_last_cmd)));
+        }
+        // sent==0: the '>' line already recorded sent=0 (withheld); nothing to pair.
+      }
+    }
+
     if (response_length == 0)
       return -1;
 
@@ -411,12 +529,16 @@ DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
   // Android exactly like the auto-reset above. RequestReset is tick-anchored
   // (the core runs to the given GC timestamp before resetting), so every
   // netplay client still resets this core at the same emulated time.
-  if (pad_status.button & PadButton::PAD_BUTTON_X)
+  const bool x_now = (pad_status.button & PadButton::PAD_BUTTON_X) != 0;
+  if (x_now)
   {
     m_core->RequestReset(m_timestamp_sent);
     if (GBALinkDiag* diag = DiagSlot(m_device_number))
       diag->reset_count.fetch_add(1, std::memory_order_relaxed);
+    if (!m_diag_prev_xreset)
+      GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "x-reset", {});
   }
+  m_diag_prev_xreset = x_now;
 
   return DataResponse::NoData;
 }
