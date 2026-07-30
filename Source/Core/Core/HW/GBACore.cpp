@@ -32,6 +32,7 @@
 #include "Core/Config/MainSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
+#include "Core/HW/GBADetectLog.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/Host.h"
 #include "Core/NetPlayProto.h"
@@ -233,12 +234,17 @@ bool Core::Start(u64 gc_ticks)
 
   if (m_core->platform(m_core) == mPLATFORM_GBA)
   {
-    // BIOS selection. XD detects the emulated GBA with either the official dump
-    // or the bundled open-source BIOS -- confirmed on device once the auto-reset
-    // stopped racing Emerald's connection handshake (that race, not the BIOS,
-    // was why detection used to fail; see SI_DeviceGBAEmu's quiet-window reset).
-    // So an official dump is never required. Solo uses it if present for
-    // accuracy; otherwise the bundled BIOS boots the GBA.
+    // BIOS selection is detection-critical: XD only completes its JoyBus boot
+    // handshake against the official GBA dump, whose boot code carries
+    // Nintendo's own JoyBus listener. No open-source BIOS reimplements it and
+    // mGBA's HLE BIOS does not either, so the official dump is required for a
+    // link -- the launchers enforce that before boot. Here we load the official
+    // dump whenever it is present (solo and netplay alike) so every netplay
+    // client boots the exact same 16 KB image and stays deterministic. In
+    // netplay we HARD-REQUIRE it: a client without the official dump refuses to
+    // boot rather than silently fall back and desync. The bundled open-source
+    // image survives only as a last-resort solo fallback; it cannot complete the
+    // handshake.
     const std::string user_bios = File::GetUserPath(F_GBABIOS_IDX);
     bool official_bios = false;
     {
@@ -259,23 +265,35 @@ bool Core::Start(u64 gc_ticks)
 
     const std::string sys_bios = File::GetSysDirectory() + "GBA" DIR_SEP "gba_bios.bin";
 
-    // Netplay mirrors every GBA on every client, so every client must boot the
-    // exact same BIOS or they diverge. Force the bundled image, which is
-    // byte-identical everywhere: no player needs a BIOS file, and an official
-    // dump on one side can't desync against a bundled one on the other.
-    if (NetPlay::IsNetPlayRunning() && File::Exists(sys_bios))
+    if (official_bios)
     {
-      LoadBIOS(sys_bios.c_str());
-      NOTICE_LOG_FMT(CORE, "GBA{} netplay: bundled BIOS (identical on all clients)",
-                     m_device_number + 1);
+      const bool ok = LoadBIOS(user_bios.c_str());
+      GBADetectLog::LogBios(m_device_number, true, user_bios, File::GetSize(user_bios),
+                            NetPlay::IsNetPlayRunning(), ok);
     }
-    else if (official_bios)
+    else if (NetPlay::IsNetPlayRunning())
     {
-      LoadBIOS(user_bios.c_str());
+      // Determinism guard (defense in depth beyond the launcher gate, Review #1
+      // I1): every netplay client must boot the byte-identical official 16 KB
+      // dump or the two mGBA cores diverge on the first BIOS-dependent
+      // instruction. Refuse to boot rather than silently fall back to the
+      // bundled image and desync. The XD launcher blocks this case up front on
+      // both platforms; this also covers a GBA netplay session started through
+      // the standard Dolphin UI, which the launcher gate cannot see.
+      GBADetectLog::LogBios(m_device_number, false, std::string{}, 0, true, false);
+      PanicAlertFmtT("GBA{0}: the official GBA BIOS is required for netplay. "
+                     "Configure it and reconnect.",
+                     m_device_number + 1);
+      return false;
     }
     else if (File::Exists(sys_bios))
     {
-      LoadBIOS(sys_bios.c_str());
+      const bool ok = LoadBIOS(sys_bios.c_str());
+      GBADetectLog::LogBios(m_device_number, false, sys_bios, File::GetSize(sys_bios), false, ok);
+    }
+    else
+    {
+      GBADetectLog::LogBios(m_device_number, false, std::string{}, 0, false, false);
     }
   }
 

@@ -186,10 +186,32 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     },
                     onOpenDolphin = {
                         startActivity(Intent(this, MainActivity::class.java))
-                    }
+                    },
+                    onShareDetectLog = { shareDetectLog() }
                 )
             }
         }
+    }
+
+    /** Share the GBA-detection diagnostic log (written to GBA/gba_detect.log in
+     * the app's external files dir, which the stock Files app hides on Android
+     * 11+) via the FileProvider so the user can hand it to us. */
+    private fun shareDetectLog() {
+        val log = java.io.File(getExternalFilesDir(null), "GBA/gba_detect.log")
+        if (!log.exists()) {
+            android.widget.Toast.makeText(
+                this, "No detect log yet — boot XD once, then share.",
+                android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            this, "$packageName.xdshare", log)
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(android.content.Intent.createChooser(send, "Share detect log"))
     }
 
     /** Boot Pokemon XD directly by game ID, bypassing the game picker (which
