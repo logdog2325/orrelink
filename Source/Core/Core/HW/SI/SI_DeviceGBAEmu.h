@@ -100,6 +100,21 @@ private:
   // which the auto-reset guard above depends on.
   bool m_diag_prev_link = false;
 
+  // gba_detect.log bookkeeping. CPU/emulation thread only; NOT serialized in
+  // DoState, and never read by any control path -- pure observation. See
+  // Core/HW/GBADetectLog.h.
+  bool m_diag_prev_established = false;
+  bool m_diag_prev_locked = false;
+  bool m_diag_prev_xreset = false;
+  bool m_diag_prev_resp_nonzero = false;
+  bool m_diag_log_this_response = false;
+  bool m_diag_cmd_sent = false;   // Review #3 Q1: was this poll's command actually sent?
+  u8 m_diag_prev_cmd_class = 0;   // 0=idle 1=probe(RESET/STATUS) 2=data(READ/WRITE)
+  u32 m_diag_cmd_log_count = 0;   // first-N command-dump budget (<=64)
+  u32 m_diag_cmd_burst = 0;       // extra command lines emitted after a transition
+  u64 m_diag_last_summary_tick = 0;
+  u64 m_diag_last_joy_tick = 0;   // Review #1 I4: min-gap rate limit for the H8 class path
+
   std::shared_ptr<HW::GBA::Core> m_core;
   std::shared_ptr<GBAHostInterface> m_gbahost;
 };

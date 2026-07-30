@@ -158,7 +158,7 @@ void XDLauncherDialog::CreateMainLayout()
   };
   add_row(&m_game_row, tr("Pokémon XD (USA) — choose your XD ISO file"), tr("Choose ISO..."));
   add_row(&m_rom_row, tr("Emerald ROM configured"), tr("Choose ROM..."));
-  add_row(&m_bios_row, tr("GBA BIOS (optional)"), tr("Choose BIOS..."));
+  add_row(&m_bios_row, tr("Official GBA BIOS"), tr("Choose BIOS..."));
   add_row(&m_team_saves_row, tr("Team saves installed"), tr("Install"));
   add_row(&m_vs_save_row, tr("XD VS-mode save (memory card)"), tr("Install"));
   add_row(&m_gba_input_row, tr("GBA controls"), tr("Use defaults"));
@@ -269,11 +269,17 @@ void XDLauncherDialog::RefreshChecklist()
   // auto-reset no longer races Emerald's connection handshake (the reset was
   // the real problem, never the BIOS). An official dump is still used if the
   // user has one; otherwise the bundled BIOS boots the GBA.
+  // Required, and settled the hard way: the official dump is the only BIOS the
+  // game will accept. Its boot code contains Nintendo's own JoyBus listener,
+  // which is what answers the GameCube's handshake -- no open-source BIOS
+  // reimplements it, and mGBA's HLE BIOS does not either. Tested on device:
+  // the bundled build, a current Cult-of-GBA build and HLE all leave the link
+  // window opening while the handshake never starts.
   const bool official_bios = XDNetplay::CheckOfficialBios(nullptr);
-  SetRowState(m_bios_row.status, true);
+  SetRowState(m_bios_row.status, official_bios);
   m_bios_row.description->setText(
-      official_bios ? tr("GBA BIOS: using your official dump") :
-                      tr("GBA BIOS: none needed — the bundled one works (optional)"));
+      official_bios ? tr("Official GBA BIOS configured") :
+                      tr("Official GBA BIOS required — the game cannot detect the GBA without it"));
   SetRowState(m_team_saves_row.status, TeamSavesInstalled());
   SetRowState(m_vs_save_row.status, VsSaveInstalled());
   const bool input_mapped = XDNetplay::GbaInputMapped();
@@ -471,6 +477,15 @@ void XDLauncherDialog::OnBootSolo()
     return;
   }
 
+  if (!XDNetplay::CheckOfficialBios(nullptr))
+  {
+    ModalMessageBox::warning(
+        this, tr("XD Netplay"),
+        tr("The official GBA BIOS is required — XD cannot detect the GBA without it. "
+           "Add it with \"Choose BIOS...\" first."));
+    return;
+  }
+
   XDNetplay::EnsureGbaConfig();
   emit BootXD(QString::fromStdString(game->GetFilePath()));
 }
@@ -486,6 +501,15 @@ void XDLauncherDialog::OnHost()
     return;
   }
 
+  if (!XDNetplay::CheckOfficialBios(nullptr))
+  {
+    ModalMessageBox::warning(
+        this, tr("XD Netplay"),
+        tr("The official GBA BIOS is required — XD cannot detect the GBA without it. "
+           "Add it with \"Choose BIOS...\" first."));
+    return;
+  }
+
   PrepareNetplayConfig();
   Config::Save();
   emit HostXD(*game);
@@ -498,6 +522,15 @@ void XDLauncherDialog::OnJoin()
   {
     ModalMessageBox::warning(this, tr("XD Netplay"),
                              tr("Enter the host code your opponent shared."));
+    return;
+  }
+
+  if (!XDNetplay::CheckOfficialBios(nullptr))
+  {
+    ModalMessageBox::warning(
+        this, tr("XD Netplay"),
+        tr("The official GBA BIOS is required — XD cannot detect the GBA without it. "
+           "Add it with \"Choose BIOS...\" first."));
     return;
   }
 
