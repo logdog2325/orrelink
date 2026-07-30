@@ -748,6 +748,8 @@ if(USE_MGBA)
   target_sources(core PRIVATE
     HW/GBACore.cpp
     HW/GBACore.h
+    HW/GBADetectLog.cpp
+    HW/GBADetectLog.h
     HW/SI/SI_DeviceGBAEmu.cpp
     HW/SI/SI_DeviceGBAEmu.h
   )
