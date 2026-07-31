@@ -91,6 +91,14 @@ private:
   // Read once at construction from MAIN_GBA_EDGE_RESET; never re-read so a
   // mid-session config change can't desync netplay clients.
   bool m_edge_reset_enabled = true;
+  // Read once from MAIN_GBA_FULLBOOT_PRESENCE: raise the minimum reset spacing
+  // to 5 s so every boot cycle exposes Emerald's long cartridge window (the
+  // one XD's ladder needs), not just the BIOS's short beacons. False restores
+  // the fast short-beacon cycling (the v0.4.33 behavior) as an escape hatch.
+  bool m_fullboot_presence = true;
+  // Counts every auto/rescue reset this session; drives the deterministic
+  // dither term (pure function of synced state -> netplay-safe).
+  u32 m_auto_reset_ordinal = 0;
   u32 m_probe_link_down_streak = 0;
   bool m_link_established = false;
   // Sustained joybus traffic means a real party exchange, not a stray probe.
