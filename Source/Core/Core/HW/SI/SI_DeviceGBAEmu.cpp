@@ -232,9 +232,19 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     // Reads only synced state, so every netplay client releases on the same
     // poll. One-shot: clearing the latches makes this false next poll and hands
     // off to the normal auto-reset guard, which reopens the boot link window.
+    // 15 s of CONTINUOUS link-down (was 45 s): on-device a player backing out
+    // after a successful connect and retrying within the hold found the socket
+    // still latched -- a guaranteed park against a live client. The horizon
+    // only ever needed to outlast in-battle link gaps, and every recorded
+    // battle holds the link UP throughout (the client latches RCNT; the worst
+    // observed in-battle DATA gap is ~5 s and is covered separately by
+    // handshake_active's 8 s window; Emerald's screen-transition RCNT blinks
+    // refresh m_last_link_seen every up-sample, so continuous down-time can't
+    // accumulate mid-session). Post-back-out teardown drops the link in ~3.5 s,
+    // so release now lands ~18 s after backing out instead of ~50.
     const bool backed_out = (m_battle_locked || m_link_established) && probing && !link_now &&
                             !handshake_active && m_last_link_seen != 0 &&
-                            elapsed_since(m_last_link_seen) > tps * 45 &&
+                            elapsed_since(m_last_link_seen) > tps * 15 &&
                             m_probe_link_down_streak >= 64;
     if (backed_out)
     {
