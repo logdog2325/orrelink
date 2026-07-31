@@ -228,9 +228,11 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         if (xd != null) {
             // XD arms its GBA detection from the player's own menu navigation;
             // a parked connect screen means the roll missed, and re-entering is
-            // the retry. Shown here so the rule survives on the launcher.
+            // the retry. Shown only here on the launcher -- in-game text can't
+            // tell a parked entry from innocent menu idling, so it was removed.
             statusMessage =
-                "Tip: if a GBA hasn't linked ~60s after entering VS mode, press B and re-enter."
+                "Tip: a GBA links within seconds of entering the connect screen. " +
+                "If ~20s pass with nothing, press B and re-enter - each entry is a fresh try."
             EmulationActivity.launch(this, xd.getPath(), false)
         } else {
             statusMessage = "Pokémon XD not found — choose the folder with your ISO first."

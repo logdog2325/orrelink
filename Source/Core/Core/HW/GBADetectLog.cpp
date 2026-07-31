@@ -194,7 +194,6 @@ void LogSummary(int channel, u64 tick, bool rom, bool gba, bool loc, bool lk, u3
 namespace
 {
 std::atomic<u64> s_last_pad_press{0};
-std::atomic<u64> s_hint_claimed{0};
 }  // namespace
 
 void NotePadPress(u64 tick)
@@ -205,10 +204,5 @@ void NotePadPress(u64 tick)
 u64 LastPadPress()
 {
   return s_last_pad_press.load(std::memory_order_relaxed);
-}
-
-bool TryClaimHint(u64 press_tick)
-{
-  return s_hint_claimed.exchange(press_tick, std::memory_order_relaxed) != press_tick;
 }
 }  // namespace GBADetectLog
