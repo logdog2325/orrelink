@@ -409,6 +409,9 @@ const Info<std::string> MAIN_GBA_SAVES_PATH{{System::Main, "GBA", "SavesPath"}, 
 const Info<bool> MAIN_GBA_SAVES_IN_ROM_PATH{{System::Main, "GBA", "SavesInRomPath"}, false};
 const Info<bool> MAIN_GBA_LINK_MUTED{{System::Main, "GBA", "MuteLinkAudio"}, false};
 const Info<bool> MAIN_GBA_PRACTICE_DUMMY{{System::Main, "GBA", "PracticeDummy"}, false};
+// Debounced falling-edge GBA auto-reset (fast fresh-boot-window cadence for
+// XD's edge-triggered detection). Default on; timer backstop remains either way.
+const Info<bool> MAIN_GBA_EDGE_RESET{{System::Main, "GBA", "EdgeReset"}, true};
 #endif
 
 // Main.Network
