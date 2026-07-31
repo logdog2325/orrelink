@@ -412,10 +412,13 @@ const Info<bool> MAIN_GBA_PRACTICE_DUMMY{{System::Main, "GBA", "PracticeDummy"},
 // Debounced falling-edge GBA auto-reset (fast fresh-boot-window cadence for
 // XD's edge-triggered detection). Default on; timer backstop remains either way.
 const Info<bool> MAIN_GBA_EDGE_RESET{{System::Main, "GBA", "EdgeReset"}, true};
-// Full-boot presence cycling: 5 s minimum reset spacing so every boot exposes
-// the cartridge link window, not just the BIOS beacons. False = v0.4.33's
-// fast short-beacon cycling (escape hatch).
-const Info<bool> MAIN_GBA_FULLBOOT_PRESENCE{{System::Main, "GBA", "FullBootPresence"}, true};
+// LEGACY full-boot presence cycling (5 s spacing exposing the long cartridge
+// window pre-arm). Default OFF: on-device roll forensics proved XD's menu-entry
+// arming PARKS iff the long window overlaps the ~1 s arming-completion span
+// (4/4 parks), while every arm latches on short beacons -- so pre-arm sockets
+// now run fast dithered beacon cycling and the long window only appears on the
+// post-arm boot, where it belongs. True restores v0.4.35 behavior exactly.
+const Info<bool> MAIN_GBA_FULLBOOT_PRESENCE{{System::Main, "GBA", "FullBootPresence"}, false};
 #endif
 
 // Main.Network
