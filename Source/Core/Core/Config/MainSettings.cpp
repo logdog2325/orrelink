@@ -412,6 +412,10 @@ const Info<bool> MAIN_GBA_PRACTICE_DUMMY{{System::Main, "GBA", "PracticeDummy"},
 // Debounced falling-edge GBA auto-reset (fast fresh-boot-window cadence for
 // XD's edge-triggered detection). Default on; timer backstop remains either way.
 const Info<bool> MAIN_GBA_EDGE_RESET{{System::Main, "GBA", "EdgeReset"}, true};
+// Full-boot presence cycling: 5 s minimum reset spacing so every boot exposes
+// the cartridge link window, not just the BIOS beacons. False = v0.4.33's
+// fast short-beacon cycling (escape hatch).
+const Info<bool> MAIN_GBA_FULLBOOT_PRESENCE{{System::Main, "GBA", "FullBootPresence"}, true};
 #endif
 
 // Main.Network
