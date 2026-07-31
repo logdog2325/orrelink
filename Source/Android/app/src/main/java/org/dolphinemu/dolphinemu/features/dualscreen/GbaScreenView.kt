@@ -57,8 +57,6 @@ class GbaScreenView @JvmOverloads constructor(
     }
     private val diagBuilder = StringBuilder(96)
     private val diagLines = arrayOfNulls<String>(DIAG_LINE_COUNT)
-    // First diagnostic-draw timestamp; drives the 60 s "not linking?" hint.
-    private var diagFirstMs = 0L
 
     private var bitmap: Bitmap? = null
     private var visibleDevice = GbaHostBridge.NO_DEVICE
@@ -550,26 +548,17 @@ class GbaScreenView @JvmOverloads constructor(
             diagLines[d] = diagBuilder.toString()
         }
 
-        // Fallback hint: XD's GBA detection is armed by the player's own menu
-        // navigation, so a session can park un-linked if its detection roll
-        // missed. After 60 s with no established port, replace the footer with
-        // the recovery rule; it self-hides the moment any port establishes.
-        if (diagFirstMs == 0L) diagFirstMs = android.os.SystemClock.elapsedRealtime()
-        val anyEstablished = (0..3).any { GbaHostBridge.linkDiagEstablished(GbaHostBridge.getLinkDiag(it)) }
-        val stuckLong =
-            !anyEstablished && android.os.SystemClock.elapsedRealtime() - diagFirstMs > 60_000L
+        // No advisory text here: a press/time heuristic cannot tell a parked
+        // connect-screen entry from innocent menu idling, and misplaced advice
+        // is worse than none. The recovery rule lives in the release notes.
         diagBuilder.setLength(0)
-        if (stuckLong) {
-            diagBuilder.append("Not linking? In XD press B, back out, re-enter VS mode - fresh roll each entry")
+        diagBuilder.append("visible=")
+        if (visibleDevice in 0..3) {
+            diagBuilder.append(visibleDevice + 1)
         } else {
-            diagBuilder.append("visible=")
-            if (visibleDevice in 0..3) {
-                diagBuilder.append(visibleDevice + 1)
-            } else {
-                diagBuilder.append('-')
-            }
-            diagBuilder.append("  (long-press to switch GBA)")
+            diagBuilder.append('-')
         }
+        diagBuilder.append("  (long-press to switch GBA)")
         diagLines[DIAG_LINE_COUNT - 1] = diagBuilder.toString()
 
         // These lines are long and the view can be narrow, so shrink to fit
