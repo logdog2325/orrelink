@@ -53,6 +53,21 @@ CSIDevice_GBAEmu::CSIDevice_GBAEmu(Core::System& system, SIDevices device, int d
     : ISIDevice(system, device, device_number)
 {
   GBADetectLog::OnDeviceCreated();  // opens the session log BEFORE Core::Start fires H1
+  // g_gba_link_diag is process-lifetime; a session that ended mid-battle
+  // leaves established/locked latched true. Zero this channel's slot so the
+  // cross-socket regime read below never sees a PREVIOUS session's state (and
+  // so every netplay client starts from the same slate -- the determinism of
+  // that read depends on this).
+  if (GBALinkDiag* diag = DiagSlot(m_device_number))
+  {
+    diag->link.store(false, std::memory_order_relaxed);
+    diag->window_count.store(0, std::memory_order_relaxed);
+    diag->reset_count.store(0, std::memory_order_relaxed);
+    diag->established.store(false, std::memory_order_relaxed);
+    diag->locked.store(false, std::memory_order_relaxed);
+    diag->probe_count.store(0, std::memory_order_relaxed);
+    diag->last_cmd.store(0, std::memory_order_relaxed);
+  }
   // Read once; in netplay every client constructs its devices from the same
   // synced config, and never re-reading means a mid-session toggle can't split
   // the clients' reset behavior.
@@ -286,7 +301,39 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
       // the sole path when the edge trigger is toggled off.
       const u64 dither =
           (static_cast<u64>(m_auto_reset_ordinal) * 2654435761u % 450u) * (tps / 1000);
-      const u64 min_spacing = m_fullboot_presence ? tps * 5 : tps;
+      // PER-PHASE PRESENCE REGIME. Full boots (5 s spacing, long cartridge
+      // window) are what XD's INITIAL arming likes -- on-device it armed the
+      // first socket in 16-34 s under this regime, its fastest ever. But the
+      // HANDOFF to the pending socket is the opposite: across every recorded
+      // session on three builds, XD only advanced to the next socket when that
+      // socket presented SHORT, RARE windows (~1.1 s cycling, 12% duty), and
+      // never once when it presented long cartridge windows (~41% duty) -- the
+      // connect flow tells the player to attach a GBA that is powered OFF, and
+      // evidently samples for that absence before treating the socket as newly
+      // connected. So: while no GBA socket is engaged, every socket runs full
+      // boots (fast arming); once any socket establishes, the still-pending
+      // sockets drop to short-beacon cycling (the proven handoff regime).
+      // g_gba_link_diag is written by each device during its own poll on this
+      // same thread, and est/lck derive purely from synced emulation state, so
+      // this cross-socket read is deterministic across netplay clients.
+      bool other_socket_engaged = false;
+      {
+        auto& si_for_diag = m_system.GetSerialInterface();
+        for (int ch = 0; ch < MAX_SI_CHANNELS; ++ch)
+        {
+          if (ch == m_device_number || si_for_diag.GetDeviceType(ch) != GetDeviceType())
+            continue;
+          if (GBALinkDiag* other = DiagSlot(ch);
+              other && (other->established.load(std::memory_order_relaxed) ||
+                        other->locked.load(std::memory_order_relaxed)))
+          {
+            other_socket_engaged = true;
+            break;
+          }
+        }
+      }
+      const u64 min_spacing =
+          (m_fullboot_presence && !other_socket_engaged) ? tps * 5 : tps;
       const bool link_idle = m_last_link_seen == 0 || elapsed_since(m_last_link_seen) > tps;
       const bool timer_fire =
           link_idle && (m_last_auto_reset == 0 || elapsed_since(m_last_auto_reset) > tps * 6);
@@ -325,10 +372,11 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
         ++m_auto_reset_ordinal;
         GBADetectLog::LogEvent(
             m_device_number, m_timestamp_sent, "auto-reset",
-            fmt::format("{} reason={} last_seen_ago={} ord={} dither={}",
+            fmt::format("{} reason={} mode={} last_seen_ago={} ord={} dither={}",
                         NetPlay::IsNetPlayRunning() ? "net" : "solo",
-                        edge_fire ? "edge" : "timer", elapsed_since(m_last_link_seen),
-                        m_auto_reset_ordinal, dither / (tps / 1000)));
+                        edge_fire ? "edge" : "timer", min_spacing == tps ? "fast" : "full",
+                        elapsed_since(m_last_link_seen), m_auto_reset_ordinal,
+                        dither / (tps / 1000)));
         if (m_diag_cmd_burst < 8)
           m_diag_cmd_burst = 8;  // capture the commands right after the reboot
       }
@@ -380,12 +428,25 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
       if (link_now && !m_diag_prev_link)
       {
         diag->window_count.fetch_add(1, std::memory_order_relaxed);
+        m_diag_window_open_tick = m_timestamp_sent;
         GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "window-open", {});  // H2
         // I2: capture the first probes INTO the fresh window with responses, so
         // the status byte each listener presents (BIOS boot listener vs
         // Emerald's cartridge listener) is on the record per window.
         if (m_diag_cmd_burst < 4)
           m_diag_cmd_burst = 4;
+      }
+      else if (!link_now && m_diag_prev_link)
+      {
+        // Falling edge with duration: a ~0.13 s window is a BIOS boot beacon,
+        // a ~2.7 s window is Emerald's cartridge listener -- the distinction
+        // the presence-regime policy lives on, now measured per window.
+        GBADetectLog::LogEvent(
+            m_device_number, m_timestamp_sent, "window-close",
+            fmt::format("dur_ms={}",
+                        m_diag_window_open_tick == 0 ?
+                            0 :
+                            elapsed_since(m_diag_window_open_tick) / (tps / 1000)));
       }
       if (probing)
         diag->probe_count.fetch_add(1, std::memory_order_relaxed);
