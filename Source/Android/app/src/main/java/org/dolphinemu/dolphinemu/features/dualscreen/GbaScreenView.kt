@@ -530,7 +530,13 @@ class GbaScreenView @JvmOverloads constructor(
             diagBuilder.append(" lk=").append(bit(GbaHostBridge.linkDiagLinkOpen(diag)))
                 .append(" win=").append(GbaHostBridge.linkDiagWindowCount(diag))
                 .append(" rst=").append(GbaHostBridge.linkDiagResetCount(diag))
-                .append(" prb=").append(GbaHostBridge.linkDiagProbeCount(diag))
+                // The packed counter saturates at 16 bits; say so instead of
+                // showing a frozen 65535 that reads like a real value.
+                .append(" prb=").append(
+                    GbaHostBridge.linkDiagProbeCount(diag).let {
+                        if (it >= 0xFFFF) "65535+" else it.toString()
+                    }
+                )
                 .append(" est=").append(bit(GbaHostBridge.linkDiagEstablished(diag)))
                 .append(" lck=").append(bit(GbaHostBridge.linkDiagLocked(diag)))
                 .append(" cmd=").append(

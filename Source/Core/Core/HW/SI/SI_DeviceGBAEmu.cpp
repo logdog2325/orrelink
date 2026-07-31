@@ -52,7 +52,11 @@ static s64 GetSyncInterval(const SystemTimers::SystemTimersManager& timers)
 CSIDevice_GBAEmu::CSIDevice_GBAEmu(Core::System& system, SIDevices device, int device_number)
     : ISIDevice(system, device, device_number)
 {
-  GBADetectLog::OnDeviceCreated();  // opens/truncates the file BEFORE Core::Start fires H1
+  GBADetectLog::OnDeviceCreated();  // opens the session log BEFORE Core::Start fires H1
+  // Read once; in netplay every client constructs its devices from the same
+  // synced config, and never re-reading means a mid-session toggle can't split
+  // the clients' reset behavior.
+  m_edge_reset_enabled = Config::Get(Config::MAIN_GBA_EDGE_RESET);
   m_core = std::make_shared<HW::GBA::Core>(system, m_device_number);
   m_core->Start(system.GetCoreTiming().GetTicks());
   m_gbahost = Host_CreateGBAHost(m_core);
@@ -105,6 +109,17 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     if (m_last_cmd == EBufferCommands::CMD_READ_GBA ||
         m_last_cmd == EBufferCommands::CMD_WRITE_GBA)
     {
+      // I3 (gba_detect.log): a data command after >=1s of data silence starts a
+      // conversation we want captured with content -- the client hello, its
+      // post-hello report and any first GC WRITE all follow such silences (the
+      // rate-limited class logging provably missed the report in one session).
+      const u64 tps_now = static_cast<u64>(m_system.GetSystemTimers().GetTicksPerSecond());
+      if ((m_last_data_cmd == 0 ||
+           (m_timestamp_sent > m_last_data_cmd && m_timestamp_sent - m_last_data_cmd > tps_now)) &&
+          m_diag_cmd_burst < 32)
+      {
+        m_diag_cmd_burst = 32;
+      }
       m_last_data_cmd = m_timestamp_sent;
     }
 
@@ -128,7 +143,14 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     // treating it as genuinely closed; that swallows the per-frame toggling
     // while still noticing the real close at the end of the connection screen.
     if (link_now)
+    {
       m_last_link_seen = m_timestamp_sent;
+      // Rising edge = a boot link window opened since the last poll that saw the
+      // link down. Tracked independently of the diagnostics so the edge-reset
+      // trigger below never depends on the diag slot.
+      if (!m_link_was_enabled)
+        m_window_since_reset = true;
+    }
     const bool handshake_active = m_last_data_cmd != 0 && elapsed_since(m_last_data_cmd) < tps * 8;
 
     // Count consecutive polls where XD is probing a DEAD link. A back-out to the
@@ -226,18 +248,30 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
 
     if (probing && !link_now && !handshake_active && !m_link_established && !m_battle_locked)
     {
-      // Must exceed the slowest reset->link-window-open time, or the cooldown
-      // resets the core before Emerald's window ever opens (livelock). Measured:
-      // bundled open-source BIOS 2.35 s, official BIOS 4.78 s. The steady-state
-      // cadence is now purely this interval, so keep it comfortably above the
-      // slowest boot while still retrying often enough to catch XD's probes.
-      const u64 min_interval = tps * 6;
-      // Timer only -- no falling-edge shortcut. The edge trigger is what raced
-      // Emerald's own RCNT toggling; a plain interval cannot.
+      // Two ways to decide the GBA should reboot and reopen its boot link
+      // window:
+      //
+      // EDGE (default, config-gated): a window opened this boot cycle and the
+      // link has now been continuously down >= 250 ms. The 250 ms debounce is
+      // what makes this race-free: Emerald's GameCubeMultiBoot_Init blinks RCNT
+      // within a frame while handshaking, so a live handshake refreshes
+      // m_last_link_seen every up-sample and can never accumulate 250 ms of
+      // down-time; only a genuinely closed window can. This restores the fast
+      // presence cadence (fresh boot window every ~1.2 s) that XD's
+      // edge-triggered detection gate wants -- XD arms on an absent->present
+      // transition, so frequent fresh windows are exactly what it samples.
+      //
+      // TIMER (backstop, always on): link down >= 1 s and 6 s since the last
+      // reset -- the previous behavior, kept as a floor for the edge path and
+      // as the sole path when the edge trigger is toggled off.
       const bool link_idle = m_last_link_seen == 0 || elapsed_since(m_last_link_seen) > tps;
-      const bool cooldown_elapsed =
-          m_last_auto_reset == 0 || elapsed_since(m_last_auto_reset) > min_interval;
-      if (link_idle && cooldown_elapsed)
+      const bool timer_fire =
+          link_idle && (m_last_auto_reset == 0 || elapsed_since(m_last_auto_reset) > tps * 6);
+      const bool edge_fire =
+          m_edge_reset_enabled && m_window_since_reset && m_last_link_seen != 0 &&
+          elapsed_since(m_last_link_seen) > tps / 4 &&
+          (m_last_auto_reset == 0 || elapsed_since(m_last_auto_reset) > tps);
+      if (edge_fire || timer_fire)
       {
         if (!NetPlay::IsNetPlayRunning())
         {
@@ -264,21 +298,13 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
         }
         m_last_auto_reset = m_timestamp_sent;
         m_data_cmd_count = 0;
-        // Emerald's GameCubeMultiBoot_Main only re-runs its Init after roughly
-        // eleven frames with no serial interrupt: every joybus command the
-        // GameCube sends resets that counter. XD probes a socket it is waiting
-        // on continuously (thousands of times per attempt), which starves the
-        // cartridge of the quiet it needs and leaves it never ready -- windows
-        // open, but the handshake never begins. Hold the commands back until
-        // this core has actually reopened its window, so the reboot lands in
-        // silence the way it does for a socket the game is not yet hammering.
-        m_quiet_until = m_timestamp_sent + tps * 6;
+        m_window_since_reset = false;  // a fresh boot must open its own window
         GBADetectLog::LogEvent(
             m_device_number, m_timestamp_sent, "auto-reset",
-            fmt::format("{} link_idle={} cooldown_elapsed={} last_seen_ago={} quiet_until={}",
-                        NetPlay::IsNetPlayRunning() ? "net" : "solo", link_idle, cooldown_elapsed,
-                        elapsed_since(m_last_link_seen), m_quiet_until));
-        m_diag_cmd_burst = 24;  // capture the commands right after the reboot
+            fmt::format("{} reason={} last_seen_ago={}", NetPlay::IsNetPlayRunning() ? "net" : "solo",
+                        edge_fire ? "edge" : "timer", elapsed_since(m_last_link_seen)));
+        if (m_diag_cmd_burst < 8)
+          m_diag_cmd_burst = 8;  // capture the commands right after the reboot
       }
     }
     // Diagnostic tap. Strictly a mirror of the state decided above -- no branch
@@ -290,6 +316,11 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
       {
         diag->window_count.fetch_add(1, std::memory_order_relaxed);
         GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "window-open", {});  // H2
+        // I2: capture the first probes INTO the fresh window with responses, so
+        // the status byte each listener presents (BIOS boot listener vs
+        // Emerald's cartridge listener) is on the record per window.
+        if (m_diag_cmd_burst < 4)
+          m_diag_cmd_burst = 4;
       }
       if (probing)
         diag->probe_count.fetch_add(1, std::memory_order_relaxed);
@@ -314,6 +345,16 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
       m_diag_prev_established = m_link_established;
       m_diag_prev_locked = m_battle_locked;
 
+      // I4: ungated data-command counters -- ground truth for "did XD ever
+      // READ/WRITE this socket", independent of every line-suppression rule.
+      if (data_cmd_now)
+      {
+        if (m_last_cmd == EBufferCommands::CMD_READ_GBA)
+          ++m_diag_rd_count;
+        else
+          ++m_diag_wr_count;
+      }
+
       // <=1/sec summary mirroring the on-screen telemetry. Throttled on emulated
       // ticks, so no transition rate can push it past one line/sec/channel.
       if (m_diag_last_summary_tick == 0 ||
@@ -325,7 +366,7 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
             m_netplay_pad_is_local, link_now, diag->window_count.load(std::memory_order_relaxed),
             diag->reset_count.load(std::memory_order_relaxed),
             diag->probe_count.load(std::memory_order_relaxed), m_link_established, m_battle_locked,
-            static_cast<u8>(m_last_cmd));
+            static_cast<u8>(m_last_cmd), m_diag_rd_count, m_diag_wr_count);
         m_diag_last_summary_tick = m_timestamp_sent;
       }
     }
@@ -333,23 +374,12 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
 
     m_link_was_enabled = link_now;
 
-    // The quiet window ends as soon as the link is back up (the cartridge has
-    // run its Init and is listening) or when it times out, so a core that never
-    // reopens can't wedge itself out of contact.
-    if (m_quiet_until != 0 && (link_now || m_timestamp_sent >= m_quiet_until))
-    {
-      GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "quiet-exit",
-                             link_now ? "reason=link-up" : "reason=timeout");
-      m_quiet_until = 0;
-    }
-
-    // Withhold only the command itself. Everything below still runs, so the
-    // core keeps being time-synced and SI keeps its cadence; the poll simply
-    // finds no response and reports "no GBA answered", exactly as it already
-    // does while a core is booting.
-    m_diag_cmd_sent = (m_quiet_until == 0);  // H8/H9: was this poll's command actually sent?
-    if (m_diag_cmd_sent)
-      m_core->SendJoybusCommand(m_timestamp_sent, TransferInterval(), buffer, m_keys);
+    // No quiet window anymore: it was built to shelter the (abandoned) bundled
+    // BIOS's cartridge listener, and in solo it was provably inert -- commands
+    // at a down link never reach the core in the first place. Every command is
+    // sent; m_diag_cmd_sent stays for logger stability (always true now).
+    m_diag_cmd_sent = true;
+    m_core->SendJoybusCommand(m_timestamp_sent, TransferInterval(), buffer, m_keys);
 
     // H8 (gba_detect.log): bounded joybus command dump. buffer[0..4] still hold
     // the request here (ReceiveResponse's GetJoybusResponse only overwrites it
@@ -432,7 +462,8 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
         {
           if (resp_nonzero)
             GBADetectLog::LogJoybus(m_device_number, m_timestamp_sent, '<', buffer,
-                                    static_cast<int>(response_length), true);
+                                    static_cast<int>(response_length), true,
+                                    m_core->GetJoyStatAfterCommand());
           else
             GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "no-response",
                                    fmt::format("cmd={:02x}", static_cast<u8>(m_last_cmd)));

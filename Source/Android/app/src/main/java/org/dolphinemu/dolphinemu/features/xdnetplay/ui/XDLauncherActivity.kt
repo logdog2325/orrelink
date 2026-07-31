@@ -193,25 +193,32 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         }
     }
 
-    /** Share the GBA-detection diagnostic log (written to GBA/gba_detect.log in
-     * the app's external files dir, which the stock Files app hides on Android
-     * 11+) via the FileProvider so the user can hand it to us. */
+    /** Share the GBA-detection diagnostic logs (GBA/gba_detect_*.log in the
+     * app's external files dir, which the stock Files app hides on Android
+     * 11+) via the FileProvider. One file per session, newest three retained —
+     * all are shared together so a failed-attempt/retry pair arrives intact,
+     * and the timestamped names say which session is which. */
     private fun shareDetectLog() {
-        val log = java.io.File(getExternalFilesDir(null), "GBA/gba_detect.log")
-        if (!log.exists()) {
+        val dir = java.io.File(getExternalFilesDir(null), "GBA")
+        val logs = (dir.listFiles { f ->
+            f.isFile && f.name.startsWith("gba_detect") && f.name.endsWith(".log")
+        } ?: emptyArray()).sortedByDescending { it.name }.take(3)
+        if (logs.isEmpty()) {
             android.widget.Toast.makeText(
                 this, "No detect log yet — boot XD once, then share.",
                 android.widget.Toast.LENGTH_LONG).show()
             return
         }
-        val uri = androidx.core.content.FileProvider.getUriForFile(
-            this, "$packageName.xdshare", log)
-        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+        val uris = ArrayList<android.os.Parcelable>(logs.map {
+            androidx.core.content.FileProvider.getUriForFile(this, "$packageName.xdshare", it)
+        })
+        val send = android.content.Intent(
+            android.content.Intent.ACTION_SEND_MULTIPLE).apply {
             type = "text/plain"
-            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            putParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, uris)
             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        startActivity(android.content.Intent.createChooser(send, "Share detect log"))
+        startActivity(android.content.Intent.createChooser(send, "Share detect logs"))
     }
 
     /** Boot Pokemon XD directly by game ID, bypassing the game picker (which

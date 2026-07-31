@@ -84,7 +84,13 @@ private:
   u64 m_last_data_cmd = 0;
   bool m_link_was_enabled = false;
   u64 m_last_link_seen = 0;
-  u64 m_quiet_until = 0;
+  // A boot link window opened since the last auto-reset (rising-edge tracked);
+  // required before the edge-reset can fire so a core that never opens a window
+  // is only ever cycled by the slow timer backstop.
+  bool m_window_since_reset = false;
+  // Read once at construction from MAIN_GBA_EDGE_RESET; never re-read so a
+  // mid-session config change can't desync netplay clients.
+  bool m_edge_reset_enabled = true;
   u32 m_probe_link_down_streak = 0;
   bool m_link_established = false;
   // Sustained joybus traffic means a real party exchange, not a stray probe.
@@ -112,6 +118,8 @@ private:
   u8 m_diag_prev_cmd_class = 0;   // 0=idle 1=probe(RESET/STATUS) 2=data(READ/WRITE)
   u32 m_diag_cmd_log_count = 0;   // first-N command-dump budget (<=64)
   u32 m_diag_cmd_burst = 0;       // extra command lines emitted after a transition
+  u32 m_diag_rd_count = 0;        // I4: ungated READ count (ground truth in sum)
+  u32 m_diag_wr_count = 0;        // I4: ungated WRITE count (ground truth in sum)
   u64 m_diag_last_summary_tick = 0;
   u64 m_diag_last_joy_tick = 0;   // Review #1 I4: min-gap rate limit for the H8 class path
 
