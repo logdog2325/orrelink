@@ -57,6 +57,11 @@ CSIDevice_GBAEmu::CSIDevice_GBAEmu(Core::System& system, SIDevices device, int d
   // synced config, and never re-reading means a mid-session toggle can't split
   // the clients' reset behavior.
   m_edge_reset_enabled = Config::Get(Config::MAIN_GBA_EDGE_RESET);
+  m_fullboot_presence = Config::Get(Config::MAIN_GBA_FULLBOOT_PRESENCE);
+  // Every log self-identifies the reset policy it ran under.
+  GBADetectLog::LogEvent(m_device_number, 0, "policy",
+                         fmt::format("edge={} fullboot={}", m_edge_reset_enabled ? 1 : 0,
+                                     m_fullboot_presence ? 1 : 0));
   m_core = std::make_shared<HW::GBA::Core>(system, m_device_number);
   m_core->Start(system.GetCoreTiming().GetTicks());
   m_gbahost = Host_CreateGBAHost(m_core);
@@ -252,25 +257,43 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
       // window:
       //
       // EDGE (default, config-gated): a window opened this boot cycle and the
-      // link has now been continuously down >= 250 ms. The 250 ms debounce is
-      // what makes this race-free: Emerald's GameCubeMultiBoot_Init blinks RCNT
-      // within a frame while handshaking, so a live handshake refreshes
-      // m_last_link_seen every up-sample and can never accumulate 250 ms of
-      // down-time; only a genuinely closed window can. This restores the fast
-      // presence cadence (fresh boot window every ~1.2 s) that XD's
-      // edge-triggered detection gate wants -- XD arms on an absent->present
-      // transition, so frequent fresh windows are exactly what it samples.
+      // link has now been continuously down >= 250 ms (+ dither, below). The
+      // debounce is what makes this race-free: Emerald's GameCubeMultiBoot_Init
+      // blinks RCNT within a frame while handshaking, so a live handshake
+      // refreshes m_last_link_seen every up-sample and can never accumulate the
+      // down-time; only a genuinely closed window can.
+      //
+      // FULL-BOOT PRESENCE (default): the minimum spacing between resets is
+      // 5 s, which lets every boot run past the official BIOS's four short
+      // JoyBus beacons (+0.78..+3.05 s) into Emerald's long cartridge window
+      // (+4.79..+7.53 s). 5 s lands INSIDE that window, so the link-down guard
+      // defers the fire to its closing edge: the observed cycle is ~7.8-8.2 s
+      // with ~41% presence duty, and every cycle exposes the window XD's ladder
+      // actually needs. DO NOT pick a spacing in 3.45-4.79 s: that resets in
+      // the dead gap before the cartridge window and silently recreates the
+      // short-beacon-only regime (12% duty) that let XD's detection roll miss.
+      //
+      // DITHER: a deterministic 0-450 ms term derived from the reset ordinal,
+      // so consecutive cycles never repeat the same length. The no-arm failure
+      // mode included a cycle length of exactly 65.0000 video frames -- a
+      // sampler on the frame grid could stay phase-locked out of every window
+      // for an entire session. The dither is a pure function of synced state
+      // (same on every netplay client) and ordinal-global (both sockets stay
+      // in phase with each other on purpose).
       //
       // TIMER (backstop, always on): link down >= 1 s and 6 s since the last
-      // reset -- the previous behavior, kept as a floor for the edge path and
-      // as the sole path when the edge trigger is toggled off.
+      // reset -- fires only when a boot never opened a window at all, and is
+      // the sole path when the edge trigger is toggled off.
+      const u64 dither =
+          (static_cast<u64>(m_auto_reset_ordinal) * 2654435761u % 450u) * (tps / 1000);
+      const u64 min_spacing = m_fullboot_presence ? tps * 5 : tps;
       const bool link_idle = m_last_link_seen == 0 || elapsed_since(m_last_link_seen) > tps;
       const bool timer_fire =
           link_idle && (m_last_auto_reset == 0 || elapsed_since(m_last_auto_reset) > tps * 6);
       const bool edge_fire =
           m_edge_reset_enabled && m_window_since_reset && m_last_link_seen != 0 &&
-          elapsed_since(m_last_link_seen) > tps / 4 &&
-          (m_last_auto_reset == 0 || elapsed_since(m_last_auto_reset) > tps);
+          elapsed_since(m_last_link_seen) > tps / 4 + dither &&
+          (m_last_auto_reset == 0 || elapsed_since(m_last_auto_reset) > min_spacing);
       if (edge_fire || timer_fire)
       {
         if (!NetPlay::IsNetPlayRunning())
@@ -299,13 +322,55 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
         m_last_auto_reset = m_timestamp_sent;
         m_data_cmd_count = 0;
         m_window_since_reset = false;  // a fresh boot must open its own window
+        ++m_auto_reset_ordinal;
         GBADetectLog::LogEvent(
             m_device_number, m_timestamp_sent, "auto-reset",
-            fmt::format("{} reason={} last_seen_ago={}", NetPlay::IsNetPlayRunning() ? "net" : "solo",
-                        edge_fire ? "edge" : "timer", elapsed_since(m_last_link_seen)));
+            fmt::format("{} reason={} last_seen_ago={} ord={} dither={}",
+                        NetPlay::IsNetPlayRunning() ? "net" : "solo",
+                        edge_fire ? "edge" : "timer", elapsed_since(m_last_link_seen),
+                        m_auto_reset_ordinal, dither / (tps / 1000)));
         if (m_diag_cmd_burst < 8)
           m_diag_cmd_burst = 8;  // capture the commands right after the reboot
       }
+    }
+    // Armed-rescue: XD can arm on the cartridge window's last ~150 ms, latch
+    // m_link_established off the ladder's first data, and then lose the window
+    // mid-ladder -- est=1 with the link genuinely down wedges the socket (the
+    // pre-arm trigger above requires !est) while XD retries against silence.
+    // Release: link continuously down >= 0.5 s AND >= 8 s since our reset (a
+    // healthy arm has completed AXVE by +7.0 s and holds the link up; the
+    // post-upload client-reboot gap is covered by m_battle_locked, latched
+    // during the upload). Clear the latch and reboot through the same
+    // solo/netplay-synced path. Provably unreachable in every phase of the
+    // recorded successful sessions.
+    else if (probing && !link_now && m_link_established && !m_battle_locked &&
+             m_last_link_seen != 0 && elapsed_since(m_last_link_seen) >= tps / 2 &&
+             m_last_auto_reset != 0 && elapsed_since(m_last_auto_reset) > tps * 8)
+    {
+      m_link_established = false;
+      if (!NetPlay::IsNetPlayRunning())
+      {
+        m_core->RequestReset(m_timestamp_sent);
+        if (GBALinkDiag* diag = DiagSlot(m_device_number))
+          diag->reset_count.fetch_add(1, std::memory_order_relaxed);
+      }
+      else if (const NetPlay::PadDetails details = NetPlay::GetPadDetails(m_device_number);
+               details.is_local && details.local_pad < 4)
+      {
+        Pad::SetGBAReset(details.local_pad, true);
+        if (GBALinkDiag* diag = DiagSlot(m_device_number))
+          diag->reset_count.fetch_add(1, std::memory_order_relaxed);
+      }
+      m_last_auto_reset = m_timestamp_sent;
+      m_data_cmd_count = 0;
+      m_window_since_reset = false;
+      ++m_auto_reset_ordinal;
+      GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "rescue-reset",
+                             fmt::format("{} last_seen_ago={}",
+                                         NetPlay::IsNetPlayRunning() ? "net" : "solo",
+                                         elapsed_since(m_last_link_seen)));
+      if (m_diag_cmd_burst < 8)
+        m_diag_cmd_burst = 8;
     }
     // Diagnostic tap. Strictly a mirror of the state decided above -- no branch
     // below this point reads any of it, and nothing above it was moved or

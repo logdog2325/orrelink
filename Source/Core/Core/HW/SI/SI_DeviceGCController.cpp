@@ -9,6 +9,11 @@
 #include "Common/MsgHandler.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/CoreTiming.h"
+#ifdef HAS_LIBMGBA
+#include <fmt/format.h>
+
+#include "Core/HW/GBADetectLog.h"
+#endif
 #include "Core/HW/GCPad.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/SI/SI.h"
@@ -174,6 +179,24 @@ DataResponse CSIDevice_GCController::GetData(u32& hi, u32& low)
 
   if (HandleButtonCombos(pad_status) == COMBO_ORIGIN)
     pad_status.button |= PAD_GET_ORIGIN;
+
+#ifdef HAS_LIBMGBA
+  // gba_detect.log gate-roll tap: XD's GBA-detection "rolls" are driven by the
+  // player's menu presses, so timestamp A/B/Start RISING edges on the same
+  // t= clock as the link events. Rising-edge only -- a held button logs once.
+  {
+    const u16 pressed = pad_status.button & ~m_diag_prev_buttons;
+    if (pressed & (PAD_BUTTON_A | PAD_BUTTON_B | PAD_BUTTON_START))
+    {
+      GBADetectLog::LogEvent(m_device_number,
+                             m_system.GetCoreTiming().GetTicks(), "pad",
+                             fmt::format("a={} b={} start={}", (pressed & PAD_BUTTON_A) ? 1 : 0,
+                                         (pressed & PAD_BUTTON_B) ? 1 : 0,
+                                         (pressed & PAD_BUTTON_START) ? 1 : 0));
+    }
+    m_diag_prev_buttons = pad_status.button;
+  }
+#endif
 
   hi = MapPadStatus(pad_status);
 
