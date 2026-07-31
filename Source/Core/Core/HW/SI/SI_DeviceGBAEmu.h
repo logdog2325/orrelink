@@ -33,8 +33,12 @@ constexpr size_t GBA_LINK_DIAG_CHANNELS = 4;
 // thread inside the existing poll, read from the UI thread, hence atomics --
 // the fields are independent counters, so a torn set across fields is fine.
 //
-// NOTHING here feeds back into the link/reset logic: this is a tap, not a
-// control input. Keep it that way.
+// One sanctioned control read exists: a pending socket's reset policy checks
+// the OTHER sockets' established/locked to pick its presence regime (XD only
+// hands off to a socket that looks mostly absent). That read is deterministic
+// across netplay clients because est/lck derive purely from synced emulation
+// state and each device zeroes its own slot at construction. Everything else
+// here is a tap, not a control input -- keep it that way.
 struct GBALinkDiag
 {
   // Joybus link window currently open (Core::IsLinkEnabled()).
@@ -129,6 +133,7 @@ private:
   u32 m_diag_rd_count = 0;        // I4: ungated READ count (ground truth in sum)
   u32 m_diag_wr_count = 0;        // I4: ungated WRITE count (ground truth in sum)
   u64 m_diag_last_summary_tick = 0;
+  u64 m_diag_window_open_tick = 0;  // rising-edge tick, for window-close dur_ms=
   u64 m_diag_last_joy_tick = 0;   // Review #1 I4: min-gap rate limit for the H8 class path
 
   std::shared_ptr<HW::GBA::Core> m_core;
