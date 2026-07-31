@@ -16,6 +16,8 @@
 #include <mz_zip.h>
 #include <mz_zip_rw.h>
 
+#include <fmt/format.h>
+
 #include "AudioCommon/AudioCommon.h"
 
 #include "Common/ChunkFile.h"
@@ -637,6 +639,53 @@ void Core::RequestReset(u64 gc_ticks)
   });
 }
 
+void Core::DiagJoyTap(bool after_command)
+{
+  if (!IsStarted() || m_core->platform(m_core) != mPLATFORM_GBA)
+    return;
+  const auto* gba = static_cast<::GBA*>(m_core->board);
+  // io[] is halfword-indexed by (address - 0x04000000) >> 1.
+  // 0x154/0x156 = JOY_TRANS_LO/HI, 0x158 = JOYSTAT (bit 0x08 = SEND: the GBA
+  // wrote JOY_TRANS and has data ready for the GameCube).
+  const u8 stat = static_cast<u8>(gba->memory.io[0x158 >> 1]);
+  const u32 trans = gba->memory.io[0x154 >> 1] |
+                    (static_cast<u32>(gba->memory.io[0x156 >> 1]) << 16);
+  if (after_command)
+    m_joystat_after_cmd.store(stat, std::memory_order_relaxed);
+
+  const bool send_now = (stat & 0x08) != 0;
+  const bool send_prev = (m_diag_prev_joystat & 0x08) != 0;
+  m_diag_prev_joystat = stat;
+  if (send_now == send_prev)
+    return;
+  // Token bucket: never more than ~20 edge lines per second per core, so a
+  // pathological flap can't make the event thread spend its time formatting.
+  const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
+  if (m_diag_last_joy_line_ticks != 0 && m_last_gc_ticks > m_diag_last_joy_line_ticks &&
+      m_last_gc_ticks - m_diag_last_joy_line_ticks < tps / 20)
+  {
+    return;
+  }
+  m_diag_last_joy_line_ticks = m_last_gc_ticks;
+  if (send_now)
+  {
+    // The client raised SEND: JOY_TRANS holds what it wants the GC to read.
+    GBADetectLog::LogEvent(m_device_number, m_last_gc_ticks, "jpost",
+                           fmt::format("trans={:08x} stat={:02x}", trans, stat), false);
+  }
+  else
+  {
+    // SEND fell. cause=<cmd byte> when the joybus command that just executed
+    // cleared it (a GC read); cause=none when the program or a reset did.
+    GBADetectLog::LogEvent(
+        m_device_number, m_last_gc_ticks, "jclear",
+        after_command ?
+            fmt::format("cause={:02x} stat={:02x}", static_cast<u8>(m_joybus_command), stat) :
+            fmt::format("cause=none stat={:02x}", stat),
+        false);
+  }
+}
+
 void Core::HandleEvent(SyncEvent event)
 {
   m_keys = event.keys;
@@ -647,11 +696,15 @@ void Core::HandleEvent(SyncEvent event)
   {
     if (IsStarted())
       m_core->reset(m_core);
+    DiagJoyTap(false);
     return;
   }
 
   if (event.event_type != SyncEventType::RunCommand)
+  {
+    DiagJoyTap(false);
     return;
+  }
 
   if (m_link_enabled && !m_force_disconnect)
   {
@@ -662,6 +715,8 @@ void Core::HandleEvent(SyncEvent event)
   {
     m_response_size = 0;
   }
+
+  DiagJoyTap(true);
 
   m_command_pending.store(false, std::memory_order_release);
   m_command_pending.notify_one();
