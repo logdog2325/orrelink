@@ -81,6 +81,9 @@ public:
   void RequestReset(u64 gc_ticks);
   bool IsStarted() const;
   bool IsLinkEnabled() const { return m_link_enabled.load(std::memory_order_relaxed); }
+  // JOYSTAT as sampled on the event thread right after the last joybus command
+  // (gba_detect.log's jsa= field). Diagnostic only.
+  u8 GetJoyStatAfterCommand() const { return m_joystat_after_cmd.load(std::memory_order_relaxed); }
   CoreInfo GetCoreInfo() const;
 
   // Host-side audio gate: while true this core's samples are dropped before
@@ -136,6 +139,10 @@ private:
   };
   void PushEvent(SyncEvent event);
   void HandleEvent(SyncEvent event);
+  // I1: sample the GBA's JOY registers on the event thread and log SEND-bit
+  // transitions (gba_detect.log). after_command attributes a falling edge to
+  // the joybus command that just ran. Never blocks: log lines are unflushed.
+  void DiagJoyTap(bool after_command);
 
   bool LoadBIOS(const char* bios_path);
   bool LoadSave(const char* save_path);
@@ -170,6 +177,12 @@ private:
   // thread in the SI device. Emerald toggles JOYBUS off/on two instructions
   // apart, so this flips constantly during a handshake.
   std::atomic_bool m_link_enabled{false};
+  // gba_detect.log JOY-register tap (I1). m_joystat_after_cmd is written on the
+  // event thread after each joybus command and read by the SI thread when it
+  // logs the response line; the rest are event-thread-only. Pure observation.
+  std::atomic<u8> m_joystat_after_cmd{0};
+  u8 m_diag_prev_joystat = 0;
+  u64 m_diag_last_joy_line_ticks = 0;
   bool m_force_disconnect = false;
 
   std::weak_ptr<GBAHostInterface> m_host;

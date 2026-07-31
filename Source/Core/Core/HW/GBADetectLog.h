@@ -16,11 +16,12 @@
 // on the joybus hot path (transition-triggered + <=1/sec summary + a bounded
 // boot-time command dump only).
 //
-// File: <User>/GBA/gba_detect.log  (File::GetUserPath(D_GBAUSER_IDX)).
+// File: <User>/GBA/gba_detect_YYYYMMDD_HHMMSS.log (File::GetUserPath(D_GBAUSER_IDX));
+// one file per session, the two most recent previous sessions are retained.
 namespace GBADetectLog
 {
-// Resolved absolute path of the log file (stable for the process lifetime).
-const std::string& FilePath();
+// Absolute path of the CURRENT session's log file (empty before any session).
+std::string FilePath();
 
 // CSIDevice_GBAEmu ctor/dtor (CPU/host thread). Reference-counted: the first
 // live GBA device of a session truncates the file, writes the banner as line 1
@@ -33,16 +34,21 @@ void OnDeviceDestroyed();
 void LogBios(int channel, bool official, const std::string& path, u64 size, bool netplay,
              bool load_ok);
 
-// Discrete detection transitions / role line. Flushed (transitions are rare).
-void LogEvent(int channel, u64 tick, const char* event, const std::string& detail);
+// Discrete detection transitions / role line. Flushed by default (transitions
+// are rare); pass flush=false from the GBA event thread (I1 jpost/jclear) so
+// that thread never waits on a write syscall.
+void LogEvent(int channel, u64 tick, const char* event, const std::string& detail,
+              bool flush = true);
 
 // One joybus command ('>') or response ('<') line. NOT flushed per call
 // (bounded boot burst; a later event/summary flushes it). bytes[0..4] must be
-// valid. `sent` is meaningful for '>' lines: 0 == withheld by the quiet window.
-void LogJoybus(int channel, u64 tick, char dir, const u8* bytes, int len, bool sent);
+// valid. `sent` is meaningful for '>' lines. `jsa` (responses only) is JOYSTAT
+// as sampled on the event thread right after the command executed.
+void LogJoybus(int channel, u64 tick, char dir, const u8* bytes, int len, bool sent, u8 jsa = 0);
 
 // Once-per-second telemetry mirror (caller throttles to <=1/sec). Fields mirror
-// the on-screen readout: rom/gba/loc/lk/win/rst/prb/est/lck/cmd.
+// the on-screen readout (rom/gba/loc/lk/win/rst/prb/est/lck/cmd) plus the
+// ungated data-command counters rd/wr (I4 ground truth).
 void LogSummary(int channel, u64 tick, bool rom, bool gba, bool loc, bool lk, u32 win, u32 rst,
-                u32 prb, bool est, bool lck, u8 cmd);
+                u32 prb, bool est, bool lck, u8 cmd, u32 rd, u32 wr);
 }  // namespace GBADetectLog
