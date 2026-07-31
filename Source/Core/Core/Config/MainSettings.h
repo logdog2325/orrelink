@@ -230,6 +230,7 @@ extern const Info<bool> MAIN_GBA_SAVES_IN_ROM_PATH;
 extern const Info<bool> MAIN_GBA_LINK_MUTED;
 extern const Info<bool> MAIN_GBA_PRACTICE_DUMMY;
 extern const Info<bool> MAIN_GBA_EDGE_RESET;
+extern const Info<bool> MAIN_GBA_FULLBOOT_PRESENCE;
 
 static constexpr std::size_t GBPLAYER_GBA_INDEX = 4;
 #endif

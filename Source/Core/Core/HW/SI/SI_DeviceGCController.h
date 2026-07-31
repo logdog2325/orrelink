@@ -55,6 +55,9 @@ protected:
   u64 m_timer_button_combo_start = 0;
   // Type of button combo from the last/current poll
   EButtonCombo m_last_button_combo = COMBO_NONE;
+  // gba_detect.log gate-roll tap: previous poll's button bits, for
+  // rising-edge-only logging of A/B/Start. Diagnostic only; not serialized.
+  u16 m_diag_prev_buttons = 0;
 
 public:
   // Constructor
