@@ -226,6 +226,11 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private fun bootXd() {
         val xd = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID)
         if (xd != null) {
+            // XD arms its GBA detection from the player's own menu navigation;
+            // a parked connect screen means the roll missed, and re-entering is
+            // the retry. Shown here so the rule survives on the launcher.
+            statusMessage =
+                "Tip: if a GBA hasn't linked ~60s after entering VS mode, press B and re-enter."
             EmulationActivity.launch(this, xd.getPath(), false)
         } else {
             statusMessage = "Pokémon XD not found — choose the folder with your ISO first."
