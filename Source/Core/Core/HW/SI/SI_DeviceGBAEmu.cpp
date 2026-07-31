@@ -27,7 +27,6 @@
 #include "Core/Host.h"
 #include "Core/NetPlayProto.h"
 #include "Core/System.h"
-#include "VideoCommon/OnScreenDisplay.h"
 
 namespace SerialInterface
 {
@@ -269,13 +268,20 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
 
     if (probing && !link_now && !handshake_active && !m_link_established && !m_battle_locked)
     {
-      // Is any OTHER GBA socket already engaged? Needed by the stuck-entry
-      // hint (a live handoff is press-silent by design -- never advise backing
-      // out of one) and, under the legacy flag, by the presence-regime split.
-      // g_gba_link_diag is written by each device during its own poll on this
-      // same thread, and est/lck derive purely from synced emulation state, so
-      // the read is deterministic across netplay clients.
+      // NO on-screen advice fires from here. A press-silence heuristic cannot
+      // tell "parked at the connect screen" from "idling on any menu" -- the
+      // wire looks identical (XD polls the sockets constantly either way), and
+      // on device the hint misfired both during a live handoff and on the boot
+      // menu. The recovery rule (back out with B, re-enter) lives in the
+      // release notes; the roll-state log lines still record every park.
+      //
+      // Is any OTHER GBA socket already engaged? Used by the legacy full-boot
+      // presence-regime split. g_gba_link_diag is written by each device
+      // during its own poll on this same thread, and est/lck derive purely
+      // from synced emulation state, so the read is deterministic across
+      // netplay clients.
       bool other_socket_engaged = false;
+      if (m_fullboot_presence)
       {
         auto& si_for_diag = m_system.GetSerialInterface();
         for (int ch = 0; ch < MAX_SI_CHANNELS; ++ch)
@@ -290,24 +296,6 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
             break;
           }
         }
-      }
-
-      // Stuck-entry hint: every recorded arm latched within ~1 s of the
-      // player's final press, so 20 s of press-silence with NOTHING connected
-      // means the entry roll parked and only backing out re-rolls it. The
-      // no-socket-engaged gate is load-bearing: the socket-3 handoff runs
-      // automatically for 20+ press-silent seconds after socket 2 links, and
-      // an ungated version of this hint told the player to back out 2.5 s
-      // before the handoff completed. 20 s clears the longest observed
-      // innocent silence (title-screen idle, 15.9 s) with margin. One-shot per
-      // press-silence span, claimed by whichever socket checks first.
-      if (const u64 press = GBADetectLog::LastPadPress();
-          !other_socket_engaged && press != 0 && m_timestamp_sent > press &&
-          m_timestamp_sent - press > tps * 20 && GBADetectLog::TryClaimHint(press))
-      {
-        OSD::AddMessage("GBA link idle - press B to back out and re-enter the link menu", 8000,
-                        OSD::Color::CYAN);
-        GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "hint", "stuck-entry");
       }
       // Two ways to decide the GBA should reboot and reopen its boot link
       // window:
