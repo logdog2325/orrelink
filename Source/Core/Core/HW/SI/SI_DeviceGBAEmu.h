@@ -95,11 +95,12 @@ private:
   // Read once at construction from MAIN_GBA_EDGE_RESET; never re-read so a
   // mid-session config change can't desync netplay clients.
   bool m_edge_reset_enabled = true;
-  // Read once from MAIN_GBA_FULLBOOT_PRESENCE: raise the minimum reset spacing
-  // to 5 s so every boot cycle exposes Emerald's long cartridge window (the
-  // one XD's ladder needs), not just the BIOS's short beacons. False restores
-  // the fast short-beacon cycling (the v0.4.33 behavior) as an escape hatch.
-  bool m_fullboot_presence = true;
+  // Read once from MAIN_GBA_FULLBOOT_PRESENCE (default false): pre-arm sockets
+  // run fast dithered short-beacon cycling, because XD's menu-entry roll parks
+  // iff the long cartridge window overlaps the arming-completion span -- the
+  // long window belongs only on the post-arm boot. True = legacy v0.4.35
+  // full-boot pre-arm behavior, kept as an escape hatch.
+  bool m_fullboot_presence = false;
   // Counts every auto/rescue reset this session; drives the deterministic
   // dither term (pure function of synced state -> netplay-safe).
   u32 m_auto_reset_ordinal = 0;
@@ -133,7 +134,11 @@ private:
   u32 m_diag_rd_count = 0;        // I4: ungated READ count (ground truth in sum)
   u32 m_diag_wr_count = 0;        // I4: ungated WRITE count (ground truth in sum)
   u64 m_diag_last_summary_tick = 0;
-  u64 m_diag_window_open_tick = 0;  // rising-edge tick, for window-close dur_ms=
+  u64 m_diag_window_open_tick = 0;   // rising-edge tick, for window-close dur_ms=
+  u64 m_diag_window_close_tick = 0;  // falling-edge tick, for window-open gap_ms=
+  u64 m_diag_last_window_dur_ms = 0; // last completed window's duration
+  u64 m_diag_last_press_seen = 0;    // last pad-press tick this socket logged roll-state for
+  bool m_diag_first_cmd_logged = false;  // first-data emitted for the current window
   u64 m_diag_last_joy_tick = 0;   // Review #1 I4: min-gap rate limit for the H8 class path
 
   std::shared_ptr<HW::GBA::Core> m_core;
