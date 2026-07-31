@@ -53,11 +53,8 @@ void LogSummary(int channel, u64 tick, bool rom, bool gba, bool loc, bool lk, u3
                 u32 prb, bool est, bool lck, u8 cmd, u32 rd, u32 wr);
 
 // Shared last-GC-pad-press tick (A/B/Start rising edges), written by the GC
-// controller tap and read by the GBA devices for the per-roll state lines and
-// the stuck-entry hint. Diagnostic only; never feeds emulation.
+// controller tap and read by the GBA devices for the per-roll state lines.
+// Diagnostic only; never feeds emulation.
 void NotePadPress(u64 tick);
 u64 LastPadPress();
-// One-shot claim so exactly one GBA socket fires the on-screen hint per
-// press-silence span. Returns true iff this call claimed the given press tick.
-bool TryClaimHint(u64 press_tick);
 }  // namespace GBADetectLog
