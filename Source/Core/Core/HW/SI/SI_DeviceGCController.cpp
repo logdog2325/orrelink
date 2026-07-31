@@ -188,8 +188,9 @@ DataResponse CSIDevice_GCController::GetData(u32& hi, u32& low)
     const u16 pressed = pad_status.button & ~m_diag_prev_buttons;
     if (pressed & (PAD_BUTTON_A | PAD_BUTTON_B | PAD_BUTTON_START))
     {
-      GBADetectLog::LogEvent(m_device_number,
-                             m_system.GetCoreTiming().GetTicks(), "pad",
+      const u64 tick = m_system.GetCoreTiming().GetTicks();
+      GBADetectLog::NotePadPress(tick);
+      GBADetectLog::LogEvent(m_device_number, tick, "pad",
                              fmt::format("a={} b={} start={}", (pressed & PAD_BUTTON_A) ? 1 : 0,
                                          (pressed & PAD_BUTTON_B) ? 1 : 0,
                                          (pressed & PAD_BUTTON_START) ? 1 : 0));
