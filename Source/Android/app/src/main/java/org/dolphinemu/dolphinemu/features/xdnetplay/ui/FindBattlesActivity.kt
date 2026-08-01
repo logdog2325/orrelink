@@ -23,12 +23,11 @@ import kotlinx.coroutines.withContext
 import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplayActivity
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplaySetupActivity
-import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
 import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
-import org.dolphinemu.dolphinemu.features.settings.model.Settings
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
 import org.dolphinemu.dolphinemu.features.xdnetplay.LobbySession
 import org.dolphinemu.dolphinemu.features.xdnetplay.NetPlayIndexBridge
+import org.dolphinemu.dolphinemu.features.xdnetplay.XdMatchmaker
 import org.dolphinemu.dolphinemu.services.GameFileCacheManager
 import org.dolphinemu.dolphinemu.ui.main.ThemeProvider
 import org.dolphinemu.dolphinemu.ui.theme.DolphinTheme
@@ -164,13 +163,7 @@ class FindBattlesActivity : AppCompatActivity(), ThemeProvider {
 
         // Same config handoff as desktop NetPlayBrowser::accept();
         // NetplaySession.nativeJoin() reads exactly these keys.
-        StringSetting.NETPLAY_TRAVERSAL_CHOICE.setString(NativeConfig.LAYER_BASE, session.method)
-        IntSetting.NETPLAY_CONNECT_PORT.setInt(NativeConfig.LAYER_BASE, session.port)
-        if (session.isTraversal) {
-            StringSetting.NETPLAY_HOST_CODE.setString(NativeConfig.LAYER_BASE, serverId)
-        } else {
-            StringSetting.NETPLAY_ADDRESS.setString(NativeConfig.LAYER_BASE, serverId)
-        }
+        XdMatchmaker.applyJoinConfig(session, serverId)
 
         uiState = uiState.copy(
             joining = true,
@@ -209,7 +202,9 @@ class FindBattlesActivity : AppCompatActivity(), ThemeProvider {
     // ---- Publishing (host side) ----
 
     private fun loadPublishPrefs() {
-        val defaultName = "${StringSetting.NETPLAY_NICKNAME.string}'s XD battle"
+        // Same "XD [OC] <nickname>" shape the auto-matcher publishes, so a
+        // hand-published room reads identically in the lobby.
+        val defaultName = XdMatchmaker.sessionName(StringSetting.NETPLAY_NICKNAME.string)
         uiState = uiState.copy(
             publishEnabled = NativeConfig.getBoolean(
                 NativeConfig.LAYER_ACTIVE, FILE, SECTION, KEY_USE_INDEX, false
@@ -257,25 +252,25 @@ class FindBattlesActivity : AppCompatActivity(), ThemeProvider {
      */
     private fun hostPublicBattle() {
         val state = uiState
-        NativeConfig.setBoolean(NativeConfig.LAYER_BASE, FILE, SECTION, KEY_USE_INDEX, true)
-        NativeConfig.setString(NativeConfig.LAYER_BASE, FILE, SECTION, KEY_INDEX_NAME, state.publishName)
-        NativeConfig.setString(NativeConfig.LAYER_BASE, FILE, SECTION, KEY_INDEX_REGION, state.publishRegion)
-        NativeConfig.setString(NativeConfig.LAYER_BASE, FILE, SECTION, KEY_INDEX_PASSWORD, state.publishPassword)
-        // Traversal needs no port forwarding - the sane default on mobile.
-        StringSetting.NETPLAY_TRAVERSAL_CHOICE.setString(NativeConfig.LAYER_BASE, "traversal")
-        NativeConfig.save(NativeConfig.LAYER_BASE)
+        XdMatchmaker.applyHostConfig(
+            name = state.publishName,
+            region = state.publishRegion,
+            password = state.publishPassword
+        )
 
         uiState = state.copy(publishEnabled = true)
         NetplaySetupActivity.launch(this)
     }
 
     companion object {
-        private const val FILE = Settings.FILE_DOLPHIN
-        private const val SECTION = Settings.SECTION_INI_NETPLAY
-        private const val KEY_USE_INDEX = "UseIndex"
-        private const val KEY_INDEX_NAME = "IndexName"
-        private const val KEY_INDEX_REGION = "IndexRegion"
-        private const val KEY_INDEX_PASSWORD = "IndexPassword"
+        // Aliases of the single definition in XdMatchmaker, so the publish
+        // panel below and the auto-matcher can never drift onto different keys.
+        private const val FILE = XdMatchmaker.FILE
+        private const val SECTION = XdMatchmaker.SECTION
+        private const val KEY_USE_INDEX = XdMatchmaker.KEY_USE_INDEX
+        private const val KEY_INDEX_NAME = XdMatchmaker.KEY_INDEX_NAME
+        private const val KEY_INDEX_REGION = XdMatchmaker.KEY_INDEX_REGION
+        private const val KEY_INDEX_PASSWORD = XdMatchmaker.KEY_INDEX_PASSWORD
 
         @JvmStatic
         fun launch(context: Context) {
