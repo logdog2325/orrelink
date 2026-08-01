@@ -23,6 +23,9 @@ import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
 import org.dolphinemu.dolphinemu.model.GameFileCache
 import org.dolphinemu.dolphinemu.services.GameFileCacheManager
 import org.dolphinemu.dolphinemu.ui.main.ThemeProvider
+import org.dolphinemu.dolphinemu.features.xdnetplay.input.AutoMapper
+import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.PbrSave
+import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.PbrSaveFile
 import org.dolphinemu.dolphinemu.ui.theme.DolphinTheme
 import org.dolphinemu.dolphinemu.utils.AfterDirectoryInitializationRunner
 import org.dolphinemu.dolphinemu.utils.DirectoryInitialization
@@ -48,6 +51,7 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var nandImported by mutableStateOf(false)
     private var pbrGameId by mutableStateOf<String?>(null)
     private var statusMessage by mutableStateOf<String?>(null)
+    private var pbrSaveInstalled by mutableStateOf(false)
 
     private val pickPbrFolder =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -64,6 +68,52 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
             if (uri != null) importNand(uri)
         }
+
+    private val pickPbrSave =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            if (uri != null) importPbrSave(uri)
+        }
+
+    /**
+     * Install a PBR save file (community "Restorer Forever"-style save, or the
+     * user's own backup) into the emulated NAND, so PBR has profiles and a
+     * storage-unlocked box without the user having to play through it first.
+     *
+     * The file is validated by actually parsing it (wrong size or bad checksums
+     * throw), an existing save is backed up rather than clobbered, and the copy
+     * lands atomically via a temp file + rename.
+     */
+    private fun importPbrSave(uri: Uri) {
+        ThreadUtil.runOnThreadAndShowResult(
+            this, R.string.import_in_progress, R.string.do_not_close_app,
+            {
+                val result = try {
+                    val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalStateException("could not read that file")
+                    PbrSave.load(bytes)  // throws if it is not a valid PBR save
+                    val target = PbrSaveFile.forGameId(pbrGameId).file
+                    target.parentFile?.mkdirs()
+                    if (target.exists()) {
+                        target.copyTo(File(target.path + ".userbak"), overwrite = true)
+                    }
+                    val tmp = File(target.path + ".tmp")
+                    tmp.writeBytes(bytes)
+                    if (!tmp.renameTo(target)) {
+                        tmp.delete()
+                        throw java.io.IOException("could not write ${target.path}")
+                    }
+                    null
+                } catch (e: Exception) {
+                    "Not a valid PBR save: ${e.message ?: "unreadable"}"
+                }
+                runOnUiThread {
+                    statusMessage = result ?: "PBR save installed."
+                    refreshChecks()
+                }
+                null
+            }
+        )
+    }
 
     /** Imports the user's own nand.bin (NAND + appended keys) into the app's
      *  Wii/ dir on a background thread. Success is silent; the native side pops
@@ -107,6 +157,8 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
                     pbrSupported = isSupported(pbrGameId),
                     statusMessage = statusMessage,
                     onImportNand = { pickNand.launch("*/*") },
+                    pbrSaveInstalled = pbrSaveInstalled,
+                    onImportPbrSave = { pickPbrSave.launch("*/*") },
                     onPickPbrFolder = { pickPbrFolder.launch(null) },
                     onTeamEditor = { PbrTeamEditorActivity.launch(this) },
                     onPlayPbr = { bootPbr() },
@@ -124,9 +176,64 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
         }
     }
 
+    /**
+     * Install the bundled starter PBR save if the user has none.
+     *
+     * PBR's own save only appears after playing it (and, for the online modes,
+     * connecting once), which left the team editor and the online flow with
+     * nothing to work on. The bundled save is a community "Restorer Forever"
+     * save with all four profiles storage-unlocked, shipped decrypted+gzipped
+     * (551 KB instead of 3.5 MB -- the encrypted form does not compress) and
+     * re-encrypted here.
+     *
+     * NEVER overwrites an existing save: once the user has their own progress
+     * and their own online identity, this must not touch it.
+     */
+    private fun seedPbrSave() {
+        val target = PbrSaveFile.forGameId(pbrGameId).file
+        if (PbrSaveFile.candidates().any { it.file.exists() }) {
+            return
+        }
+        try {
+            val dec = assets.open("xdnetplay/PbrSaveData.dec.gz").use { input ->
+                java.util.zip.GZIPInputStream(input).use { it.readBytes() }
+            }
+            val encrypted = PbrSave.encryptDecryptedImage(dec)
+            PbrSave.load(encrypted)  // refuse to write anything that won't load back
+            target.parentFile?.mkdirs()
+            val tmp = File(target.path + ".tmp")
+            tmp.writeBytes(encrypted)
+            if (!tmp.renameTo(target)) {
+                tmp.delete()
+                throw java.io.IOException("could not write ${target.path}")
+            }
+        } catch (e: Exception) {
+            statusMessage = "Could not install the starter PBR save: ${e.message ?: "unknown error"}"
+        }
+    }
+
     private fun refreshChecks() {
         ensurePbrConfig()
+        // Seeding gunzips + encrypts + verifies 3.5 MB: far too heavy for the
+        // UI thread, and this runs from onResume.
+        if (!PbrSaveFile.candidates().any { it.file.exists() }) {
+            Thread {
+                seedPbrSave()
+                runOnUiThread {
+                    pbrSaveInstalled = PbrSaveFile.candidates().any { it.file.exists() }
+                }
+            }.start()
+        }
+        // Map the handheld's physical controls to the emulated Wii Remote:
+        // nothing did this before (only GC and GBA pads were mapped), so PBR
+        // booted with no working controls at all. Right stick aims the pointer.
+        try {
+            AutoMapper.autoMapWiimote()
+        } catch (_: Exception) {
+            // No gamepad or an input-stack hiccup must never break the checklist.
+        }
         nandImported = checkNandImported()
+        pbrSaveInstalled = PbrSaveFile.candidates().any { it.file.exists() }
         pbrGameId = findPbrGame()?.getGameId()
     }
 
