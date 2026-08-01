@@ -160,6 +160,10 @@ enum class MessageID : u8
   PlayerLeave = 0x11,
 
   ChatMessage = 0x30,
+  // XD Netplay: a joiner submits their own Showdown team, which the host
+  // writes into the GBA save it will sync at start. Safe to add without a
+  // protocol version bump: netplay already refuses to connect across builds.
+  TeamData = 0x31,
 
   ChunkedDataStart = 0x40,
   ChunkedDataEnd = 0x41,
