@@ -53,6 +53,7 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
                     fatalTraversalError = viewModel.fatalTraversalError,
                     messages = viewModel.messages.collectAsState().value,
                     onSendMessage = viewModel::sendMessage,
+                    onSubmitTeam = viewModel::submitTeam,
                     game = viewModel.game.collectAsState().value,
                     onStartGame = viewModel::startGame,
                     onGameSelected = viewModel::changeGame,

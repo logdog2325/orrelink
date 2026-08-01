@@ -12,10 +12,13 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPointer>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
@@ -23,7 +26,10 @@
 #include <QTextBrowser>
 
 #include <algorithm>
+#include <thread>
 #include <utility>
+
+#include "Common/HttpRequest.h"
 
 #ifdef HAS_LIBMGBA
 #include <fmt/ranges.h>
@@ -62,6 +68,7 @@
 
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/GameFile.h"
+#include "UICommon/XDNetplay/TeamInjector.h"
 #include "UICommon/UICommon.h"
 
 #include "VideoCommon/NetPlayChatUI.h"
@@ -277,9 +284,21 @@ void NetPlayDialog::CreateChatLayout()
 
   auto* layout = new QGridLayout;
 
+  // XD Netplay: a joiner can hand their own team to the host, which writes it
+  // into the save it syncs at start. Hidden for the host (who edits its saves
+  // directly in the team editor) and shown once connected as a client.
+  m_submit_team_button = new QPushButton(tr("Submit Team..."));
+  m_submit_team_button->setToolTip(
+      tr("Send your own Showdown team to the host, so you play your own Pokémon.\n"
+         "Applies to the next battle the host starts."));
+  m_submit_team_button->setDefault(false);
+  m_submit_team_button->setAutoDefault(false);
+  m_submit_team_button->hide();
+
   layout->addWidget(m_chat_edit, 0, 0, 1, -1);
   layout->addWidget(m_chat_type_edit, 1, 0);
   layout->addWidget(m_chat_send_button, 1, 1);
+  layout->addWidget(m_submit_team_button, 2, 0, 1, -1);
 
   m_chat_box->setLayout(layout);
 }
@@ -346,6 +365,7 @@ void NetPlayDialog::ConnectWidgets()
   // Chat
   connect(m_chat_send_button, &QPushButton::clicked, this, &NetPlayDialog::OnChat);
   connect(m_chat_type_edit, &QLineEdit::returnPressed, this, &NetPlayDialog::OnChat);
+  connect(m_submit_team_button, &QPushButton::clicked, this, &NetPlayDialog::OnSubmitTeam);
   connect(m_chat_type_edit, &QLineEdit::textChanged, this,
           [this] { m_chat_send_button->setEnabled(!m_chat_type_edit->text().isEmpty()); });
 
@@ -543,6 +563,8 @@ void NetPlayDialog::show(std::string nickname, bool use_traversal)
 #else
   m_hide_remote_gbas_action->setVisible(false);
 #endif
+  // Only a joiner submits a team; the host edits its own saves directly.
+  m_submit_team_button->setHidden(is_hosting);
   m_start_button->setHidden(!is_hosting);
   m_kick_button->setHidden(!is_hosting);
   m_assign_ports_button->setHidden(!is_hosting);
@@ -814,6 +836,72 @@ void NetPlayDialog::AppendChat(const std::string& msg)
 {
   DisplayMessage(QString::fromStdString(msg), "");
   QApplication::alert(this);
+}
+
+std::string NetPlayDialog::OnTeamSubmission(const std::string& player, const std::string& text)
+{
+  // Host side, NETPLAY thread. The write must finish before we return: the
+  // caller acks only afterwards, so the file is on disk before any Start can
+  // read it. Touches no widgets -- the caller relays the text into chat.
+  std::string status;
+  if (!XDNetplay::InjectGuestTeam(text, 2, &status))
+    return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
+  return status;
+}
+
+void NetPlayDialog::OnSubmitTeam()
+{
+  // Joiner side. A pokepast.es link is resolved HERE, on the submitting
+  // client, so the host only ever parses plain text it was handed -- it never
+  // fetches a URL a stranger chose.
+  QInputDialog dialog(this);
+  dialog.setWindowTitle(tr("Submit Team"));
+  dialog.setLabelText(tr("Paste a Showdown team export, or a pokepast.es link.\n"
+                         "The host writes it into the save you'll play with."));
+  dialog.setInputMode(QInputDialog::TextInput);
+  dialog.setOption(QInputDialog::UsePlainTextEditForTextInput);
+  dialog.resize(500, 400);
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+
+  const QString text = dialog.textValue().trimmed();
+  if (text.isEmpty())
+    return;
+
+  const QRegularExpression pokepaste_re(
+      QStringLiteral("^https?://pokepast\\.es/[A-Za-z0-9]+"));
+  const QRegularExpressionMatch match = pokepaste_re.match(text);
+  if (!match.hasMatch())
+  {
+    Settings::Instance().GetNetPlayClient()->SendTeamSubmission(text.toStdString());
+    DisplayMessage(tr("Team sent to the host."), "");
+    return;
+  }
+
+  const std::string url = match.captured(0).toStdString() + "/raw";
+  DisplayMessage(tr("Fetching %1…").arg(match.captured(0)), "");
+  QPointer<NetPlayDialog> self(this);
+  std::thread([self, url] {
+    Common::HttpRequest request;
+    request.FollowRedirects();
+    Common::HttpRequest::Response response = request.Get(url);
+    if (!self)
+      return;
+    QueueOnObject(self.data(), [self, response = std::move(response)] {
+      if (!self)
+        return;
+      if (!response)
+      {
+        self->DisplayMessage(tr("Could not fetch that paste (network error)."), "");
+        return;
+      }
+      if (auto client = Settings::Instance().GetNetPlayClient())
+      {
+        client->SendTeamSubmission(std::string(response->begin(), response->end()));
+        self->DisplayMessage(tr("Team sent to the host."), "");
+      }
+    });
+  }).detach();
 }
 
 void NetPlayDialog::OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,
