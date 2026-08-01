@@ -4,6 +4,7 @@
 #include "DolphinQt/XDNetplay/XDNetplayConfig.h"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "Common/CommonPaths.h"
@@ -54,6 +55,29 @@ bool SeedFile(const std::string& source, const std::string& destination)
 bool IsXdGameId(const std::string& game_id)
 {
   return game_id.rfind(XD_GAME_ID, 0) == 0;
+}
+
+std::string MakeOpenSessionName(const std::string& nickname)
+{
+  // Mirrors XdMatchmaker.sessionName() on Android, byte for byte.
+  return "XD [OC] " + (nickname.empty() ? std::string("Player") : nickname);
+}
+
+bool LooksLikeXdSession(const std::string& published_game_name)
+{
+  std::string lower = published_game_name;
+  Common::ToLower(&lower);
+  // "pokémon xd" is matched as raw UTF-8: Common::ToLower only folds ASCII, so
+  // the accented byte pair survives untouched and the literal below (already
+  // lowercase) lines up. Desktop hosts publish the ASCII "Pokemon XD ..."
+  // title anyway; the accented needle is for title databases that localize it.
+  for (const std::string_view needle :
+       {"gxxe01", "gale of darkness", "pokemon xd", "pokémon xd"})
+  {
+    if (lower.find(needle) != std::string::npos)
+      return true;
+  }
+  return false;
 }
 
 bool EnsureGbaConfig()

@@ -5,8 +5,13 @@
 
 #include <array>
 #include <initializer_list>
+#include <map>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
 
 #include <QAbstractItemModel>
 #include <QCheckBox>
@@ -15,6 +20,7 @@
 #include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QShowEvent>
 #include <QSignalBlocker>
@@ -24,6 +30,7 @@
 #include "Common/FileUtil.h"
 #include "Common/IOFile.h"
 #include "Common/StringUtil.h"
+#include "Common/Version.h"
 
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/NetplaySettings.h"
@@ -31,11 +38,13 @@
 
 #include "DolphinQt/QtUtils/ModalMessageBox.h"
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
+#include "DolphinQt/QtUtils/QueueOnObject.h"
 #include "DolphinQt/Settings.h"
 #include "DolphinQt/XDNetplay/TeamEditorDialog.h"
 #include "DolphinQt/XDNetplay/XDNetplayConfig.h"
 
 #include "UICommon/GameFile.h"
+#include "UICommon/NetPlayIndex.h"
 
 namespace
 {
@@ -128,6 +137,81 @@ void PrepareNetplayConfig()
   if (Config::Get(Config::NETPLAY_NICKNAME).empty())
     Config::SetBaseOrCurrent(Config::NETPLAY_NICKNAME, "Player");
 }
+
+// Hosting only: publish the room to Dolphin's public session index.
+//
+// This closes a hole that made the whole desktop lobby look empty. The XD
+// launcher's Host button used to write nothing but the traversal settings, and
+// NETPLAY_USE_INDEX defaults to false -- so NetPlayServer::SetupIndex()
+// early-returned and every desktop host was invisible both in the session
+// browser and to the auto-matcher, while Android hosts (which do set the key,
+// in FindBattlesActivity.hostPublicBattle) showed up fine. Desktop now matches
+// Android.
+//
+// SetupIndex() also refuses to publish with an empty region, so fall back to
+// "NA" when the user has never picked one. The region is only ever a browser
+// filter and the matcher deliberately ignores it: a player base this small,
+// split seven ways by continent, would never find each other.
+//
+// |open_challenge| clears any index password. The launcher has no password UI,
+// so a leftover password could only come from the NetPlay Browser's publish
+// panel -- worth respecting for a deliberate Host click, but an auto-matched
+// room must be joinable by a stranger (and the matcher skips password rooms
+// anyway, so leaving one set would make the host unmatchable by its own
+// opponents).
+//
+// Timing worth knowing when debugging "my room is not findable": SetupIndex()
+// runs from the NetPlayServer constructor, BEFORE MainWindow::NetPlayHost gets
+// to ChangeGame(), so the very first publish carries game_id "UNKNOWN" and
+// LooksLikeXdSession rejects it. NetPlayServer's ping loop pushes the real
+// name through NetPlayIndex::SetGame() within ~1s and the index's own
+// notification loop uploads it every 5s, so a room becomes matchable a few
+// seconds after it opens -- irrelevant when waiting minutes for an opponent,
+// but it does mean two clients searching in the same instant can both end up
+// hosting. Searching again resolves it.
+void PreparePublishConfig(bool open_challenge)
+{
+  Config::SetBaseOrCurrent(Config::NETPLAY_USE_INDEX, true);
+  Config::SetBaseOrCurrent(Config::NETPLAY_INDEX_NAME,
+                           XDNetplay::MakeOpenSessionName(Config::Get(Config::NETPLAY_NICKNAME)));
+  if (Config::Get(Config::NETPLAY_INDEX_REGION).empty())
+    Config::SetBaseOrCurrent(Config::NETPLAY_INDEX_REGION, "NA");
+  if (open_challenge)
+    Config::SetBaseOrCurrent(Config::NETPLAY_INDEX_PASSWORD, "");
+}
+
+// Pick the room "Search for Match" should join, or nothing to host instead.
+//
+// The rules are deliberately dumb so that both platforms reach the same answer
+// and a failed match is explainable:
+//   * same build -- netplay only connects between identical git hashes
+//     (GetScmRevGitStr), and the index keys on GetScmDescStr, so a foreign
+//     build's room is unjoinable by construction. The server-side filter
+//     already asks for this; re-checking costs nothing and the index is a
+//     third-party service we do not control.
+//   * looks like Pokemon XD (see XDNetplay::LooksLikeXdSession -- the index's
+//     "game" field is a display name, not a game id).
+//   * exactly one player waiting. Zero would be a room mid-teardown; two is a
+//     battle already under way, and XD's link is strictly two-player.
+//   * not in game, not password protected.
+//   * first hit in index order wins. The index returns rooms in the order they
+//     registered, so this is "join whoever has been waiting longest" -- and,
+//     more importantly, it is deterministic, which makes a bad match
+//     reproducible instead of a coin flip.
+std::optional<NetPlaySession> PickMatch(const std::vector<NetPlaySession>& sessions)
+{
+  for (const NetPlaySession& session : sessions)
+  {
+    if (session.version != Common::GetScmDescStr())
+      continue;
+    if (!XDNetplay::LooksLikeXdSession(session.game_id))
+      continue;
+    if (session.player_count != 1 || session.in_game || session.has_password)
+      continue;
+    return session;
+  }
+  return std::nullopt;
+}
 }  // namespace
 
 XDLauncherDialog::XDLauncherDialog(const GameListModel& game_list_model, QWidget* parent)
@@ -172,19 +256,32 @@ void XDLauncherDialog::CreateMainLayout()
   m_practice_dummy_check = new QCheckBox(tr("Practice vs dummy"));
   m_practice_dummy_check->setToolTip(
       tr("Auto-plays GBA port 3 so you can practice link battles alone."));
+  // The headline action: one button, no codes to trade. Everything below it is
+  // the manual escape hatch for people who already know their opponent.
+  m_search_button = new NonDefaultQPushButton(tr("Search for Match"));
+  m_search_button->setToolTip(tr("Looks for someone already waiting and joins them. "
+                                 "If nobody is waiting, hosts a public room and waits "
+                                 "for an opponent."));
   m_host_button = new NonDefaultQPushButton(tr("Host Battle"));
   m_join_code_edit = new QLineEdit;
   m_join_code_edit->setPlaceholderText(tr("Host code"));
   m_join_button = new NonDefaultQPushButton(tr("Join Battle"));
   m_browse_button = new NonDefaultQPushButton(tr("Browse Public Sessions"));
   m_team_editor_button = new NonDefaultQPushButton(tr("Team Editor..."));
+  // Empty until a search runs, so the dialog does not grow a permanently blank
+  // row; word wrap because the "hosting and waiting" line is a sentence.
+  m_match_status = new QLabel;
+  m_match_status->setWordWrap(true);
+  m_match_status->hide();
   battle_layout->addWidget(m_boot_button, 0, 0);
   battle_layout->addWidget(m_practice_dummy_check, 0, 1);
-  battle_layout->addWidget(m_host_button, 1, 0, 1, 2);
-  battle_layout->addWidget(m_join_code_edit, 2, 0);
-  battle_layout->addWidget(m_join_button, 2, 1);
-  battle_layout->addWidget(m_browse_button, 3, 0, 1, 2);
-  battle_layout->addWidget(m_team_editor_button, 4, 0, 1, 2);
+  battle_layout->addWidget(m_search_button, 1, 0, 1, 2);
+  battle_layout->addWidget(m_match_status, 2, 0, 1, 2);
+  battle_layout->addWidget(m_host_button, 3, 0, 1, 2);
+  battle_layout->addWidget(m_join_code_edit, 4, 0);
+  battle_layout->addWidget(m_join_button, 4, 1);
+  battle_layout->addWidget(m_browse_button, 5, 0, 1, 2);
+  battle_layout->addWidget(m_team_editor_button, 6, 0, 1, 2);
   battle_box->setLayout(battle_layout);
   layout->addWidget(battle_box);
 
@@ -226,6 +323,7 @@ void XDLauncherDialog::ConnectWidgets()
           &XDLauncherDialog::OnGbaInputInfo);
 
   connect(m_boot_button, &QPushButton::clicked, this, &XDLauncherDialog::OnBootSolo);
+  connect(m_search_button, &QPushButton::clicked, this, &XDLauncherDialog::OnSearchForMatch);
   connect(m_host_button, &QPushButton::clicked, this, &XDLauncherDialog::OnHost);
   connect(m_join_button, &QPushButton::clicked, this, &XDLauncherDialog::OnJoin);
   connect(m_browse_button, &QPushButton::clicked, this, [this] { emit BrowsePublic(); });
@@ -520,6 +618,137 @@ void XDLauncherDialog::OnHost()
   }
 
   PrepareNetplayConfig();
+  // A manually hosted room is published too -- otherwise nobody can find it
+  // except by the host reading their code aloud, which is exactly the workflow
+  // "Search for Match" exists to retire. |false|: a password the user set in
+  // the NetPlay Browser's publish panel is honoured here.
+  PreparePublishConfig(false);
+  Config::Save();
+  emit HostXD(*game);
+}
+
+void XDLauncherDialog::SetMatchStatus(const QString& text)
+{
+  m_match_status->setText(text);
+  m_match_status->setVisible(!text.isEmpty());
+}
+
+void XDLauncherDialog::OnSearchForMatch()
+{
+  if (m_searching)
+    return;
+
+  const auto game = FindXdGame();
+  if (!game)
+  {
+    ModalMessageBox::warning(
+        this, tr("XD Netplay"),
+        tr("Pokémon XD (USA) was not found in your game list. Add its folder first."));
+    return;
+  }
+
+  if (!XDNetplay::CheckOfficialBios(nullptr))
+  {
+    ModalMessageBox::warning(
+        this, tr("XD Netplay"),
+        tr("The official GBA BIOS is required — XD cannot detect the GBA without it. "
+           "Add it with \"Choose BIOS...\" first."));
+    return;
+  }
+
+  // Do the local setup up front: whichever way the search lands, joining and
+  // hosting both need the GBA config and a nickname in place.
+  PrepareNetplayConfig();
+  Config::Save();
+
+  m_searching = true;
+  m_search_button->setEnabled(false);
+  SetMatchStatus(tr("Searching for an open battle…"));
+
+  // NetPlayIndex::List() is a blocking HTTP round trip. Running it on the GUI
+  // thread would freeze the whole launcher for however long the index server
+  // takes to answer (and it can time out), so it goes to a worker and comes
+  // back through QueueOnObject -- same shape as TeamEditorDialog's paste
+  // fetch. QPointer, not a raw this: Dolphin can be quit mid-search, and
+  // QueueOnObject on a destroyed receiver is undefined.
+  QPointer<XDLauncherDialog> self(this);
+  std::thread([self] {
+    NetPlayIndex client;
+
+    // Coarse server-side cut; PickMatch re-checks all of it locally.
+    // Deliberately no "game" filter: the index matches that field literally
+    // and hosts publish differently shaped display names (see
+    // XDNetplay::LooksLikeXdSession), so a server-side game filter would drop
+    // valid rooms. No region filter either -- we want any opponent, anywhere.
+    std::map<std::string, std::string> filters;
+    filters["version"] = Common::GetScmDescStr();
+    filters["in_game"] = "0";
+    filters["password"] = "0";
+
+    const auto entries = client.List(filters);
+    const bool listed = entries.has_value();
+    std::optional<NetPlaySession> match;
+    if (listed)
+      match = PickMatch(*entries);
+
+    if (!self)
+      return;
+    // QueueOnObject takes a raw receiver; the QPointer copy inside the lambda
+    // is what guards the deferred call.
+    QueueOnObject(self.data(), [self, listed, match = std::move(match)] {
+      if (!self)
+        return;
+      self->FinishSearch(listed, match);
+    });
+  }).detach();
+}
+
+void XDLauncherDialog::FinishSearch(bool listed, const std::optional<NetPlaySession>& match)
+{
+  m_searching = false;
+  m_search_button->setEnabled(true);
+
+  // "Could not reach the index" is not "nobody is playing". Silently hosting
+  // on a network error would strand the user in a room no one can see.
+  if (!listed)
+  {
+    SetMatchStatus(tr("Could not reach the session list. Check your connection, then try again."));
+    return;
+  }
+
+  if (match)
+  {
+    SetMatchStatus(tr("Found \"%1\" — joining…").arg(QString::fromStdString(match->name)));
+
+    // Exactly the handoff NetPlayBrowser::accept() performs. Password rooms
+    // never get this far (PickMatch drops them), so there is no server_id to
+    // decrypt here.
+    Config::SetBaseOrCurrent(Config::NETPLAY_TRAVERSAL_CHOICE, match->method);
+    Config::SetBaseOrCurrent(Config::NETPLAY_CONNECT_PORT, static_cast<u16>(match->port));
+    if (match->method == "traversal")
+      Config::SetBaseOrCurrent(Config::NETPLAY_HOST_CODE, match->server_id);
+    else
+      Config::SetBaseOrCurrent(Config::NETPLAY_ADDRESS, match->server_id);
+    Config::Save();
+
+    emit JoinXD();
+    return;
+  }
+
+  // Nobody waiting: become the room everyone else's search will find. Re-look
+  // up the game rather than capturing it -- the game list rescans on its own
+  // thread and could have dropped the entry while the search was in flight.
+  const auto game = FindXdGame();
+  if (!game)
+  {
+    SetMatchStatus(
+        tr("No open battles found, and Pokémon XD is no longer in your game list."));
+    return;
+  }
+
+  SetMatchStatus(tr("No open battles found — hosting one. Your room is listed publicly; "
+                    "leave the NetPlay window open and wait for an opponent."));
+  PreparePublishConfig(true);
   Config::Save();
   emit HostXD(*game);
 }

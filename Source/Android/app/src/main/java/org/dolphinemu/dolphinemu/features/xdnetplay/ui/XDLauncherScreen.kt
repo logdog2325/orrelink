@@ -51,6 +51,8 @@ fun XDLauncherScreen(
     onBattle: () -> Unit,
     cheatsEnabled: Boolean,
     onCheatsChanged: (Boolean) -> Unit,
+    onSearchForMatch: () -> Unit,
+    searching: Boolean,
     onFindBattles: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDolphin: () -> Unit,
@@ -132,6 +134,25 @@ fun XDLauncherScreen(
                         )
                     }
                     Switch(checked = cheatsEnabled, onCheckedChange = onCheatsChanged)
+                }
+                Spacer(Modifier.height(12.dp))
+                // The headline action: no codes to trade, no lobby to read.
+                // Joins whoever is already waiting, or becomes the room that
+                // the next person's search finds.
+                Button(
+                    onClick = onSearchForMatch,
+                    enabled = xdGameFound && biosLinkReady && !searching,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (searching) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Spacer(Modifier.width(12.dp))
+                    }
+                    Text("Search for Match", style = MaterialTheme.typography.titleMedium)
                 }
                 Spacer(Modifier.height(12.dp))
                 Button(

@@ -4,10 +4,12 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 
 #include <QDialog>
 
 #include "DolphinQt/GameList/GameListModel.h"
+#include "UICommon/NetPlayIndex.h"
 
 class QCheckBox;
 class QLabel;
@@ -75,7 +77,15 @@ private:
   void OnBootSolo();
   void OnHost();
   void OnJoin();
+  void OnSearchForMatch();
   void OnTeamEditor();
+
+  // GUI-thread tail of OnSearchForMatch(), invoked via QueueOnObject once the
+  // worker thread has finished talking to the session index. |listed| is false
+  // when the index could not be reached at all (which is NOT the same as "no
+  // rooms"); |match| holds the room to join, or nothing to host instead.
+  void FinishSearch(bool listed, const std::optional<NetPlaySession>& match);
+  void SetMatchStatus(const QString& text);
 
   const GameListModel& m_game_list_model;
 
@@ -93,7 +103,13 @@ private:
   QPushButton* m_host_button;
   QLineEdit* m_join_code_edit;
   QPushButton* m_join_button;
+  QPushButton* m_search_button;
   QPushButton* m_browse_button;
   QPushButton* m_team_editor_button;
+  QLabel* m_match_status;
+  // Guards against a second search being kicked off while one is in flight.
+  // The worker thread is detached and only ever touches the GUI through
+  // QueueOnObject, so this flag lives on the GUI thread alone.
+  bool m_searching = false;
   TeamEditorDialog* m_team_editor = nullptr;
 };

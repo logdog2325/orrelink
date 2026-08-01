@@ -25,6 +25,33 @@ constexpr char OFFICIAL_GBA_BIOS_SHA1[] = "300c20df6731a33952ded8c436f7f186d25d3
 // merely append a revision to the base id.
 bool IsXdGameId(const std::string& game_id);
 
+// ---- Public-lobby naming, shared with the Android launcher ----
+
+// Session-name format for every XD room the launcher publishes to Dolphin's
+// public session index:
+//
+//     XD [OC] <nickname>            ("OC" = Open Challenge)
+//
+// The IDENTICAL format lives on the Android side in XdMatchmaker.kt
+// (SESSION_NAME_PREFIX). Keep the two in sync -- it is the only thing that
+// lets a human scanning the session browser and the one-button auto-matcher
+// agree on what an XD room looks like.
+//
+// Matching itself never keys off the name: it keys off player_count /
+// in_game / has_password, so a room named anything else is still joinable.
+// The tag exists purely so the lobby reads sensibly to people.
+std::string MakeOpenSessionName(const std::string& nickname);
+
+// True when an index entry's published "game" string looks like Pokemon XD.
+//
+// Note that the index's game field is NOT a game id. NetPlayServer::SetupIndex
+// publishes m_selected_game_name, which desktop fills from GameListModel's
+// netplay name ("Pokemon XD: Gale of Darkness (GXXE01, USA)") while this
+// fork's Android host fills it with the plain long name (no id at all). So a
+// server-side game filter cannot be trusted and we substring-match instead --
+// the exact same set of needles as LobbySession.isXdBattle on Android.
+bool LooksLikeXdSession(const std::string& published_game_name);
+
 // Force the local settings an XD link battle expects: GBA ROM paths for ports
 // 2/3 (re-asserted only while the imported dump still exists), SI devices
 // (pad, GBA, GBA), cheats on for the $XD OU Fixes code, and netplay tuned to
