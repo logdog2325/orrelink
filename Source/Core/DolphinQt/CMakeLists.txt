@@ -420,6 +420,10 @@ add_executable(dolphin-emu
   Updater.h
   WiiUpdate.cpp
   WiiUpdate.h
+  XDNetplay/PbrLauncherDialog.cpp
+  XDNetplay/PbrLauncherDialog.h
+  XDNetplay/PokemonHubDialog.cpp
+  XDNetplay/PokemonHubDialog.h
   XDNetplay/TeamEditorDialog.cpp
   XDNetplay/TeamEditorDialog.h
   XDNetplay/XDLauncherDialog.cpp

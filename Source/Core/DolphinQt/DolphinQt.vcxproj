@@ -246,6 +246,8 @@
     <ClCompile Include="Translation.cpp" />
     <ClCompile Include="Updater.cpp" />
     <ClCompile Include="WiiUpdate.cpp" />
+    <ClCompile Include="XDNetplay\PbrLauncherDialog.cpp" />
+    <ClCompile Include="XDNetplay\PokemonHubDialog.cpp" />
     <ClCompile Include="XDNetplay\TeamEditorDialog.cpp" />
     <ClCompile Include="XDNetplay\XDLauncherDialog.cpp" />
     <ClCompile Include="XDNetplay\XDNetplayConfig.cpp" />
@@ -464,6 +466,8 @@
     <QtMoc Include="TAS\WiiTASInputWindow.h" />
     <QtMoc Include="ToolBar.h" />
     <QtMoc Include="Updater.h" />
+    <QtMoc Include="XDNetplay\PbrLauncherDialog.h" />
+    <QtMoc Include="XDNetplay\PokemonHubDialog.h" />
     <QtMoc Include="XDNetplay\TeamEditorDialog.h" />
     <QtMoc Include="XDNetplay\XDLauncherDialog.h" />
   </ItemGroup>
