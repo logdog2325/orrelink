@@ -295,7 +295,11 @@ void MenuBar::AddToolsMenu()
 
   tools_menu->addAction(tr("Start &NetPlay..."), this, &MenuBar::StartNetPlay);
   tools_menu->addAction(tr("Browse &NetPlay Sessions...."), this, &MenuBar::BrowseNetPlay);
+  // The hub is the front door; the two launchers stay as direct shortcuts for
+  // anyone who already knows which mode they want.
+  tools_menu->addAction(tr("Pokémon &Hub..."), this, [this] { emit ShowPokemonHub(); });
   tools_menu->addAction(tr("XD &Netplay Launcher..."), this, [this] { emit ShowXDLauncher(); });
+  tools_menu->addAction(tr("&PBR Launcher..."), this, [this] { emit ShowPbrLauncher(); });
 
   tools_menu->addSeparator();
 
