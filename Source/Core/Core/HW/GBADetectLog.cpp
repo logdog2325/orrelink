@@ -23,11 +23,12 @@ namespace GBADetectLog
 namespace
 {
 // Hard ceiling on one session's file, so a wedged session that emits summaries
-// for hours can never fill the disk. 4 MiB: a 35-minute session on the old
-// 1 MiB budget hit the cap after ~3.5 minutes of XD's connected-idle RESET
-// polling and went dark for the interesting part; the new budget plus the
-// smaller post-reset bursts holds roughly half an hour of worst-case traffic.
-constexpr u64 MAX_LOG_BYTES = 4u << 20;
+// for hours can never fill the disk. 32 MiB: the first instrumented netplay
+// battle hit the old 4 MiB cap at 6.8 minutes and went dark 9 minutes before
+// the interesting failure; measured burn was ~10 KB/s, 90% of it byte-identical
+// repeated joy lines (now suppressed post-lock, cutting battle-phase burn to
+// ~1 KB/s), so this budget holds hours of real play.
+constexpr u64 MAX_LOG_BYTES = 32u << 20;
 
 std::mutex s_mutex;
 std::ofstream s_file;    // held open for the session; never fopen'd per line
@@ -37,6 +38,17 @@ int s_live_devices = 0;  // ref-count -> session begin/end
 // Atomic so every Log* can early-out lock-free and stop FORMATTING once capped
 // (Review #1 I5: the byte cap must bound CPU/lock cost, not just disk).
 std::atomic<bool> s_capped{false};
+
+// Repeat-suppression cache for joy lines, one slot per (SI channel,
+// direction). Guarded by s_mutex like everything else in this file.
+struct JoyRepeatSlot
+{
+  u8 bytes[5]{};
+  int len = -1;
+  u8 aux = 0;  // sent-flag for '>', jsa for '<'
+  u32 repeats = 0;
+};
+JoyRepeatSlot s_joy_repeat[4][2];
 
 std::string Timestamp(const char* format)
 {
@@ -121,6 +133,9 @@ void OnDeviceCreated()
   s_file.open(s_path, std::ios::out | std::ios::trunc);
   s_bytes = 0;
   s_capped.store(false, std::memory_order_relaxed);
+  for (auto& per_channel : s_joy_repeat)
+    for (auto& slot : per_channel)
+      slot = {};
 
   WriteLine(fmt::format("gba_detect log  path={}", s_path), true);
   WriteLine(fmt::format("session start  {}", Timestamp("%Y-%m-%d %H:%M:%S")), true);
@@ -163,19 +178,44 @@ void LogEvent(int channel, u64 tick, const char* event, const std::string& detai
   WriteLine(fmt::format("t={} sock={} {} {}", tick, channel, event, detail), flush);
 }
 
-void LogJoybus(int channel, u64 tick, char dir, const u8* bytes, int len, bool sent, u8 jsa)
+void LogJoybus(int channel, u64 tick, char dir, const u8* bytes, int len, bool sent, u8 jsa,
+               bool suppress_repeats)
 {
   if (s_capped.load(std::memory_order_relaxed))
     return;
   std::lock_guard lock(s_mutex);
+  const int di = dir == '>' ? 0 : 1;
+  JoyRepeatSlot* slot =
+      (channel >= 0 && channel < 4) ? &s_joy_repeat[channel][di] : nullptr;
+  const u8 aux = dir == '>' ? static_cast<u8>(sent ? 1 : 0) : jsa;
+  std::string rep_field;
+  if (slot)
+  {
+    const bool same = slot->len == len && slot->aux == aux &&
+                      std::equal(slot->bytes, slot->bytes + 5, bytes);
+    if (suppress_repeats && same)
+    {
+      ++slot->repeats;  // counted, not written -- 96.8% of battle joy bytes
+      return;
+    }
+    if (slot->repeats != 0)
+    {
+      rep_field = fmt::format(" rep={}", slot->repeats);
+      slot->repeats = 0;
+    }
+    std::copy(bytes, bytes + 5, slot->bytes);
+    slot->len = len;
+    slot->aux = aux;
+  }
   if (dir == '>')
-    WriteLine(fmt::format("t={} sock={} joy > {:02x}{:02x}{:02x}{:02x}{:02x} len={} sent={}", tick,
-                          channel, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], len,
-                          sent ? 1 : 0),
+    WriteLine(fmt::format("t={} sock={} joy > {:02x}{:02x}{:02x}{:02x}{:02x} len={} sent={}{}",
+                          tick, channel, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], len,
+                          sent ? 1 : 0, rep_field),
               false);  // bounded burst; flushed by the next event/summary line
   else
-    WriteLine(fmt::format("t={} sock={} joy < {:02x}{:02x}{:02x}{:02x}{:02x} len={} jsa={:02x}",
-                          tick, channel, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], len, jsa),
+    WriteLine(fmt::format("t={} sock={} joy < {:02x}{:02x}{:02x}{:02x}{:02x} len={} jsa={:02x}{}",
+                          tick, channel, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], len, jsa,
+                          rep_field),
               false);
 }
 
