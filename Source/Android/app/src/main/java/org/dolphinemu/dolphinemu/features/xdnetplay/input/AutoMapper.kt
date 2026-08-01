@@ -39,6 +39,10 @@ object AutoMapper {
     // ControlGroup UI names (see GCPadEmu.cpp / GBAPadEmu.cpp; no string translator is
     // registered on Android, so getUiName() returns these raw strings).
     private const val GROUP_BUTTONS = "Buttons"
+    // Wiimote groups (PBR). "Point" is the Cursor group's ui_name (its internal
+    // name is "IR"); binding its directions to a stick gives a pointer the
+    // handheld can actually aim, which the touchscreen does unreliably.
+    private const val GROUP_POINT = "Point"
     private const val GROUP_MAIN_STICK = "Control Stick" // ui_name of the "Main Stick" group
     private const val GROUP_C_STICK = "C Stick" // ui_name of the "C-Stick" group
     private const val GROUP_TRIGGERS = "Triggers"
