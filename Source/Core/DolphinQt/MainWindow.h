@@ -57,6 +57,8 @@ class WatchWidget;
 class WiiTASInputWindow;
 class WiiSpeakWindow;
 class LogitechMicWindow;
+class PbrLauncherDialog;
+class PokemonHubDialog;
 class XDLauncherDialog;
 struct WindowSystemInfo;
 
@@ -178,7 +180,9 @@ private:
   void ShowHotkeyDialog();
   void ShowNetPlaySetupDialog();
   void ShowNetPlayBrowser();
+  void ShowPokemonHub();
   void ShowXDLauncher();
+  void ShowPbrLauncher();
   void ShowFIFOPlayer();
   void ShowSkylanderPortal();
   void ShowInfinityBase();
@@ -271,6 +275,8 @@ private:
   DiscordHandler* m_netplay_discord;
   NetPlaySetupDialog* m_netplay_setup_dialog;
   XDLauncherDialog* m_xd_launcher = nullptr;
+  PbrLauncherDialog* m_pbr_launcher = nullptr;
+  PokemonHubDialog* m_pokemon_hub = nullptr;
   static constexpr int num_gc_controllers = 4;
   std::array<GCTASInputWindow*, num_gc_controllers> m_gc_tas_input_windows{};
   std::array<GBATASInputWindow*, num_gc_controllers> m_gba_tas_input_windows{};
