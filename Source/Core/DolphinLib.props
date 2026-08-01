@@ -602,6 +602,7 @@
     <ClInclude Include="UICommon\XDNetplay\Gen3Text.h" />
     <ClInclude Include="UICommon\XDNetplay\MonFactory.h" />
     <ClInclude Include="UICommon\XDNetplay\ShowdownParser.h" />
+    <ClInclude Include="UICommon\XDNetplay\TeamInjector.h" />
     <ClInclude Include="UpdaterCommon\UI.h" />
     <ClInclude Include="UpdaterCommon\UpdaterCommon.h" />
     <ClInclude Include="VideoBackends\D3D\D3DBase.h" />
@@ -1311,6 +1312,7 @@
     <ClCompile Include="UICommon\XDNetplay\Gen3Text.cpp" />
     <ClCompile Include="UICommon\XDNetplay\MonFactory.cpp" />
     <ClCompile Include="UICommon\XDNetplay\ShowdownParser.cpp" />
+    <ClCompile Include="UICommon\XDNetplay\TeamInjector.cpp" />
     <ClCompile Include="UpdaterCommon\UpdaterCommon.cpp" />
     <ClCompile Include="VideoBackends\D3D\D3DBase.cpp" />
     <ClCompile Include="VideoBackends\D3D\D3DBoundingBox.cpp" />

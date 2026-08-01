@@ -1706,6 +1706,19 @@ void NetPlayClient::SendChatMessage(const std::string& msg)
   SendAsync(std::move(packet));
 }
 
+void NetPlayClient::SendTeamSubmission(const std::string& showdown_text)
+{
+  // Showdown text, not prebuilt party bytes: the host has to construct the
+  // Pokemon against ITS save's trainer name/ID, and it is the single place
+  // that parses untrusted team text. Pokepaste links are resolved by the
+  // submitting client before this call, so the host never fetches a URL.
+  sf::Packet packet;
+  packet << MessageID::TeamData;
+  packet << showdown_text;
+
+  SendAsync(std::move(packet));
+}
+
 // called from ---CPU--- thread
 void NetPlayClient::AddPadStateToPacket(const int in_game_pad, const GCPadStatus& pad,
                                         sf::Packet& packet)

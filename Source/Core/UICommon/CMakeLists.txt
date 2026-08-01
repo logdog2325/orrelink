@@ -31,6 +31,8 @@ add_library(uicommon
   XDNetplay/MonFactory.h
   XDNetplay/ShowdownParser.cpp
   XDNetplay/ShowdownParser.h
+  XDNetplay/TeamInjector.cpp
+  XDNetplay/TeamInjector.h
 )
 
 target_link_libraries(uicommon
