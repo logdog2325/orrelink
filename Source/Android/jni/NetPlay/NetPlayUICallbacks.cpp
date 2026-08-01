@@ -14,6 +14,7 @@
 #include "NetPlayUICallbacks.h"
 #include "UICommon/GameFile.h"
 #include "UICommon/UICommon.h"
+#include "UICommon/XDNetplay/TeamInjector.h"
 #include "jni/AndroidCommon/AndroidCommon.h"
 #include "jni/AndroidCommon/IDCache.h"
 
@@ -163,6 +164,17 @@ void NetPlayUICallbacks::AppendChat(const std::string& message)
     env->CallVoidMethod(session, IDCache::GetNetplayOnChatMessageReceived(),
                         ToJString(env, message));
   });
+}
+
+std::string NetPlayUICallbacks::OnTeamSubmission(const std::string& player,
+                                                 const std::string& text)
+{
+  // Host side. Writes the joiner's team into the socket-3 save that netplay
+  // syncs at start; the caller relays the returned line into the room chat.
+  std::string status;
+  if (!XDNetplay::InjectGuestTeam(text, 2, &status))
+    return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
+  return status;
 }
 
 void NetPlayUICallbacks::OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,
