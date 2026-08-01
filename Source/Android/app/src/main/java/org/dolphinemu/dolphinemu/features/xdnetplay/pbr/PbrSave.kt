@@ -246,12 +246,33 @@ class PbrSave private constructor(
         private const val CHK_BIG_AT = SIZE_PARTITION - 0x80
         private const val CHK_BIG_LEN = SIZE_PARTITION
 
+        fun encryptDecryptedImage(dec: ByteArray): ByteArray {
+            require(dec.size == SIZE_SAVE) {
+                "decrypted image must be $SIZE_SAVE bytes, got ${dec.size}"
+            }
+            val out = dec.copyOf()
+            for (p in 0 until PARTITION_COUNT) {
+                geniusCrypt(out, p * SIZE_PARTITION, decrypt = false)
+            }
+            return out
+        }
+
         /**
          * Decrypt [raw] and pick the live partition.
          *
          * @throws IllegalArgumentException if the file is the wrong size or
          * neither partition passes its checksums (which would mean the cipher,
          * the checksum, or the file itself is wrong — never a reason to write).
+         */
+        /**
+         * Encrypt a DECRYPTED container image back into an on-disk save.
+         *
+         * The bundled starter save ships decrypted-and-gzipped (the encrypted
+         * form is incompressible -- 3.5 MB vs 551 KB), so seeding it means
+         * re-applying the cipher here. Checksums are left exactly as they are
+         * in the image: it is a known-good save, and re-checksumming is the
+         * editor's job, not the installer's. Verified byte-identical against
+         * the source file before shipping.
          */
         fun load(raw: ByteArray): PbrSave {
             require(raw.size == SIZE_SAVE) {
