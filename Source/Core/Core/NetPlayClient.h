@@ -53,6 +53,13 @@ public:
 
   virtual void Update() = 0;
   virtual void AppendChat(const std::string& msg) = 0;
+  // XD Netplay, host side: a joiner submitted a Showdown team. The
+  // implementation writes it into the GBA save that will be synced at start
+  // (UICommon/XDNetplay/TeamInjector.h -- Core cannot call uicommon directly,
+  // hence the hop through the UI layer) and returns a one-line result for the
+  // room chat. Called on the NETPLAY thread; must finish before the ack, so
+  // the file is on disk before any Start can read it.
+  virtual std::string OnTeamSubmission(const std::string& player, const std::string& text) = 0;
 
   virtual void OnMsgChangeGame(const SyncIdentifier& sync_identifier,
                                const std::string& netplay_name) = 0;
@@ -128,6 +135,10 @@ public:
   void Stop();
   bool ChangeGame(const std::string& game);
   void SendChatMessage(const std::string& msg);
+  // XD Netplay: submit this player's own team to the host, which writes it
+  // into the save it syncs at start. No-op unless the host is running this
+  // fork's XD flow. See UICommon/XDNetplay/TeamInjector.h.
+  void SendTeamSubmission(const std::string& showdown_text);
   void RequestStopGame();
   void SendPowerButtonEvent();
   void RequestGolfControl(PlayerId pid);

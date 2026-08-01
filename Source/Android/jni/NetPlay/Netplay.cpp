@@ -53,6 +53,17 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSendMessage
 }
 
 JNIEXPORT void JNICALL
+Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitTeam(JNIEnv* env,
+                                                                                jobject obj,
+                                                                                jstring jteam)
+{
+  // XD Netplay: hand this player's Showdown team to the host, which writes it
+  // into the GBA save it syncs at start (UICommon/XDNetplay/TeamInjector.h).
+  if (auto* client = GetClientPointer(env, obj))
+    client->SendTeamSubmission(GetJString(env, jteam));
+}
+
+JNIEXPORT void JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetHostInputAuthority(
     JNIEnv* env, jobject obj, jboolean enable)
 {

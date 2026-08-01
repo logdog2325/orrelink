@@ -54,6 +54,7 @@ public:
 
   void Update() override;
   void AppendChat(const std::string& msg) override;
+  std::string OnTeamSubmission(const std::string& player, const std::string& text) override;
 
   void OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,
                        const std::string& netplay_name) override;
@@ -108,6 +109,7 @@ private:
   void CreateMainLayout();
   void ConnectWidgets();
   void OnChat();
+  void OnSubmitTeam();
   void OnStart();
   void DisplayMessage(const QString& msg, const std::string& color,
                       int duration = OSD::Duration::NORMAL);
@@ -124,6 +126,7 @@ private:
   QTextEdit* m_chat_edit;
   QLineEdit* m_chat_type_edit;
   QPushButton* m_chat_send_button;
+  QPushButton* m_submit_team_button;
 
   // Players
   QGroupBox* m_players_box;

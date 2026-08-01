@@ -141,8 +141,48 @@ fun NetplayScreen(
     saveTransferProgress: SaveTransferProgress?,
     gameDigestProgress: GameDigestProgress?,
     joinAddresses: Map<JoinInfoType, JoinAddress>,
+    onSubmitTeam: (String) -> Unit,
 ) {
     val scrollState = rememberScrollState()
+    // XD Netplay: joiner's "Submit Team" paste sheet.
+    var showSubmitTeam by rememberSaveable { mutableStateOf(false) }
+    var teamDraft by rememberSaveable { mutableStateOf("") }
+    if (showSubmitTeam) {
+        AlertDialog(
+            title = { Text("Submit Team") },
+            text = {
+                Column {
+                    Text(
+                        "Paste a Showdown team export, or a pokepast.es link. " +
+                            "The host writes it into the save you'll play with."
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = teamDraft,
+                        onValueChange = { teamDraft = it },
+                        modifier = Modifier.fillMaxWidth().height(220.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onSubmitTeam(teamDraft.trim())
+                        showSubmitTeam = false
+                    },
+                    enabled = teamDraft.isNotBlank()
+                ) {
+                    Text("Send")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSubmitTeam = false }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+            onDismissRequest = { showSubmitTeam = false },
+        )
+    }
 
     DolphinScaffold(
         title = {
@@ -160,6 +200,13 @@ fun NetplayScreen(
             if (isHosting) {
                 ExtendedFloatingActionButton(onClick = onStartGame) {
                     Text(stringResource(R.string.netplay_start))
+                }
+            } else {
+                // XD Netplay: a joiner hands their own team to the host, which
+                // writes it into the save it syncs at start. Sits where the
+                // host's Start button is, since only one of them ever shows.
+                ExtendedFloatingActionButton(onClick = { showSubmitTeam = true }) {
+                    Text("Submit Team")
                 }
             }
         },
@@ -1375,6 +1422,7 @@ private fun PreviewNetplayScreen() {
             JoinInfoType.EXTERNAL to JoinAddress.Loaded("203.0.113.1:2626"),
             JoinInfoType.LOCAL to JoinAddress.Loaded("192.168.1.5:2626"),
         ),
+        onSubmitTeam = {},
 //        saveTransferProgress = SaveTransferProgress(
 //            title = "Title",
 //            totalSize = 1024L,

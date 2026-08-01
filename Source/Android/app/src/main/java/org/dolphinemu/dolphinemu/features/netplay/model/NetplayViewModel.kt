@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.dolphinemu.dolphinemu.features.netplay.NetplaySession
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
 import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
@@ -114,6 +115,40 @@ class NetplayViewModel(
 
     fun confirmStartGame() {
         netplaySession.startGame()
+    }
+
+    /**
+     * XD Netplay: hand this player's own team to the host, which writes it into
+     * the GBA save it syncs when the battle starts. A pokepast.es link is
+     * resolved HERE, on the submitting device, so the host only ever parses
+     * plain text it was handed -- it never fetches a URL a stranger chose.
+     */
+    fun submitTeam(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) {
+            return
+        }
+        val pokepaste = Regex("^https?://pokepast\\.es/[A-Za-z0-9]+").find(trimmed)?.value
+        if (pokepaste == null) {
+            netplaySession.submitTeam(trimmed)
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val body = try {
+                java.net.URL("$pokepaste/raw").readText()
+            } catch (e: Exception) {
+                null
+            }
+            withContext(Dispatchers.Main) {
+                if (body == null) {
+                    netplaySession.showLocalMessage(
+                        "Could not fetch that paste (network error)."
+                    )
+                } else {
+                    netplaySession.submitTeam(body)
+                }
+            }
+        }
     }
 
     fun sendMessage(message: String) {

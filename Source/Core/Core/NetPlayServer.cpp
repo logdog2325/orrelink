@@ -796,6 +796,45 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
   }
   break;
 
+  case MessageID::TeamData:
+  {
+    std::string text;
+    packet >> text;
+
+    // Untrusted remote input: cap it before it reaches the parser. A real
+    // six-Pokemon Showdown export is well under 2 KB.
+    constexpr size_t MAX_TEAM_TEXT = 16 * 1024;
+    std::string result;
+    if (text.size() > MAX_TEAM_TEXT)
+    {
+      result = "team rejected (too large)";
+    }
+    else if (m_is_running)
+    {
+      // Saves were read and synced when this battle started, and the host's
+      // save file is now owned by the live mGBA core (which rewrites it from
+      // its in-memory copy at shutdown), so a write here would be silently
+      // discarded. Reject honestly instead of claiming a queue we don't have.
+      result = "not applied - a battle is already running. Back out, then submit "
+               "before the host starts the next one.";
+    }
+    else
+    {
+      // The write completes synchronously here, before the chat ack below and
+      // therefore before any Start can read the file.
+      result = m_dialog ? m_dialog->OnTeamSubmission(player.name, text) : std::string{};
+    }
+
+    if (!result.empty())
+    {
+      const std::string line = fmt::format("{} submitted a team: {}", player.name, result);
+      SendChatMessage(line);
+      if (m_dialog)
+        m_dialog->AppendChat(line);
+    }
+  }
+  break;
+
   case MessageID::ChunkedDataProgress:
   {
     u32 cid;

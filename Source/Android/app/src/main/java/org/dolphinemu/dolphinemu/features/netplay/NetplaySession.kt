@@ -167,6 +167,19 @@ class NetplaySession(
         nativeSendMessage(message)
     }
 
+    /**
+     * Send this player's own Showdown team to the host, which writes it into
+     * the GBA save it syncs when the battle starts. A pokepast.es link must be
+     * resolved to text by the caller -- the host never fetches a URL. The host
+     * announces the result in the room chat once the write lands.
+     */
+    fun submitTeam(showdownText: String) = nativeSubmitTeam(showdownText)
+
+    /** Show a line in this player's own chat log; nothing is sent over the wire. */
+    fun showLocalMessage(message: String) {
+        _chatMessages.tryEmit(message)
+    }
+
     fun setHostInputAuthority(enable: Boolean) = nativeSetHostInputAuthority(enable)
 
     fun adjustClientPadBufferSize(buffer: Int) = nativeAdjustClientPadBufferSize(buffer)
@@ -251,6 +264,8 @@ class NetplaySession(
     private external fun nativeHost(): Long
 
     private external fun nativeSendMessage(message: String)
+
+    private external fun nativeSubmitTeam(showdownText: String)
 
     private external fun nativeSetHostInputAuthority(enable: Boolean)
 
