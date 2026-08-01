@@ -44,7 +44,12 @@ void LogEvent(int channel, u64 tick, const char* event, const std::string& detai
 // (bounded boot burst; a later event/summary flushes it). bytes[0..4] must be
 // valid. `sent` is meaningful for '>' lines. `jsa` (responses only) is JOYSTAT
 // as sampled on the event thread right after the command executed.
-void LogJoybus(int channel, u64 tick, char dir, const u8* bytes, int len, bool sent, u8 jsa = 0);
+// `suppress_repeats` (pass true once the socket is battle-locked): an exact
+// repeat of the previous line on the same (channel, direction) is counted
+// instead of written -- measured 96.8% of battle-phase joy bytes were such
+// repeats -- and the run length is emitted as rep=N on the next changed line.
+void LogJoybus(int channel, u64 tick, char dir, const u8* bytes, int len, bool sent, u8 jsa = 0,
+               bool suppress_repeats = false);
 
 // Once-per-second telemetry mirror (caller throttles to <=1/sec). Fields mirror
 // the on-screen readout (rom/gba/loc/lk/win/rst/prb/est/lck/cmd) plus the
