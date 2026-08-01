@@ -51,6 +51,7 @@
 #include "Core/HW/EXI/EXI_DeviceIPL.h"
 #ifdef HAS_LIBMGBA
 #include "Core/HW/GBACore.h"
+#include "Core/HW/GBADetectLog.h"
 #endif
 #include "Core/HW/GBAPad.h"
 #include "Core/HW/GCMemcard/GCMemcard.h"
@@ -2108,7 +2109,15 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
           "NetLat ping={}ms buf={}/{} wait~{:.0f}ms(max{}) starve={}/{}", GetPlayersMaxPing(),
           depth, m_target_buffer_size, m_lat_wait_ewma_us / 1000.0, m_lat_wait_max_us / 1000,
           m_lat_starve_pops, m_lat_pops);
-      OSD::AddTypedMessage(OSD::MessageType::NetPlayLatency, line, 1500, OSD::Color::CYAN);
+      // No OSD line anymore: the once-per-second flash on the play screen was
+      // distracting in real sessions. The same readout goes into the session's
+      // gba_detect log instead (same t= clock as everything else, and the
+      // Android Share button already delivers it), plus the NETPLAY log.
+#ifdef HAS_LIBMGBA
+      GBADetectLog::LogEvent(0,
+                             Core::System::GetInstance().GetCoreTiming().GetTicks(), "netlat",
+                             line, false);
+#endif
       NOTICE_LOG_FMT(NETPLAY, "{} buckets[<1|<5|<16|<33|<100|<250|hi]={},{},{},{},{},{},{}", line,
                      m_lat_bucket[0], m_lat_bucket[1], m_lat_bucket[2], m_lat_bucket[3],
                      m_lat_bucket[4], m_lat_bucket[5], m_lat_bucket[6]);
