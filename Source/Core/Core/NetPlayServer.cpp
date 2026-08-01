@@ -93,6 +93,12 @@ namespace NetPlay
 {
 NetPlayServer::~NetPlayServer()
 {
+  // A guest's submitted team lives in the host's socket-3 save; hand that save
+  // back to its owner now the room is gone, so the next solo boot (or the next
+  // guest who submits nothing) uses the host's own team again.
+  if (m_dialog)
+    m_dialog->OnRoomClosed();
+
   if (is_connected)
   {
     m_do_loop = false;

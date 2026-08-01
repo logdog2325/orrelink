@@ -177,6 +177,11 @@ std::string NetPlayUICallbacks::OnTeamSubmission(const std::string& player,
   return status;
 }
 
+void NetPlayUICallbacks::OnRoomClosed()
+{
+  XDNetplay::RestoreHostTeam(2);
+}
+
 void NetPlayUICallbacks::OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,
                                          const std::string& netplay_name)
 {
