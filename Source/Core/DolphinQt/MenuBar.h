@@ -75,7 +75,9 @@ signals:
   void Screenshot();
   void StartNetPlay();
   void BrowseNetPlay();
+  void ShowPokemonHub();
   void ShowXDLauncher();
+  void ShowPbrLauncher();
   void StateLoad();
   void StateSave();
   void StateLoadSlot();
