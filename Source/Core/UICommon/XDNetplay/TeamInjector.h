@@ -25,4 +25,14 @@ namespace XDNetplay
 // layout). status, when given, receives a human-readable one-line summary
 // suitable for relaying into the room chat.
 bool InjectGuestTeam(const std::string& showdown_text, int device, std::string* status);
+
+// Put the host's own team back after a netplay room closes.
+//
+// A guest's submitted team overwrites the host's socket-3 save, and without
+// this it would still be there next time the host played solo (or hosted
+// someone who submitted nothing, who would then battle with a stranger's
+// team). The first injection of a session stashes the host's save alongside
+// it; this restores that stash and removes it. No stash means the host never
+// had a guest team written this session, so nothing happens.
+void RestoreHostTeam(int device);
 }  // namespace XDNetplay
