@@ -126,6 +126,8 @@
 #include "DolphinQt/TAS/WiiTASInputWindow.h"
 #include "DolphinQt/ToolBar.h"
 #include "DolphinQt/WiiUpdate.h"
+#include "DolphinQt/XDNetplay/PbrLauncherDialog.h"
+#include "DolphinQt/XDNetplay/PokemonHubDialog.h"
 #include "DolphinQt/XDNetplay/XDLauncherDialog.h"
 
 #include "UICommon/DiscordPresence.h"
@@ -328,16 +330,18 @@ MainWindow::MainWindow(Core::System& system, std::unique_ptr<BootParameters> boo
 
   Host::GetInstance()->SetMainWindowHandle(reinterpret_cast<void*>(winId()));
 
-  // Launcher-first startup: open the XD Netplay Launcher in front of the main
-  // window once the event loop is running, so a new player lands directly in
-  // the configure/host/join flow with Dolphin behind it. Skipped when a
-  // game/file was passed on the command line, in batch mode, when a netplay
-  // session is somehow already active, and when the user unchecked "Show this
-  // launcher at startup" (QSettings, see XDLauncherDialog::ShowOnStartup).
+  // Launcher-first startup: open the Pokémon Hub in front of the main window
+  // once the event loop is running, so a new player lands directly in a
+  // choose-your-mode screen with Dolphin behind it. It used to be the XD
+  // launcher, but two modes ship now and picking one for the user was a coin
+  // flip. Skipped when a game/file was passed on the command line, in batch
+  // mode, when a netplay session is somehow already active, and when the user
+  // unchecked "Show this at startup" (QSettings, same key as before -- see
+  // PokemonHubDialog::ShowOnStartup).
   if (m_pending_boot == nullptr && !Settings::Instance().IsBatchModeEnabled() &&
-      !Settings::Instance().GetNetPlayClient() && XDLauncherDialog::ShowOnStartup())
+      !Settings::Instance().GetNetPlayClient() && PokemonHubDialog::ShowOnStartup())
   {
-    QTimer::singleShot(0, this, &MainWindow::ShowXDLauncher);
+    QTimer::singleShot(0, this, &MainWindow::ShowPokemonHub);
   }
 
   if (m_pending_boot != nullptr)
@@ -580,7 +584,9 @@ void MainWindow::ConnectMenuBar()
   connect(m_menu_bar, &MenuBar::BootWiiSystemMenu, this, &MainWindow::BootWiiSystemMenu);
   connect(m_menu_bar, &MenuBar::StartNetPlay, this, &MainWindow::ShowNetPlaySetupDialog);
   connect(m_menu_bar, &MenuBar::BrowseNetPlay, this, &MainWindow::ShowNetPlayBrowser);
+  connect(m_menu_bar, &MenuBar::ShowPokemonHub, this, &MainWindow::ShowPokemonHub);
   connect(m_menu_bar, &MenuBar::ShowXDLauncher, this, &MainWindow::ShowXDLauncher);
+  connect(m_menu_bar, &MenuBar::ShowPbrLauncher, this, &MainWindow::ShowPbrLauncher);
   connect(m_menu_bar, &MenuBar::ShowFIFOPlayer, this, &MainWindow::ShowFIFOPlayer);
   connect(m_menu_bar, &MenuBar::ShowSkylanderPortal, this, &MainWindow::ShowSkylanderPortal);
   connect(m_menu_bar, &MenuBar::ShowInfinityBase, this, &MainWindow::ShowInfinityBase);
@@ -1458,6 +1464,19 @@ void MainWindow::ShowNetPlayBrowser()
   browser->exec();
 }
 
+void MainWindow::ShowPokemonHub()
+{
+  // Same guard as the launchers below: the startup timer is armed before
+  // Finder/Dock file-association boots arrive as a QFileOpenEvent, so a game
+  // can be running by the time this fires.
+  if (!Core::IsUninitialized(m_system))
+    return;
+
+  m_pokemon_hub->show();
+  m_pokemon_hub->raise();
+  m_pokemon_hub->activateWindow();
+}
+
 void MainWindow::ShowXDLauncher()
 {
   // Finder/Dock file-association boots arrive as a QFileOpenEvent after the
@@ -1469,6 +1488,18 @@ void MainWindow::ShowXDLauncher()
   m_xd_launcher->show();
   m_xd_launcher->raise();
   m_xd_launcher->activateWindow();
+}
+
+void MainWindow::ShowPbrLauncher()
+{
+  // Same guard as the XD launcher: a Finder/Dock file-association boot can have
+  // started a game between the menu click and this slot running.
+  if (!Core::IsUninitialized(m_system))
+    return;
+
+  m_pbr_launcher->show();
+  m_pbr_launcher->raise();
+  m_pbr_launcher->activateWindow();
 }
 
 void MainWindow::ShowFIFOPlayer()
@@ -1645,6 +1676,13 @@ void MainWindow::NetPlayInit()
         StartGame(path, ScanForSecondDisc::Yes, std::move(boot_session_data));
       });
   m_xd_launcher = new XDLauncherDialog(game_list_model, this);
+  // Built here purely because this is where the game list model is already in
+  // hand; PBR has nothing to do with netplay and, unlike the hub, never opens
+  // itself at startup.
+  m_pbr_launcher = new PbrLauncherDialog(game_list_model, this);
+  // The hub needs no model at all, but it is the thing the startup timer opens,
+  // so it has to exist by the time the constructor finishes like the other two.
+  m_pokemon_hub = new PokemonHubDialog(this);
 #ifdef USE_DISCORD_PRESENCE
   m_netplay_discord = new DiscordHandler(this);
 #endif
@@ -1658,6 +1696,11 @@ void MainWindow::NetPlayInit()
   connect(m_xd_launcher, &XDLauncherDialog::HostXD, this, &MainWindow::NetPlayHost);
   connect(m_xd_launcher, &XDLauncherDialog::JoinXD, this, &MainWindow::NetPlayJoin);
   connect(m_xd_launcher, &XDLauncherDialog::BrowsePublic, this, &MainWindow::ShowNetPlayBrowser);
+  // No second-disc scan: PBR is a single-disc Wii title.
+  connect(m_pbr_launcher, &PbrLauncherDialog::BootPbr, this,
+          [this](const QString& path) { StartGame(path, ScanForSecondDisc::No); });
+  connect(m_pokemon_hub, &PokemonHubDialog::OpenXDLauncher, this, &MainWindow::ShowXDLauncher);
+  connect(m_pokemon_hub, &PokemonHubDialog::OpenPbrLauncher, this, &MainWindow::ShowPbrLauncher);
 #ifdef USE_DISCORD_PRESENCE
   connect(m_netplay_discord, &DiscordHandler::Join, this, &MainWindow::NetPlayJoin);
 
