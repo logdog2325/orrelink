@@ -13,7 +13,21 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.asFlow
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
+import org.dolphinemu.dolphinemu.features.netplay.ui.NetplayActivity
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplaySetupActivity
+import org.dolphinemu.dolphinemu.features.xdnetplay.LobbySession
+import org.dolphinemu.dolphinemu.features.xdnetplay.NetPlayIndexBridge
+import org.dolphinemu.dolphinemu.features.xdnetplay.XdMatchmaker
 import java.io.File
 import java.security.MessageDigest
 import org.dolphinemu.dolphinemu.features.settings.model.BooleanSetting
@@ -45,6 +59,9 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var biosLinkReady by mutableStateOf(false)
     private var statusMessage by mutableStateOf<String?>(null)
     private var cheatsEnabled by mutableStateOf(false)
+
+    /** True from the moment "Search for Match" is tapped until it joins, hosts or gives up. */
+    private var searching by mutableStateOf(false)
 
     /**
      * Reads a picked file (extracting the first ROM out of a zip if needed),
@@ -180,6 +197,8 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                         NativeConfig.save(NativeConfig.LAYER_BASE)
                     },
                     onBattle = { NetplaySetupActivity.launch(this) },
+                    onSearchForMatch = { searchForMatch() },
+                    searching = searching,
                     onFindBattles = { FindBattlesActivity.launch(this) },
                     onOpenSettings = {
                         SettingsActivity.launch(this, MenuTag.SETTINGS)
@@ -236,6 +255,98 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
             EmulationActivity.launch(this, xd.getPath(), false)
         } else {
             statusMessage = "Pokémon XD not found — choose the folder with your ISO first."
+        }
+    }
+
+    /**
+     * One-button matchmaking: look for someone already waiting and join them;
+     * if nobody is, host a public room and wait to be found. The desktop twin
+     * is XDLauncherDialog::OnSearchForMatch — same selection rule
+     * (XdMatchmaker.pickMatch), same published room name.
+     *
+     * The index call is blocking HTTP, so it runs on Dispatchers.IO; every
+     * status update lands back on the main thread through the normal Compose
+     * state write.
+     */
+    private fun searchForMatch() {
+        if (searching) return
+
+        val xd = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID)
+        if (xd == null) {
+            statusMessage = "Pokémon XD not found — choose the folder with your ISO first."
+            return
+        }
+        if (!biosLinkReady) {
+            statusMessage =
+                "The official GBA BIOS is required — XD cannot detect the GBA without it."
+            return
+        }
+
+        searching = true
+        statusMessage = "Searching for an open battle…"
+
+        lifecycleScope.launch {
+            val sessions = withContext(Dispatchers.IO) {
+                try {
+                    NetPlayIndexBridge.listSessions()
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+
+            // "Could not reach the index" is not "nobody is playing". Hosting
+            // on a network error would strand the user in an unlistable room.
+            if (sessions == null) {
+                searching = false
+                statusMessage =
+                    "Could not reach the session list. Check your connection, then try again."
+                return@launch
+            }
+
+            val match = XdMatchmaker.pickMatch(sessions)
+            if (match != null) {
+                joinMatch(match)
+            } else {
+                statusMessage = "No open battles found — hosting one. " +
+                    "Your room is listed publicly; wait here for an opponent."
+                XdMatchmaker.applyHostConfig()
+                searching = false
+                NetplaySetupActivity.launch(this@XDLauncherActivity)
+            }
+        }
+    }
+
+    /**
+     * Joins an auto-matched room. Mirrors FindBattlesActivity.join() minus the
+     * password path — XdMatchmaker.pickMatch() never returns a password room,
+     * so there is no encrypted server id to unwrap here.
+     */
+    private suspend fun joinMatch(session: LobbySession) {
+        statusMessage = "Found \"${session.name}\" — joining…"
+        XdMatchmaker.applyJoinConfig(session)
+        NativeConfig.save(NativeConfig.LAYER_BASE)
+
+        var errorForwarding: Job? = null
+        try {
+            // NetplaySession's UI callbacks need the game list; wait like
+            // NetplaySetupViewModel.connect() does.
+            GameFileCacheManager.isLoading().asFlow().first { it == false }
+
+            val netplaySession = NetplayManager.createSession()
+            errorForwarding = netplaySession.connectionErrors
+                .onEach { statusMessage = it }
+                .launchIn(lifecycleScope)
+
+            if (netplaySession.join()) {
+                statusMessage = null
+                NetplayActivity.launch(this)
+            } else {
+                statusMessage = "Could not connect to \"${session.name}\". " +
+                    "It may have just closed — tap Search for Match again."
+            }
+        } finally {
+            errorForwarding?.cancel()
+            searching = false
         }
     }
 
