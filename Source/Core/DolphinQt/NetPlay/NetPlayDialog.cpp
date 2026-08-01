@@ -849,6 +849,11 @@ std::string NetPlayDialog::OnTeamSubmission(const std::string& player, const std
   return status;
 }
 
+void NetPlayDialog::OnRoomClosed()
+{
+  XDNetplay::RestoreHostTeam(2);
+}
+
 void NetPlayDialog::OnSubmitTeam()
 {
   // Joiner side. A pokepast.es link is resolved HERE, on the submitting
