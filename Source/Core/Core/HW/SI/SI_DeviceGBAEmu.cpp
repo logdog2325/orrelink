@@ -588,7 +588,7 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     if (m_diag_cmd_log_count < 64 || m_diag_cmd_burst > 0 || (class_changed && joy_gap_ok))
     {
       GBADetectLog::LogJoybus(m_device_number, m_timestamp_sent, '>', buffer, request_length,
-                              m_diag_cmd_sent);
+                              m_diag_cmd_sent, 0, m_battle_locked);
       m_diag_last_joy_tick = m_timestamp_sent;
       if (m_diag_cmd_log_count < 64)
         ++m_diag_cmd_log_count;
@@ -652,7 +652,7 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
           if (resp_nonzero)
             GBADetectLog::LogJoybus(m_device_number, m_timestamp_sent, '<', buffer,
                                     static_cast<int>(response_length), true,
-                                    m_core->GetJoyStatAfterCommand());
+                                    m_core->GetJoyStatAfterCommand(), m_battle_locked);
           else
             GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "no-response",
                                    fmt::format("cmd={:02x}", static_cast<u8>(m_last_cmd)));
