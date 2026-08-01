@@ -212,11 +212,19 @@ const std::vector<std::unique_ptr<VideoBackendBase>>& VideoBackendBase::GetAvail
     backends.push_back(std::make_unique<OGL::VideoBackend>());
 #endif
 #ifdef HAS_VULKAN
-#if defined(__APPLE__) || defined(ANDROID)
+#ifdef __APPLE__
     // Emplace the Vulkan backend at the beginning so it takes precedence over OpenGL.
     // On macOS, we prefer Vulkan over OpenGL due to OpenGL support being deprecated by Apple.
-    // On Android, Vulkan is the better-performing backend on the Adreno-class GPUs this
-    // fork targets.
+    //
+    // Android is deliberately NOT in this list anymore: a 16-minute netplay
+    // battle on the AYN Thor wedged the Adreno driver at the kernel level so
+    // hard that surfaceflinger died and could not reinitialize ("no suitable
+    // EGLConfig found"), soft-restarting the whole Android framework; the
+    // second device's display froze the same session. The emulations
+    // themselves ran synced throughout -- the instability is entirely in the
+    // Vulkan driver under sustained load. Default Android to OpenGL (the
+    // stock ordering below) as the stability experiment; Vulkan remains
+    // selectable in settings.
     backends.emplace(backends.begin(), std::make_unique<Vulkan::VideoBackend>());
 #else
     backends.push_back(std::make_unique<Vulkan::VideoBackend>());
