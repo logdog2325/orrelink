@@ -169,6 +169,72 @@ object AutoMapper {
         return aButton.getControlReference().getExpression().isNotBlank()
     }
 
+    /**
+     * Map Wiimote 1 to the handheld's physical controls for PBR. Nothing ever
+     * mapped the emulated Wiimote here (only GC and GBA pads), so PBR booted
+     * with no working controls at all.
+     *
+     * The pointer is the interesting part: PBR is menu-driven, and on a
+     * handheld the touchscreen makes an unreliable IR pointer, so the RIGHT
+     * STICK drives the cursor (Dolphin's Cursor group takes ordinary axis
+     * bindings) while the face buttons cover A/B/1/2/+/- and the D-pad maps
+     * straight through. The touch overlay stays available as a backup pointer
+     * -- PBR mode turns it on separately.
+     *
+     * @return true if Wiimote 1 is mapped to a physical gamepad after this call.
+     */
+    fun autoMapWiimote(): Boolean {
+        val wiimote = EmulatedController.getWiimote(0)
+        if (isControllerMapped(wiimote)) {
+            return true
+        }
+        val device = physicalGamepadDevice() ?: return false
+        val coreDevice = ControllerInterface.getDevice(device) ?: return false
+        val inputs = coreDevice.getInputs().mapTo(HashSet()) { it.getName() }
+
+        mapWiimote(wiimote, device, inputs)
+        MappingCommon.save()
+        return isControllerMapped(wiimote)
+    }
+
+    private fun mapWiimote(wiimote: EmulatedController, device: String, inputs: Set<String>) {
+        wiimote.setDefaultDevice(device)
+
+        // A/B are the Wiimote's own A and B (B is the trigger on real hardware);
+        // 1/2 land on the pad's X/Y, and +/- on Start/Select, which is how the
+        // Wii's own handheld-style layouts read on a gamepad.
+        val buttons = findGroup(wiimote, GROUP_BUTTONS)
+        setMapping(wiimote, buttons, "A", singleExpression(device, inputs, BTN_A))
+        setMapping(wiimote, buttons, "B", singleExpression(device, inputs, BTN_B))
+        setMapping(wiimote, buttons, "1", singleExpression(device, inputs, BTN_X))
+        setMapping(wiimote, buttons, "2", singleExpression(device, inputs, BTN_Y))
+        setMapping(wiimote, buttons, "-", singleExpression(device, inputs, BTN_SELECT, BTN_BACK))
+        // '+' prefers Start and falls back to Menu; HOME only gets Menu when
+        // '+' did not already claim it, or one press would do both.
+        val plusButton = firstPresent(inputs, BTN_START, BTN_MENU)
+        setMapping(wiimote, buttons, "+", plusButton?.let { expression(device, it) })
+        setMapping(wiimote, buttons, "HOME",
+                   if (plusButton == BTN_MENU) null else singleExpression(device, inputs, BTN_MENU))
+
+        val dpad = findGroup(wiimote, GROUP_DPAD)
+        setMapping(wiimote, dpad, "Up", presentAlternation(device, inputs, KEY_DPAD_UP, AXIS_HAT_UP))
+        setMapping(wiimote, dpad, "Down", presentAlternation(device, inputs, KEY_DPAD_DOWN, AXIS_HAT_DOWN))
+        setMapping(wiimote, dpad, "Left", presentAlternation(device, inputs, KEY_DPAD_LEFT, AXIS_HAT_LEFT))
+        setMapping(wiimote, dpad, "Right",
+                   presentAlternation(device, inputs, KEY_DPAD_RIGHT, AXIS_HAT_RIGHT))
+
+        // Pointer on the right stick.
+        val point = findGroup(wiimote, GROUP_POINT)
+        setMapping(wiimote, point, "Up",
+                   singleExpression(device, inputs, AXIS_RSTICK_UP, AXIS_RSTICK_UP_ALT))
+        setMapping(wiimote, point, "Down",
+                   singleExpression(device, inputs, AXIS_RSTICK_DOWN, AXIS_RSTICK_DOWN_ALT))
+        setMapping(wiimote, point, "Left",
+                   singleExpression(device, inputs, AXIS_RSTICK_LEFT, AXIS_RSTICK_LEFT_ALT))
+        setMapping(wiimote, point, "Right",
+                   singleExpression(device, inputs, AXIS_RSTICK_RIGHT, AXIS_RSTICK_RIGHT_ALT))
+    }
+
     private fun mapGcPad(pad: EmulatedController, device: String, inputs: Set<String>) {
         pad.setDefaultDevice(device)
 
