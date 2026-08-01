@@ -60,6 +60,9 @@ public:
   // room chat. Called on the NETPLAY thread; must finish before the ack, so
   // the file is on disk before any Start can read it.
   virtual std::string OnTeamSubmission(const std::string& player, const std::string& text) = 0;
+  // XD Netplay, host side: the room closed. Puts the host's own team back if a
+  // guest's submission overwrote it (UICommon/XDNetplay/TeamInjector.h).
+  virtual void OnRoomClosed() = 0;
 
   virtual void OnMsgChangeGame(const SyncIdentifier& sync_identifier,
                                const std::string& netplay_name) = 0;

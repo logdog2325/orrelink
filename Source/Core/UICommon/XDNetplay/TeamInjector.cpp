@@ -26,6 +26,27 @@
 
 namespace XDNetplay
 {
+namespace
+{
+constexpr const char* HOST_STASH_SUFFIX = ".hostteam";
+
+// The save path netplay will read for this socket, or empty when the setup
+// isn't complete enough to have one.
+std::string SavePathForDevice(int device)
+{
+#ifdef HAS_LIBMGBA
+  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device]);
+  if (rom.empty() || !File::Exists(rom))
+    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device == 1 ? 2 : 1]);
+  if (rom.empty() || !File::Exists(rom))
+    return {};
+  return HW::GBA::Core::GetSavePath(rom, device);
+#else
+  return {};
+#endif
+}
+}  // namespace
+
 #ifdef HAS_LIBMGBA
 namespace
 {
@@ -78,6 +99,12 @@ bool InjectGuestTeam(const std::string& showdown_text, int device, std::string* 
       return fail("host has no save for that socket and no bundled template");
   }
 
+  // Stash the host's own team once per session, so it can be put back when the
+  // room closes. Only the FIRST injection stashes: a second submission must not
+  // overwrite the stash with the first guest's team.
+  if (File::Exists(save_path) && !File::Exists(save_path + HOST_STASH_SUFFIX))
+    File::CopyRegularFile(save_path, save_path + HOST_STASH_SUFFIX);
+
   auto save = EmeraldSave::Create(std::move(bytes), &error);
   if (!save)
     return fail(fmt::format("host save unreadable ({})", error));
@@ -123,5 +150,17 @@ bool InjectGuestTeam(const std::string& showdown_text, int device, std::string* 
   }
   return true;
 #endif
+}
+
+void RestoreHostTeam(int device)
+{
+  const std::string save_path = SavePathForDevice(device);
+  if (save_path.empty())
+    return;
+  const std::string stash = save_path + HOST_STASH_SUFFIX;
+  if (!File::Exists(stash))
+    return;  // no guest team was ever written this session
+  File::CopyRegularFile(stash, save_path);
+  File::Delete(stash);
 }
 }  // namespace XDNetplay
