@@ -40,6 +40,8 @@ fun PbrLauncherScreen(
     pbrSupported: Boolean,
     statusMessage: String?,
     onImportNand: () -> Unit,
+    pbrSaveInstalled: Boolean,
+    onImportPbrSave: () -> Unit,
     onPickPbrFolder: () -> Unit,
     onTeamEditor: () -> Unit,
     onPlayPbr: () -> Unit,
@@ -107,6 +109,15 @@ fun PbrLauncherScreen(
                         missingText = "",
                         fixLabel = "Import NAND…",
                         onFix = onImportNand
+                    )
+                    CheckRow(
+                        state = if (pbrSaveInstalled) RowState.Ok else RowState.Warn,
+                        okText = "PBR save installed (bundled Restorer Forever starter save)",
+                        warnText = "No PBR save installed yet — open this screen again, or " +
+                            "install your own save file.",
+                        missingText = "",
+                        fixLabel = "Install save…",
+                        onFix = onImportPbrSave
                     )
                     CheckRow(
                         state = RowState.Ok,

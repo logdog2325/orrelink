@@ -47,6 +47,20 @@ object PbrSaveFile {
     /** The first region whose save actually exists, or null if PBR has none yet. */
     fun find(): Located? = candidates().firstOrNull { it.file.isFile }
 
+    /**
+     * The save location for a specific disc, so a PAL user's save is not filed
+     * under the USA title (where their game would never read it). Falls back to
+     * the USA slot when the game ID is unknown.
+     */
+    fun forGameId(gameId: String?): Located {
+        val title = when (gameId) {
+            "RPBP01" -> "52504250"
+            "RPBJ01" -> "5250424a"
+            else -> "52504245"
+        }
+        return candidates().first { it.file.path.contains(title) }
+    }
+
     /** Human-readable list of the paths that were searched, for the "not found" UI. */
     fun searchedPaths(): List<String> = candidates().map { it.file.path }
 }
