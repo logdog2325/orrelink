@@ -195,7 +195,10 @@ void XDLauncherDialog::CreateMainLayout()
   m_cheats_check->setChecked(Config::Get(Config::MAIN_ENABLE_CHEATS));
   layout->addWidget(m_cheats_check);
 
-  m_show_on_startup_check = new QCheckBox(tr("Show this launcher at startup"));
+  // Same setting the hub's own checkbox writes. Reworded because the hub, not
+  // this launcher, is what actually opens at startup now -- a checkbox that
+  // names the wrong window is worse than no checkbox.
+  m_show_on_startup_check = new QCheckBox(tr("Show the Pokémon Hub at startup"));
   m_show_on_startup_check->setChecked(ShowOnStartup());
   layout->addWidget(m_show_on_startup_check);
 
@@ -255,6 +258,12 @@ void XDLauncherDialog::showEvent(QShowEvent* event)
   {
     const QSignalBlocker blocker(m_practice_dummy_check);
     m_practice_dummy_check->setChecked(Config::Get(Config::MAIN_GBA_PRACTICE_DUMMY));
+  }
+  {
+    // The hub carries the same toggle, so this one can be stale by the time the
+    // launcher is opened from it.
+    const QSignalBlocker blocker(m_show_on_startup_check);
+    m_show_on_startup_check->setChecked(ShowOnStartup());
   }
   RefreshChecklist();
 }

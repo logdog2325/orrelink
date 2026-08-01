@@ -33,9 +33,11 @@ class XDLauncherDialog : public QDialog
 public:
   explicit XDLauncherDialog(const GameListModel& game_list_model, QWidget* parent);
 
-  // Whether the launcher should open automatically in front of the main
+  // Whether a launcher screen should open automatically in front of the main
   // window at startup (QSettings xdnetplay/showlauncheronstartup, default
-  // true; the dialog's "Show this launcher at startup" checkbox writes it).
+  // true). The screen that actually opens is the Pokémon Hub, not this dialog
+  // -- see PokemonHubDialog::ShowOnStartup, which reads the same key. This
+  // accessor stays because this dialog carries a second copy of the checkbox.
   static bool ShowOnStartup();
 
 signals:
