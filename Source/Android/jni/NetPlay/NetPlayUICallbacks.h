@@ -32,6 +32,7 @@ public:
   void Update() override;
   void AppendChat(const std::string& msg) override;
   std::string OnTeamSubmission(const std::string& player, const std::string& text) override;
+  void OnRoomClosed() override;
   void OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,
                        const std::string& netplay_name) override;
   void OnMsgChangeGBARom(int pad, const NetPlay::GBAConfig& config) override;
