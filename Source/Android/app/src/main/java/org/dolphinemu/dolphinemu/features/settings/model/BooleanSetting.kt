@@ -984,7 +984,18 @@ enum class BooleanSetting(
         "ProgressEnabled",
         false
     ),
-    NETPLAY_USE_UPNP(Settings.FILE_DOLPHIN, Settings.SECTION_INI_NETPLAY, "UseUPNP", false);
+    NETPLAY_USE_UPNP(Settings.FILE_DOLPHIN, Settings.SECTION_INI_NETPLAY, "UseUPNP", false),
+
+    /**
+     * Host-side automatic netplay buffer sizing from the measured ping. On by
+     * default; editing the buffer by hand turns it off.
+     */
+    NETPLAY_AUTO_BUFFER(
+        Settings.FILE_DOLPHIN,
+        Settings.SECTION_INI_NETPLAY,
+        "AutoBuffer",
+        true
+    );
 
     override val isOverridden: Boolean
         get() = NativeConfig.isOverridden(file, section, key)

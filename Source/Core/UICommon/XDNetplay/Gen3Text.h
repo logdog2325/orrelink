@@ -37,6 +37,14 @@ std::string Decode(const u8* buf, size_t max_len);
 std::optional<std::vector<u8>> Encode(const std::string& text, size_t max_len,
                                       std::string* error = nullptr);
 
+// Make text Gen 3-encodable by force: straight ASCII quotes become the
+// charset's curly forms, anything else unencodable is DROPPED, and the result
+// is clamped to max_len codepoints (0 = no clamp). Use this for input that
+// must degrade rather than fail (nicknames from a Showdown paste, a trainer
+// name that arrived over the wire); use Encode's error path when a human is
+// typing and deserves to be told which character is the problem.
+std::string Sanitize(const std::string& text, size_t max_len = 0);
+
 // Minimal UTF-8 <-> codepoint helpers shared with MonFactory's sanitizer.
 std::u32string DecodeUtf8(const std::string& text);
 std::string EncodeUtf8(const std::u32string& text);

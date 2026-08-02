@@ -46,6 +46,7 @@ fun TeamEditorScreen(
     names: DisplayNames?,
     onRoleChange: (TeamRole) -> Unit,
     onSelect: (Int) -> Unit,
+    onTrainerNameChange: (String) -> Unit,
     onImport: (String) -> Unit,
     onRemoveSelected: () -> Unit,
     onSave: () -> Unit,
@@ -106,6 +107,35 @@ fun TeamEditorScreen(
                 return@Column
             }
 
+            // Trainer name. Keystrokes that the Gen 3 charset cannot hold are
+            // rejected as they are typed (see TeamEditorActivity.setTrainerName),
+            // so the field can only ever show a name the save can really store.
+            SeaPanel(title = "TRAINER") {
+                OutlinedTextField(
+                    value = state.trainerName,
+                    onValueChange = onTrainerNameChange,
+                    singleLine = true,
+                    label = { Text("In-game name (max 7)", color = XDColors.TextDim) },
+                    supportingText = {
+                        Text(
+                            "Shown to your opponent in the link battle. " +
+                                "Renaming also re-stamps the party's OT.",
+                            color = XDColors.TextDim,
+                            fontSize = 11.sp
+                        )
+                    },
+                    isError = state.trainerName.isBlank(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = XDColors.TextPrimary,
+                        unfocusedTextColor = XDColors.TextPrimary,
+                        focusedBorderColor = XDColors.Accent,
+                        unfocusedBorderColor = XDColors.PanelLight
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+
             // Party panel
             SeaPanel(title = "PARTY — ${state.trainer}") {
                 if (state.party.isEmpty()) {
@@ -145,7 +175,8 @@ fun TeamEditorScreen(
                 ) { Text("Import") }
                 Button(
                     onClick = onSave,
-                    enabled = state.dirty,
+                    // A blank name cannot be written at all, so do not offer to.
+                    enabled = state.dirty && state.trainerName.isNotBlank(),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = XDColors.PanelLight,
                         contentColor = XDColors.ChipText

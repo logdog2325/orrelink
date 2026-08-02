@@ -102,8 +102,14 @@ bool EnsureGbaConfig()
   // Cheats (the $XD OU Fixes code) are off by default now and governed by the
   // launcher's "OU rules ($XD OU Fixes)" toggle; don't force them on here.
 
-  // Netplay tuned for the XD link: small fixed-delay buffer, no UPnP noise.
-  Config::SetBaseOrCurrent(Config::NETPLAY_BUFFER_SIZE, 5);
+  // Netplay tuned for the XD link: fixed delay, no UPnP noise.
+  //
+  // The buffer is only re-seeded while automatic sizing is on, where 5 is just
+  // a starting point the host's sizer raises off the measured ping within a few
+  // seconds of a guest joining. A host who turned Auto off picked their number
+  // deliberately -- re-running this setup must not quietly stomp it back to 5.
+  if (Config::Get(Config::NETPLAY_AUTO_BUFFER))
+    Config::SetBaseOrCurrent(Config::NETPLAY_BUFFER_SIZE, 5);
   Config::SetBaseOrCurrent(Config::NETPLAY_NETWORK_MODE, "fixeddelay");
   Config::SetBaseOrCurrent(Config::NETPLAY_USE_UPNP, false);
 

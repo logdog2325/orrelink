@@ -5,6 +5,7 @@
 
 #include <SFML/Network/Packet.hpp>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <memory>
@@ -60,8 +61,15 @@ public:
   // room chat. Called on the NETPLAY thread; must finish before the ack, so
   // the file is on disk before any Start can read it.
   virtual std::string OnTeamSubmission(const std::string& player, const std::string& text) = 0;
-  // XD Netplay, host side: the room closed. Puts the host's own team back if a
-  // guest's submission overwrote it (UICommon/XDNetplay/TeamInjector.h).
+  // XD Netplay: this machine's session is over. Puts the host's own team back
+  // if a guest's submission overwrote it, and erases every remaining file that
+  // holds the opponent's party -- including, on a joiner, netplay's own
+  // NetPlayTemp GBA saves (UICommon/XDNetplay/TeamInjector.h).
+  //
+  // Raised from BOTH ~NetPlayServer (host) and ~NetPlayClient (either end), so
+  // hosts see it twice; the implementation is idempotent. It may complete
+  // asynchronously: while a battle is live the mGBA core owns the save files,
+  // so the work waits for emulation to reach Uninitialized.
   virtual void OnRoomClosed() = 0;
 
   virtual void OnMsgChangeGame(const SyncIdentifier& sync_identifier,
@@ -138,10 +146,12 @@ public:
   void Stop();
   bool ChangeGame(const std::string& game);
   void SendChatMessage(const std::string& msg);
-  // XD Netplay: submit this player's own team to the host, which writes it
-  // into the save it syncs at start. No-op unless the host is running this
-  // fork's XD flow. See UICommon/XDNetplay/TeamInjector.h.
-  void SendTeamSubmission(const std::string& showdown_text);
+  // XD Netplay: submit this player's own team -- and, optionally, the in-game
+  // trainer name to play under -- to the host, which writes both into the save
+  // it syncs at start. No-op unless the host is running this fork's XD flow.
+  // The payload is built by XDNetplay::BuildTeamSubmissionPayload and Core
+  // treats it as opaque text. See UICommon/XDNetplay/TeamInjector.h.
+  void SendTeamSubmission(const std::string& payload);
   void RequestStopGame();
   void SendPowerButtonEvent();
   void RequestGolfControl(PlayerId pid);
@@ -278,6 +288,37 @@ private:
   bool PollLocalPad(int local_pad, sf::Packet& packet);
   void SendPadHostPoll(PadIndex pad_num);
 
+  // XD netplay peer-vanish watchdog. Per-wait bookkeeping for WaitOnRemote();
+  // one of these lives on the stack of whichever CPU-thread loop is blocked.
+  struct RemoteWaitState
+  {
+    std::chrono::steady_clock::time_point started{};
+    u64 next_notice_ms = 0;
+    bool started_valid = false;
+  };
+
+  // Why a session stopped by the watchdog stopped. It decides how loudly we say
+  // so, which matters because one of these is an ordinary, user-requested event
+  // and the other is a genuine failure.
+  enum class SessionEndKind : u32
+  {
+    // Session is healthy. Also the "nobody has claimed the teardown yet" state.
+    None = 0,
+    // A peer or the host vanished and nothing is going to bring the session
+    // back. The user did not ask for this and needs to be told why their battle
+    // just ended: red OSD, error log, a line in the room chat.
+    PeerLost,
+    // The local user asked to stop and we finished the job ourselves rather than
+    // keep waiting on an acknowledgement. Entirely ordinary -- the session
+    // stopped exactly as requested -- so it gets a log line and nothing else.
+    LocalStopCompleted,
+  };
+
+  bool WaitOnRemote(Common::Event& wait_event, int pad_nb, RemoteWaitState& state);
+  void DeclareSessionLost(SessionEndKind kind, const std::string& reason);
+  std::string DescribePadOwner(int pad_nb);
+  bool PadOwnerHasLeftRoom(int pad_nb);
+
   bool AddLocalWiimoteToBuffer(int local_wiimote, const WiimoteEmu::SerializedWiimoteState& state,
                                sf::Packet& packet);
 
@@ -352,6 +393,33 @@ private:
   Common::Event m_wii_pad_event;
   Common::Event m_first_pad_status_received_event;
   Common::Event m_wait_on_input_event;
+
+  // XD netplay peer-vanish watchdog.
+  //
+  // m_last_recv_ms is stamped by the NETPLAY thread every time a netplay packet
+  // lands from the server. The server pings every client once a second while a
+  // room is open, so on a live session this is never more than ~1 s stale no
+  // matter how badly the *game* is starved. That is what lets the CPU thread's
+  // pad-wait loop tell "the other player's console is briefly behind" (server
+  // still pinging -- keep waiting) apart from "the machine we talk to is gone"
+  // (dead silence -- stop pretending this session exists). Steady clock, ms.
+  std::atomic<u64> m_last_recv_ms{0};
+  // Claimed exactly once, by whichever thread first concludes this session is
+  // over, via compare-exchange from None. It carries both facts -- that somebody
+  // won, and what they concluded -- in a single atomic so the winner's reason
+  // can never be overwritten by a loser and can never be read before it is
+  // published. The NETPLAY thread does the actual teardown; see
+  // DeclareSessionLost() for why the CPU thread must not run StopGame() itself.
+  std::atomic<SessionEndKind> m_session_end{SessionEndKind::None};
+  // Stamped when RequestStopGame() mails a stop to the server, and cleared by
+  // InvokeStop(), i.e. the instant any real stop lands by any route. If no stop
+  // lands within LOCAL_STOP_GRACE we stop ourselves rather than leave the CPU
+  // thread wedged behind a Stop the user already asked for -- the server is
+  // quite often the machine that just vanished. Clearing it in InvokeStop() is
+  // what keeps an ordinary shutdown from looking like a failure; see there.
+  // 0 means "no local stop pending".
+  std::atomic<u64> m_stop_requested_ms{0};
+
   u8 m_sync_save_data_count = 0;
   u8 m_sync_save_data_success_count = 0;
   u16 m_sync_gecko_codes_count = 0;

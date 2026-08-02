@@ -51,6 +51,7 @@
 #include "Core/HW/EXI/EXI_Device.h"
 #ifdef HAS_LIBMGBA
 #include "Core/HW/GBACore.h"
+#include "Core/HW/GBADetectLog.h"
 #endif
 #include "Core/HW/GCMemcard/GCMemcard.h"
 #include "Core/HW/GCMemcard/GCMemcardDirectory.h"
@@ -91,11 +92,81 @@
 
 namespace NetPlay
 {
+// XD Netplay -- automatic pad buffer sizing. Tuning constants live here so the
+// whole policy is readable in one place; the decision loop that uses them is
+// NetPlayServer::UpdateAutoPadBuffer, further down.
+//
+// WHY THE HOST OWNS THIS: NetPlayServer::AdjustPadBufferSize is the only writer
+// of the session's buffer and it broadcasts MessageID::PadBuffer to every
+// client, so anything decided here is synced by construction. Never compute it
+// per-client -- two clients picking different numbers is the bug this avoids.
+//
+// THE FORMULA
+//   target = ceil(ping_ms / 16.67) + AUTOBUF_SAFETY_FRAMES, clamped
+//
+// 16.67 ms is one frame at 59.94 Hz. In fixed-delay netplay a client holds its
+// own pad for `buffer` frames before feeding it to the CPU, and puts those same
+// states on the wire in the process, so the buffer buys the network
+// buffer * 16.67 ms to land a remote pad before anybody stalls.
+//
+// It is the full ROUND trip that has to fit, not half of it: both sides stall
+// on each other through the host relay, and Player::ping is already an RTT
+// (host -> client -> host, from the 1 Hz Ping/Pong pair in ThreadFunc/OnData).
+// Measured on the transatlantic sessions this fork exists for, a ~200 ms link
+// needed ~12 frames, and 200 / 16.67 = 12.0. A half-RTT model would have said 6
+// and stuttered continuously -- which is what the fixed default of 5 did.
+// Raising a real 200 ms session from 5 to 10 cut the average per-frame stall
+// from 7.4 ms to 2.3 ms.
+namespace
+{
+// ceil(ping_ms / 16.667) in integer math: 1/16.667 == 3/50.
+constexpr u32 AUTOBUF_FRAME_NUM = 3;
+constexpr u32 AUTOBUF_FRAME_DEN = 50;
+// Headroom for jitter and for the frame a packet just missed. Two frames is
+// ~33 ms, about the peak-to-mean jitter seen on the real 200-300 ms links.
+constexpr u32 AUTOBUF_SAFETY_FRAMES = 2;
+// 3 frames = 50 ms, below which the buffer is not the bottleneck; 20 frames =
+// 333 ms, past which the added input delay is worse than the stutter it cures.
+constexpr u32 AUTOBUF_MIN_FRAMES = 3;
+constexpr u32 AUTOBUF_MAX_FRAMES = 20;
+// Hysteresis, in 1 Hz samples. Raising is quick (a too-small buffer is felt on
+// every single frame); lowering is deliberately 10x lazier and steps down one
+// frame at a time, because a too-large buffer only costs a little input delay.
+constexpr u32 AUTOBUF_RAISE_SAMPLES = 3;   // ~3 s of agreement before raising
+constexpr u32 AUTOBUF_LOWER_SAMPLES = 30;  // ~30 s of agreement before lowering
+// Dead band: never lower unless the measurement says there are at least this
+// many frames of slack, so the resting size is need..need+2 rather than exactly
+// need. Without it a ping sitting on a frame boundary would toggle the buffer
+// forever; widening it from 2 to 3 cut simulated changes on a spiky 1-hour
+// trace by a third (0.85 -> 0.63 per minute) for one frame of extra delay.
+constexpr u32 AUTOBUF_LOWER_SLACK = 3;
+// Floor on the time between two automatic changes, whatever the streaks say.
+constexpr u64 AUTOBUF_COOLDOWN_MS = 5000;
+// Quiet windows. Chunked save/code sync saturates the link, and pings taken
+// during or just after a boot are meaningless; a join/part is a smaller
+// disturbance but still worth one clean sample.
+constexpr u64 AUTOBUF_SETTLE_GAME_MS = 10000;
+constexpr u64 AUTOBUF_SETTLE_ROSTER_MS = 2000;
+
+u32 AutoBufferTargetForPing(u32 ping_ms)
+{
+  const u32 frames = (ping_ms * AUTOBUF_FRAME_NUM + AUTOBUF_FRAME_DEN - 1) / AUTOBUF_FRAME_DEN;
+  return std::clamp(frames + AUTOBUF_SAFETY_FRAMES, AUTOBUF_MIN_FRAMES, AUTOBUF_MAX_FRAMES);
+}
+}  // namespace
+
 NetPlayServer::~NetPlayServer()
 {
   // A guest's submitted team lives in the host's socket-3 save; hand that save
   // back to its owner now the room is gone, so the next solo boot (or the next
-  // guest who submits nothing) uses the host's own team again.
+  // guest who submits nothing) uses the host's own team again -- and take the
+  // .bak/.tmp copies of it with it, so nobody can read their opponent's spread
+  // after the fact.
+  //
+  // Note this can land while emulation is still shutting down (NetPlayQuit
+  // resets the client, which stops the game asynchronously, then resets the
+  // server). OnRoomClosed defers the work until the GBA cores have flushed;
+  // doing it inline here would be undone by the mGBA core's own save writeback.
   if (m_dialog)
     m_dialog->OnRoomClosed();
 
@@ -178,6 +249,10 @@ NetPlayServer::NetPlayServer(const u16 port, const bool forward_port, NetPlayUI*
     m_do_loop = true;
     m_thread = std::thread(&NetPlayServer::ThreadFunc, this);
     m_target_buffer_size = 5;
+    // Opt-out automatic buffer sizing (UpdateAutoPadBuffer). Snapshot the
+    // config here; the host UI flips it live through SetAutoPadBufferEnabled.
+    m_auto_buffer_enabled.store(Config::Get(Config::NETPLAY_AUTO_BUFFER));
+    m_auto_buffer_was_enabled = m_auto_buffer_enabled.load();
     m_chunked_data_thread = std::thread(&NetPlayServer::ChunkedDataThreadFunc, this);
 
 #ifdef USE_UPNP
@@ -282,6 +357,11 @@ void NetPlayServer::ThreadFunc()
       m_index.SetInGame(m_is_running);
 
       m_update_pings = false;
+
+      // Same 1 Hz tick that refreshes Player::ping is the sampling clock for
+      // the automatic buffer. Uses the pings measured on the PREVIOUS tick,
+      // which is exactly what we want -- fresh ones are still in flight.
+      UpdateAutoPadBuffer();
     }
 
     ENetEvent netEvent;
@@ -522,6 +602,13 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
     UpdateWiimoteMapping();
   }
 
+  // The new player has not answered a ping yet, and the handshake traffic just
+  // skewed everyone else's. Let the automatic buffer take one clean sample
+  // before it believes anything (netplay thread owns these fields).
+  m_auto_buffer_raise_streak = 0;
+  m_auto_buffer_lower_streak = 0;
+  m_auto_buffer_quiet_until_ms = Common::Timer::NowMs() + AUTOBUF_SETTLE_ROSTER_MS;
+
   return ConnectionError::NoError;
 }
 
@@ -529,6 +616,11 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
 unsigned int NetPlayServer::OnDisconnect(const Client& player)
 {
   const PlayerId pid = player.pid;
+
+  // Roster change: same reasoning as in OnConnect.
+  m_auto_buffer_raise_streak = 0;
+  m_auto_buffer_lower_streak = 0;
+  m_auto_buffer_quiet_until_ms = Common::Timer::NowMs() + AUTOBUF_SETTLE_ROSTER_MS;
 
   if (m_is_running)
   {
@@ -712,6 +804,175 @@ void NetPlayServer::AdjustPadBufferSize(unsigned int size)
 
     SendAsyncToClients(std::move(spac));
   }
+}
+
+// Automatic pad buffer sizing. Formula, rationale and every tuning constant are
+// documented on the AUTOBUF_* block at the top of this file.
+//
+// called from ---NETPLAY--- thread only (the 1 Hz ping tick in ThreadFunc).
+// m_players and every m_auto_buffer_* field except the atomic flag are owned by
+// this thread, so nothing here locks.
+void NetPlayServer::UpdateAutoPadBuffer()
+{
+  const bool enabled = m_auto_buffer_enabled.load();
+  const u64 now_ms = Common::Timer::NowMs();
+
+  // Re-enabled from the UI: start from a clean slate and take one settled
+  // sample before touching anything.
+  if (enabled && !m_auto_buffer_was_enabled)
+  {
+    m_auto_buffer_raise_streak = 0;
+    m_auto_buffer_lower_streak = 0;
+    m_auto_buffer_quiet_until_ms = now_ms + AUTOBUF_SETTLE_ROSTER_MS;
+  }
+  m_auto_buffer_was_enabled = enabled;
+  if (!enabled)
+    return;
+
+  // Host input authority has no single host-owned buffer to size: each client
+  // sets its own (NETPLAY_CLIENT_BUFFER_SIZE) and AdjustPadBufferSize does not
+  // even broadcast. Leave those modes alone.
+  if (m_host_input_authority)
+    return;
+
+  // Boot/stop is a huge ping disturbance in both directions.
+  if (m_is_running != m_auto_buffer_was_running)
+  {
+    m_auto_buffer_was_running = m_is_running;
+    m_auto_buffer_raise_streak = 0;
+    m_auto_buffer_lower_streak = 0;
+    m_auto_buffer_quiet_until_ms = now_ms + AUTOBUF_SETTLE_GAME_MS;
+    return;
+  }
+
+  // A start is in flight: SyncSaveData/SyncCodes are pushing megabytes and the
+  // pings they produce are pure noise. Hold, and re-settle once it lands.
+  if (m_start_pending)
+  {
+    m_auto_buffer_raise_streak = 0;
+    m_auto_buffer_lower_streak = 0;
+    m_auto_buffer_quiet_until_ms = now_ms + AUTOBUF_SETTLE_GAME_MS;
+    return;
+  }
+
+  if (now_ms < m_auto_buffer_quiet_until_ms)
+    return;
+
+  // Nobody to be late from. (The host's own loopback client always reports ~0.)
+  if (m_players.size() < 2)
+  {
+    m_auto_buffer_raise_streak = 0;
+    m_auto_buffer_lower_streak = 0;
+    return;
+  }
+
+  // Only players whose pads other clients actually block on should drive the
+  // buffer; a spectator's bad link stalls nobody but itself. If no mapping
+  // exists yet (early lobby), fall back to everyone.
+  u32 max_ping = 0;
+  bool any_mapped = false;
+  for (const auto& [pid, client] : m_players)
+  {
+    if (!PlayerHasControllerMapped(pid))
+      continue;
+    any_mapped = true;
+    max_ping = std::max(max_ping, client.ping);
+  }
+  if (!any_mapped)
+  {
+    for (const auto& client : std::views::values(m_players))
+      max_ping = std::max(max_ping, client.ping);
+  }
+
+  // No pong has come back yet -- 0 is "unknown", not "instant".
+  if (max_ping == 0)
+    return;
+
+  const u32 need = AutoBufferTargetForPing(max_ping);
+  const u32 current = m_target_buffer_size;
+
+  if (need > current)
+  {
+    m_auto_buffer_lower_streak = 0;
+    ++m_auto_buffer_raise_streak;
+  }
+  else if (need + AUTOBUF_LOWER_SLACK <= current)
+  {
+    m_auto_buffer_raise_streak = 0;
+    ++m_auto_buffer_lower_streak;
+  }
+  else
+  {
+    // Inside the dead band: the current size is right. Forget both streaks so
+    // a change always needs its full run of *consecutive* samples.
+    m_auto_buffer_raise_streak = 0;
+    m_auto_buffer_lower_streak = 0;
+    return;
+  }
+
+  if (now_ms - m_auto_buffer_last_change_ms < AUTOBUF_COOLDOWN_MS)
+    return;
+
+  u32 next = current;
+  const char* why = nullptr;
+  if (m_auto_buffer_raise_streak >= AUTOBUF_RAISE_SAMPLES)
+  {
+    // Jump straight to what the link needs: starvation hurts every frame until
+    // it is fixed, so there is nothing to gain by creeping upward.
+    next = need;
+    why = "raise";
+  }
+  else if (m_auto_buffer_lower_streak >= AUTOBUF_LOWER_SAMPLES)
+  {
+    // Give back one frame at a time. Shedding delay is never urgent, and a slow
+    // walk down re-measures at each step instead of overshooting into stutter.
+    // (The dead band already makes a lower vote impossible at the floor; the
+    // guard is here so the unsigned subtraction can never wrap regardless.)
+    next = current > AUTOBUF_MIN_FRAMES ? current - 1 : current;
+    why = "lower";
+  }
+
+  if (why == nullptr || next == current)
+    return;
+
+  m_auto_buffer_raise_streak = 0;
+  m_auto_buffer_lower_streak = 0;
+  m_auto_buffer_last_change_ms = now_ms;
+
+  const std::string detail =
+      fmt::format("buf {}->{} ping={}ms need={} why={} players={} running={}", current, next,
+                  max_ping, need, why, m_players.size(), m_is_running ? 1 : 0);
+  NOTICE_LOG_FMT(NETPLAY, "AutoBuffer {}", detail);
+#ifdef HAS_LIBMGBA
+  // Same session log and same sock=0 channel as the NetLat lines, so a user's
+  // shared log shows the buffer decision right next to the stall it answered.
+  // tick=0: this is the netplay thread, which must not read CoreTiming
+  // (CoreTimingManager::GetTicks is documented CPU-thread-only).
+  GBADetectLog::LogEvent(0, 0, "autobuf", detail);
+#endif
+
+  AdjustPadBufferSize(next);
+}
+
+void NetPlayServer::SetPadBufferSizeManual(unsigned int size)
+{
+  // Manual wins, permanently: the host asked for a number, so the sizer stops
+  // rather than overwriting it on the next tick. The host UI mirrors this by
+  // clearing its "Auto" checkbox, so the reason is visible, not mysterious.
+  SetAutoPadBufferEnabled(false);
+  AdjustPadBufferSize(size);
+}
+
+// called from ---GUI--- thread
+void NetPlayServer::SetAutoPadBufferEnabled(const bool enabled)
+{
+  if (m_auto_buffer_enabled.exchange(enabled) == enabled)
+    return;
+
+  Config::SetBaseOrCurrent(Config::NETPLAY_AUTO_BUFFER, enabled);
+  INFO_LOG_FMT(NETPLAY, "Automatic pad buffer {}.", enabled ? "enabled" : "disabled");
+  // The netplay thread picks the change up on its next tick and resets its own
+  // hysteresis state there; nothing else to do from here.
 }
 
 void NetPlayServer::SetHostInputAuthority(const bool enable)
