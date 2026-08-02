@@ -1106,4 +1106,12 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="netplay_address_share">Share address</string>
     <string name="netplay_address_retry">Retry</string>
     <string name="netplay_transfer_progress">%1$s/%2$s MiB</string>
+
+    <string name="xd_update_check">Check for Updates</string>
+    <string name="xd_update_checking">Checking…</string>
+    <string name="xd_update_title">Check for Updates</string>
+    <string name="xd_update_download">Download</string>
+    <string name="xd_update_close">Close</string>
+    <string name="xd_update_current_version">XD Netplay %1$s</string>
+    <string name="xd_update_no_browser">No app on this device can open the release page.</string>
 </resources>
