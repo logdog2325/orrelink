@@ -168,6 +168,63 @@ std::string EmeraldSave::GetTrainerName() const
                           TRAINER_NAME_LEN);
 }
 
+bool EmeraldSave::SetTrainerName(const std::string& name, std::string* error)
+{
+  if (name.empty())
+  {
+    if (error)
+      *error = "trainer name cannot be empty";
+    return false;
+  }
+  // Length is counted in CODEPOINTS, not bytes: '♀' is three UTF-8 bytes and
+  // one Gen 3 byte. Encode() would silently truncate an over-long name, which
+  // is the wrong answer for a name a human just typed -- say so instead.
+  if (Gen3Text::DecodeUtf8(name).size() > TRAINER_NAME_LEN)
+  {
+    if (error)
+      *error = "trainer name is longer than " + std::to_string(TRAINER_NAME_LEN) + " characters";
+    return false;
+  }
+  // Encode first: it fails (leaving the save untouched) on any character the
+  // Gen 3 charset has no byte for, rather than writing a '?' placeholder.
+  const auto encoded = Gen3Text::Encode(name, TRAINER_NAME_LEN, error);
+  if (!encoded)
+    return false;
+
+  const size_t off = m_section_offsets[0] + TRAINER_NAME_OFFSET;
+  std::memcpy(m_raw.data() + off, encoded->data(), encoded->size());
+  // Encode() already 0xFF-pads the 7 usable bytes; byte 7 is the field's hard
+  // terminator, which the game keeps at 0xFF even for a 7-character name.
+  m_raw[off + TRAINER_NAME_LEN] = Gen3Text::TERMINATOR;
+  static_assert(TRAINER_NAME_OFFSET + TRAINER_NAME_FIELD_SIZE == TRAINER_GENDER_OFFSET,
+                "trainer name field must stop before the gender byte");
+  UpdateSectionChecksum(0);
+  return true;
+}
+
+std::string EmeraldSave::SanitizeTrainerName(const std::string& name)
+{
+  // Trim first: a leading space is an encodable character (0x00) and would
+  // otherwise eat one of the seven slots and render as a blank in-game.
+  const auto is_space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+  size_t begin = 0;
+  size_t end = name.size();
+  while (begin < end && is_space(name[begin]))
+    ++begin;
+  while (end > begin && is_space(name[end - 1]))
+    --end;
+
+  // Sanitize (drop unencodable) THEN trim again: dropping an unencodable
+  // character can expose new surrounding whitespace, e.g. "Lo 🐬 gan".
+  std::string trimmed = Gen3Text::Sanitize(name.substr(begin, end - begin), TRAINER_NAME_LEN);
+  while (!trimmed.empty() && is_space(trimmed.back()))
+    trimmed.pop_back();
+  size_t lead = 0;
+  while (lead < trimmed.size() && is_space(trimmed[lead]))
+    ++lead;
+  return trimmed.substr(lead);
+}
+
 u32 EmeraldSave::GetTrainerId() const
 {
   return ReadU32(m_raw.data(), m_section_offsets[0] + TRAINER_ID_OFFSET);

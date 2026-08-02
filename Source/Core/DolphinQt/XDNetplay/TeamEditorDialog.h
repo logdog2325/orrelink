@@ -17,6 +17,7 @@
 
 class QComboBox;
 class QLabel;
+class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
@@ -54,6 +55,11 @@ private:
   void OnSave();
   void OnShowInFolder();
 
+  // Write the trainer-name field into m_save and re-stamp the party's OT names
+  // to match. Returns false with *error set if the typed name is not writable
+  // as Gen 3 text; nothing is modified in that case.
+  bool ApplyTrainerName(std::string* error);
+
   std::optional<XDNetplay::Gen3Data> m_data;
   std::optional<XDNetplay::EmeraldSave> m_save;
   std::vector<XDNetplay::Gen3Mon> m_party;
@@ -62,6 +68,7 @@ private:
   bool m_fetching = false;
 
   QComboBox* m_role_combo;
+  QLineEdit* m_trainer_name_edit;
   QLabel* m_trainer_label;
   QListWidget* m_party_list;
   QPlainTextEdit* m_paste_edit;

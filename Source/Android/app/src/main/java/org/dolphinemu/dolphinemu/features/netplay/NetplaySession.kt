@@ -172,8 +172,14 @@ class NetplaySession(
      * the GBA save it syncs when the battle starts. A pokepast.es link must be
      * resolved to text by the caller -- the host never fetches a URL. The host
      * announces the result in the room chat once the write lands.
+     *
+     * [trainerName] is the in-game name to play under; "" leaves the host
+     * save's existing name alone. It rides along in the same message as the
+     * team (see UICommon/XDNetplay/TeamInjector.h) and is clamped to seven
+     * Gen 3 characters host-side.
      */
-    fun submitTeam(showdownText: String) = nativeSubmitTeam(showdownText)
+    fun submitTeam(showdownText: String, trainerName: String) =
+        nativeSubmitTeam(showdownText, trainerName)
 
     /** Show a line in this player's own chat log; nothing is sent over the wire. */
     fun showLocalMessage(message: String) {
@@ -184,7 +190,15 @@ class NetplaySession(
 
     fun adjustClientPadBufferSize(buffer: Int) = nativeAdjustClientPadBufferSize(buffer)
 
+    /**
+     * Host-side manual buffer edit. Manual always wins, so this also switches
+     * the automatic sizer off native-side; the UI mirrors that by clearing its
+     * "Auto" switch.
+     */
     fun adjustServerPadBufferSize(buffer: Int) = nativeAdjustServerPadBufferSize(buffer)
+
+    /** Turn host-side automatic buffer sizing (from measured ping) on or off. */
+    fun setAutoPadBuffer(enable: Boolean) = nativeSetAutoPadBuffer(enable)
 
     fun changeGame(gameFile: GameFile) = nativeChangeGame(gameFile)
 
@@ -265,13 +279,15 @@ class NetplaySession(
 
     private external fun nativeSendMessage(message: String)
 
-    private external fun nativeSubmitTeam(showdownText: String)
+    private external fun nativeSubmitTeam(showdownText: String, trainerName: String)
 
     private external fun nativeSetHostInputAuthority(enable: Boolean)
 
     private external fun nativeAdjustClientPadBufferSize(buffer: Int)
 
     private external fun nativeAdjustServerPadBufferSize(buffer: Int)
+
+    private external fun nativeSetAutoPadBuffer(enable: Boolean)
 
     private external fun nativeReleaseUICallbacks(pointer: Long)
 
