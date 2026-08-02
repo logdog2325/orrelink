@@ -16,10 +16,12 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.EmeraldSave
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Data
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Mon
+import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Text
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.MonFactory
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.SaveNaming
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.ShowdownParser
@@ -52,6 +54,7 @@ class TeamEditorActivity : AppCompatActivity(), ThemeProvider {
                     names = if (uiState.ready) repo.displayNames() else null,
                     onRoleChange = { reload(it) },
                     onSelect = { uiState = uiState.copy(selected = it) },
+                    onTrainerNameChange = { setTrainerName(it) },
                     onImport = { importShowdown(it) },
                     onRemoveSelected = { removeSelected() },
                     onSave = { saveTeam() },
@@ -62,13 +65,43 @@ class TeamEditorActivity : AppCompatActivity(), ThemeProvider {
         }
     }
 
+    /**
+     * The trainer-name field. Only characters the Gen 3 charset can hold are
+     * accepted, and only seven of them: rejecting the keystroke is how the user
+     * finds out, instead of a save-time error about something typed minutes
+     * ago. (Straight quotes are folded to the charset's curly forms.)
+     */
+    private fun setTrainerName(text: String) {
+        val filtered = Gen3Text.sanitize(text, EmeraldSave.TRAINER_NAME_LEN)
+        uiState = uiState.copy(trainerName = filtered, dirty = true)
+    }
+
     private fun reload(role: TeamRole) {
+        // Competitive integrity. While this device is HOSTING a room, the socket-3 save is the
+        // opponent's submitted party -- every EV, IV and nature -- written there so netplay can
+        // sync it at start. Opening it here would be a scouting tool. The host's own socket-2
+        // save stays editable, and the end-of-session cleanup puts the host's team back in
+        // socket 3, so this unlocks on its own when the room closes. Joiners are unaffected:
+        // their local socket-3 save is their own team; netplay runs them from NetPlayTemp copies.
+        if (role == TeamRole.GUEST && NetplayManager.activeSession?.isHosting == true) {
+            uiState = TeamEditorState(
+                role = role,
+                ready = false,
+                messages = listOf(
+                    "The guest slot is hidden while you are hosting — it holds your opponent's " +
+                        "submitted team. Close the room to see your own team here again."
+                )
+            )
+            return
+        }
+
         uiState = try {
             val loaded = repo.load(role)
             TeamEditorState(
                 role = role,
                 ready = true,
                 trainer = loaded.trainerLabel,
+                trainerName = loaded.trainerName,
                 party = loaded.party,
                 messages = loaded.messages
             )
@@ -82,16 +115,17 @@ class TeamEditorActivity : AppCompatActivity(), ThemeProvider {
     }
 
     private fun importShowdown(text: String) {
+        val trainerName = uiState.trainerName
         val pokepaste = Regex("^https?://pokepast\\.es/[A-Za-z0-9]+")
             .find(text.trim())?.value
         if (pokepaste == null) {
-            applyImport(repo.importShowdown(text))
+            applyImport(repo.importShowdown(text, trainerName))
             return
         }
         uiState = uiState.copy(messages = listOf("Fetching $pokepaste…"))
         lifecycleScope.launch(Dispatchers.IO) {
             val result = try {
-                repo.importShowdown(URL("$pokepaste/raw").readText())
+                repo.importShowdown(URL("$pokepaste/raw").readText(), trainerName)
             } catch (e: Exception) {
                 listOf("Could not fetch paste: ${e.message ?: "network error"}")
             }
@@ -108,6 +142,26 @@ class TeamEditorActivity : AppCompatActivity(), ThemeProvider {
         )
     }
 
+    // True when the file currently behind the editor is the opponent's team. The role check in
+    // reload() covers opening it; this covers an editor that was already open on the guest slot
+    // when the room started, and is reached again from the back stack.
+    private fun guestSlotLocked() =
+        uiState.role == TeamRole.GUEST && NetplayManager.activeSession?.isHosting == true
+
+    private fun saveTeam() {
+        if (guestSlotLocked()) {
+            uiState = uiState.copy(
+                messages = listOf("Not saved — the guest slot is your opponent's while you host")
+            )
+            return
+        }
+        val messages = repo.saveToDisk(uiState.trainerName)
+        // Only a clean write clears the dirty flag; a rejected name must keep
+        // the Save button live so the user can fix it and try again.
+        val failed = messages.any { it.startsWith("NOT saved") }
+        uiState = uiState.copy(dirty = failed, messages = messages)
+    }
+
     private fun removeSelected() {
         repo.removeAt(uiState.selected)
         uiState = uiState.copy(
@@ -118,12 +172,13 @@ class TeamEditorActivity : AppCompatActivity(), ThemeProvider {
         )
     }
 
-    private fun saveTeam() {
-        val messages = repo.saveToDisk()
-        uiState = uiState.copy(dirty = false, messages = messages)
-    }
-
     private fun shareSave() {
+        if (guestSlotLocked()) {
+            uiState = uiState.copy(
+                messages = listOf("Not shared — the guest slot is your opponent's while you host")
+            )
+            return
+        }
         val uri = repo.shareUri() ?: run {
             uiState = uiState.copy(messages = listOf("Save the team first, then share"))
             return
@@ -153,6 +208,8 @@ data class TeamEditorState(
     val role: TeamRole = TeamRole.HOST,
     val ready: Boolean = false,
     val trainer: String = "",
+    /** Editable in-game trainer name; max [EmeraldSave.TRAINER_NAME_LEN] chars. */
+    val trainerName: String = "",
     val party: List<Gen3Mon> = emptyList(),
     val selected: Int = 0,
     val dirty: Boolean = false,
@@ -161,7 +218,12 @@ data class TeamEditorState(
 
 /** Loads, edits, verifies, and writes the Emerald save Dolphin uses for netplay. */
 class TeamRepo(private val context: Context) {
-    data class Loaded(val trainerLabel: String, val party: List<Gen3Mon>, val messages: List<String>)
+    data class Loaded(
+        val trainerLabel: String,
+        val trainerName: String,
+        val party: List<Gen3Mon>,
+        val messages: List<String>
+    )
 
     private val data: Gen3Data by lazy { Gen3Data.load(context) }
     private val names: DisplayNames by lazy { DisplayNames.load(context) }
@@ -207,11 +269,45 @@ class TeamRepo(private val context: Context) {
         }
         save = parsed
         party = parsed.readParty().filter { !it.isEmpty() }.toMutableList()
-        return Loaded("${parsed.trainerName}  ·  ${path.name}", party.toList(), messages)
+        return Loaded(
+            trainerLabel = "ID ${parsed.trainerPublicId}  ·  ${path.name}",
+            trainerName = parsed.trainerName,
+            party = party.toList(),
+            messages = messages
+        )
     }
 
-    fun importShowdown(text: String): List<String> {
+    /**
+     * Write [name] into the save's trainer block and re-stamp the party's OT
+     * names to match. Throws (leaving the save untouched) if the name is empty,
+     * over-long, or has a character the Gen 3 charset cannot hold.
+     *
+     * Every Pokemon stores its OWN copy of the OT name, so a rename has to
+     * re-stamp the party; otherwise the mons read as traded outsiders in game
+     * (the disobedience rules kick in above the badge cap). The OT *ID* is
+     * untouched, so they remain this save's Pokemon.
+     */
+    fun applyTrainerName(name: String) {
+        val s = save ?: throw IllegalStateException("no save loaded")
+        val typed = name.trim()
+        if (typed == s.trainerName) return  // unchanged: leave the party's OT alone
+
+        s.setTrainerName(typed)
+        val otBytes = Gen3Text.encode(s.trainerName, EmeraldSave.TRAINER_NAME_LEN)
+        party.forEach { it.otNameRaw = otBytes.copyOf() }
+    }
+
+    fun importShowdown(text: String, trainerName: String): List<String> {
         val s = save ?: return listOf("No save loaded")
+        // Commit the typed trainer name FIRST: MonFactory.build stamps each
+        // mon's OT from the save's trainer block, so importing before the
+        // rename lands would build the whole party under the previous owner.
+        try {
+            applyTrainerName(trainerName)
+        } catch (e: Exception) {
+            return listOf("Nothing imported — trainer name: ${e.message ?: "invalid"}")
+        }
+
         val messages = mutableListOf<String>()
         val sets = ShowdownParser.parseTeam(text)
         if (sets.isEmpty()) return listOf("Nothing recognizable in that paste")
@@ -239,10 +335,17 @@ class TeamRepo(private val context: Context) {
         if (index in party.indices) party.removeAt(index)
     }
 
-    fun saveToDisk(): List<String> {
+    fun saveToDisk(trainerName: String): List<String> {
         val s = save ?: return listOf("No save loaded")
         val path = savePath ?: return listOf("No save path")
         val messages = mutableListOf<String>()
+        // Name before party: writeParty serializes the mons as they stand, and
+        // applyTrainerName is what brings their OT names in line with a rename.
+        try {
+            applyTrainerName(trainerName)
+        } catch (e: Exception) {
+            return listOf("NOT saved — trainer name: ${e.message ?: "invalid"}")
+        }
         return try {
             s.writeParty(party)
             val out = s.toBytes()
@@ -262,7 +365,7 @@ class TeamRepo(private val context: Context) {
             val tmp = File(path.path + ".tmp")
             tmp.writeBytes(out)
             check(tmp.renameTo(path)) { "could not replace ${path.name}" }
-            messages.add(0, "Saved ${party.size} Pokémon to ${path.name} ✓ verified")
+            messages.add(0, "Saved ${party.size} Pokémon as ${s.trainerName} to ${path.name} ✓ verified")
             messages
         } catch (e: Exception) {
             listOf("NOT saved — ${e.message ?: "verification failed"}")

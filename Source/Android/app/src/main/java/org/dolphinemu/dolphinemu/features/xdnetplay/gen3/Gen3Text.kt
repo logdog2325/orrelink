@@ -89,4 +89,32 @@ object Gen3Text {
         }
         return out
     }
+
+    /**
+     * Make [text] Gen 3-encodable by force: straight ASCII quotes become the
+     * charset's curly forms, anything else unencodable is DROPPED, and the
+     * result is clamped to [maxLen] characters (0 = no clamp).
+     *
+     * Use this for input that must degrade rather than fail (a nickname out of
+     * a Showdown paste, a trainer name that arrived over the wire); use
+     * [encode]'s exception when a human is typing and deserves to be told which
+     * character is the problem.
+     */
+    fun sanitize(text: String, maxLen: Int = 0): String {
+        val sb = StringBuilder()
+        for (c in text) {
+            if (maxLen != 0 && sb.length == maxLen) {
+                break
+            }
+            val mapped = when (c) {
+                '\'' -> '’'
+                '"' -> '”'
+                else -> c
+            }
+            if (canEncode(mapped)) {
+                sb.append(mapped)
+            }
+        }
+        return sb.toString()
+    }
 }

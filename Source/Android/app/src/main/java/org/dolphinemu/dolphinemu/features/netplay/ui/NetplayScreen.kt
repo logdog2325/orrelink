@@ -59,6 +59,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SheetValue
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
@@ -103,6 +104,8 @@ import org.dolphinemu.dolphinemu.features.netplay.model.NetworkMode
 import org.dolphinemu.dolphinemu.features.netplay.model.Player
 import org.dolphinemu.dolphinemu.features.netplay.model.SaveTransferProgress
 import org.dolphinemu.dolphinemu.features.netplay.model.TraversalState
+import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.EmeraldSave
+import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Text
 import org.dolphinemu.dolphinemu.model.GameFile
 import org.dolphinemu.dolphinemu.ui.theme.DolphinScaffold
 import org.dolphinemu.dolphinemu.ui.theme.DolphinTheme
@@ -135,18 +138,24 @@ fun NetplayScreen(
     onNetworkModeChanged: (NetworkMode) -> Unit,
     buffer: Int,
     onBufferChanged: (Int) -> Unit,
+    autoBuffer: Boolean,
+    onAutoBufferChanged: (Boolean) -> Unit,
     clientBuffer: Int,
     onClientBufferChanged: (Int) -> Unit,
     players: List<Player>,
     saveTransferProgress: SaveTransferProgress?,
     gameDigestProgress: GameDigestProgress?,
     joinAddresses: Map<JoinInfoType, JoinAddress>,
-    onSubmitTeam: (String) -> Unit,
+    onSubmitTeam: (String, String) -> Unit,
+    defaultTrainerName: String,
 ) {
     val scrollState = rememberScrollState()
     // XD Netplay: joiner's "Submit Team" paste sheet.
     var showSubmitTeam by rememberSaveable { mutableStateOf(false) }
     var teamDraft by rememberSaveable { mutableStateOf("") }
+    // In-game name, pre-filled with the netplay nickname (already cut down to
+    // what a Gen 3 save can hold) so the common case is zero typing.
+    var nameDraft by rememberSaveable { mutableStateOf(defaultTrainerName) }
     if (showSubmitTeam) {
         AlertDialog(
             title = { Text("Submit Team") },
@@ -155,6 +164,19 @@ fun NetplayScreen(
                     Text(
                         "Paste a Showdown team export, or a pokepast.es link. " +
                             "The host writes it into the save you'll play with."
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = nameDraft,
+                        // Reject unencodable keystrokes as they are typed, and
+                        // stop at the Gen 3 limit of seven characters.
+                        onValueChange = {
+                            nameDraft = Gen3Text.sanitize(it, EmeraldSave.TRAINER_NAME_LEN)
+                        },
+                        singleLine = true,
+                        label = { Text("In-game name (max 7)") },
+                        supportingText = { Text("Shown to your opponent in the battle.") },
+                        modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(
@@ -167,7 +189,7 @@ fun NetplayScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        onSubmitTeam(teamDraft.trim())
+                        onSubmitTeam(teamDraft.trim(), nameDraft.trim())
                         showSubmitTeam = false
                     },
                     enabled = teamDraft.isNotBlank()
@@ -246,6 +268,8 @@ fun NetplayScreen(
                 onNetworkModeChanged = onNetworkModeChanged,
                 buffer = buffer,
                 onBufferChanged = onBufferChanged,
+                autoBuffer = autoBuffer,
+                onAutoBufferChanged = onAutoBufferChanged,
                 clientBuffer = clientBuffer,
                 onClientBufferChanged = onClientBufferChanged,
                 joinAddresses = joinAddresses,
@@ -273,6 +297,8 @@ fun NetplayScreen(
                 onNetworkModeChanged = onNetworkModeChanged,
                 buffer = buffer,
                 onBufferChanged = onBufferChanged,
+                autoBuffer = autoBuffer,
+                onAutoBufferChanged = onAutoBufferChanged,
                 clientBuffer = clientBuffer,
                 onClientBufferChanged = onClientBufferChanged,
                 joinAddresses = joinAddresses,
@@ -392,6 +418,8 @@ private fun PortraitContent(
     onNetworkModeChanged: (NetworkMode) -> Unit,
     buffer: Int,
     onBufferChanged: (Int) -> Unit,
+    autoBuffer: Boolean,
+    onAutoBufferChanged: (Boolean) -> Unit,
     clientBuffer: Int,
     onClientBufferChanged: (Int) -> Unit,
     joinAddresses: Map<JoinInfoType, JoinAddress>,
@@ -431,6 +459,8 @@ private fun PortraitContent(
             onNetworkModeChanged = onNetworkModeChanged,
             buffer = buffer,
             onBufferChanged = onBufferChanged,
+            autoBuffer = autoBuffer,
+            onAutoBufferChanged = onAutoBufferChanged,
             clientBuffer = clientBuffer,
             onClientBufferChanged = onClientBufferChanged,
             isHosting = isHosting,
@@ -465,6 +495,8 @@ private fun LandscapeContent(
     onNetworkModeChanged: (NetworkMode) -> Unit,
     buffer: Int,
     onBufferChanged: (Int) -> Unit,
+    autoBuffer: Boolean,
+    onAutoBufferChanged: (Boolean) -> Unit,
     clientBuffer: Int,
     onClientBufferChanged: (Int) -> Unit,
     joinAddresses: Map<JoinInfoType, JoinAddress>,
@@ -516,6 +548,8 @@ private fun LandscapeContent(
                 onNetworkModeChanged = onNetworkModeChanged,
                 buffer = buffer,
                 onBufferChanged = onBufferChanged,
+                autoBuffer = autoBuffer,
+                onAutoBufferChanged = onAutoBufferChanged,
                 clientBuffer = clientBuffer,
                 onClientBufferChanged = onClientBufferChanged,
                 isHosting = isHosting,
@@ -545,6 +579,8 @@ private fun PlayersAndSettings(
     onNetworkModeChanged: (NetworkMode) -> Unit,
     buffer: Int,
     onBufferChanged: (Int) -> Unit,
+    autoBuffer: Boolean,
+    onAutoBufferChanged: (Boolean) -> Unit,
     clientBuffer: Int,
     onClientBufferChanged: (Int) -> Unit,
     isHosting: Boolean,
@@ -608,6 +644,26 @@ private fun PlayersAndSettings(
 
         if (isHosting && !hostInputAuthorityEnabled) {
             MenuSpacer()
+
+            // Host-side automatic buffer sizing. Only the host has one to size,
+            // and only in fixed delay -- under host input authority each client
+            // owns its own buffer, so the server leaves it alone.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        stringResource(R.string.netplay_auto_buffer),
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        stringResource(R.string.netplay_auto_buffer_description),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Switch(checked = autoBuffer, onCheckedChange = onAutoBufferChanged)
+            }
 
             BufferInput(
                 value = buffer,
@@ -1414,6 +1470,8 @@ private fun PreviewNetplayScreen() {
         onNetworkModeChanged = {},
         buffer = 5,
         onBufferChanged = {},
+        autoBuffer = true,
+        onAutoBufferChanged = {},
         clientBuffer = 10,
         onClientBufferChanged = {},
         saveTransferProgress = null,
@@ -1422,7 +1480,8 @@ private fun PreviewNetplayScreen() {
             JoinInfoType.EXTERNAL to JoinAddress.Loaded("203.0.113.1:2626"),
             JoinInfoType.LOCAL to JoinAddress.Loaded("192.168.1.5:2626"),
         ),
-        onSubmitTeam = {},
+        onSubmitTeam = { _, _ -> },
+        defaultTrainerName = "PLAYER",
 //        saveTransferProgress = SaveTransferProgress(
 //            title = "Title",
 //            totalSize = 1024L,

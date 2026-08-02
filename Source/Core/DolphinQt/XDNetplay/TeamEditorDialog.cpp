@@ -3,6 +3,7 @@
 
 #include "DolphinQt/XDNetplay/TeamEditorDialog.h"
 
+#include <algorithm>
 #include <thread>
 #include <utility>
 
@@ -11,6 +12,7 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -28,10 +30,13 @@
 
 #include "Core/Config/MainSettings.h"
 #include "Core/HW/GBACore.h"
+#include "Core/NetPlayProto.h"
 
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 #include "DolphinQt/QtUtils/QueueOnObject.h"
+#include "DolphinQt/Settings.h"
 
+#include "UICommon/XDNetplay/Gen3Text.h"
 #include "UICommon/XDNetplay/MonFactory.h"
 #include "UICommon/XDNetplay/ShowdownParser.h"
 
@@ -66,10 +71,19 @@ void TeamEditorDialog::CreateMainLayout()
   m_role_combo = new QComboBox;
   m_role_combo->addItem(tr("Host — GBA port 2"));
   m_role_combo->addItem(tr("Guest — GBA port 3"));
+
+  // Trainer name: 7 characters is the hard Gen 3 limit, so the field enforces
+  // it rather than letting someone type a name that would be silently cut.
+  m_trainer_name_edit = new QLineEdit;
+  m_trainer_name_edit->setMaxLength(static_cast<int>(EmeraldSave::TRAINER_NAME_LEN));
+  m_trainer_name_edit->setPlaceholderText(tr("Trainer name"));
+
   m_trainer_label = new QLabel(QString());
   top_layout->addWidget(new QLabel(tr("Editing team for:")), 0, 0);
   top_layout->addWidget(m_role_combo, 0, 1);
-  top_layout->addWidget(m_trainer_label, 1, 0, 1, 2);
+  top_layout->addWidget(new QLabel(tr("Trainer name (max 7):")), 1, 0);
+  top_layout->addWidget(m_trainer_name_edit, 1, 1);
+  top_layout->addWidget(m_trainer_label, 2, 0, 1, 2);
   top_layout->setColumnStretch(1, 1);
   layout->addLayout(top_layout);
 
@@ -136,6 +150,7 @@ void TeamEditorDialog::ReloadForRole()
   m_party.clear();
   m_save_path.clear();
   m_trainer_label->setText(QString());
+  m_trainer_name_edit->clear();
 
   QStringList messages;
 
@@ -167,6 +182,25 @@ void TeamEditorDialog::ReloadForRole()
   // Preferred ROM for the role, falling back to the other port's ROM (both
   // point at the same imported Emerald dump in a launcher-made setup).
   const int device = DeviceNumber();
+
+  // Competitive integrity. While this machine is HOSTING a room, the socket-3
+  // save is not "the guest slot" in any abstract sense -- it is the opponent's
+  // submitted party, EVs, IVs and natures included, written there so netplay
+  // can sync it at start. Showing it here would be a scouting tool. The host's
+  // own socket-2 save stays editable, and once the room closes the cleanup has
+  // already put the host's own team back in socket 3, so this unlocks by
+  // itself. (Joiners are unaffected: their local socket-3 save is their own --
+  // netplay runs a joiner from NetPlayTemp copies instead.)
+  // Gated on the ROOM, not on the running game: submissions arrive in the lobby
+  // and between battles, which is exactly when the game is not running.
+  if (device == 2 && Settings::Instance().GetNetPlayServer())
+  {
+    SetMessages({tr("The guest slot is hidden while you are hosting — it holds your opponent's "
+                    "submitted team. Close the room to see your own team here again.")});
+    RefreshPartyList();
+    return;
+  }
+
   std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device]);
   if (rom.empty() || !File::Exists(rom))
     rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device == 1 ? 2 : 1]);
@@ -225,8 +259,9 @@ void TeamEditorDialog::ReloadForRole()
 
   std::string file_name = m_save_path;
   SplitPath(m_save_path, nullptr, &file_name, nullptr);
-  m_trainer_label->setText(tr("Trainer %1  ·  %2.sav")
-                               .arg(QString::fromStdString(m_save->GetTrainerName()))
+  m_trainer_name_edit->setText(QString::fromStdString(m_save->GetTrainerName()));
+  m_trainer_label->setText(tr("Trainer ID %1  ·  %2.sav")
+                               .arg(m_save->GetTrainerPublicId())
                                .arg(QString::fromStdString(file_name)));
 #else
   messages << tr("GBA support (libmgba) is not compiled into this build.");
@@ -310,11 +345,59 @@ void TeamEditorDialog::OnImport()
   }).detach();
 }
 
+bool TeamEditorDialog::ApplyTrainerName(std::string* error)
+{
+  if (!m_save)
+  {
+    if (error)
+      *error = "no save loaded";
+    return false;
+  }
+
+  const std::string typed = m_trainer_name_edit->text().trimmed().toStdString();
+  if (typed.empty())
+  {
+    if (error)
+      *error = "trainer name cannot be empty";
+    return false;
+  }
+  if (typed == m_save->GetTrainerName())
+    return true;  // unchanged: leave the save (and the party's OT) alone
+
+  // A character the Gen 3 charset cannot hold fails here, naming itself, and
+  // nothing is written -- better than storing a '?' the player never chose.
+  if (!m_save->SetTrainerName(typed, error))
+    return false;
+
+  // Every Pokemon stores its OWN copy of the OT name, so a rename has to
+  // re-stamp the party too; otherwise the mons read as traded outsiders in
+  // game (the disobedience rules kick in above the badge cap). The OT *ID* is
+  // untouched, so they remain this save's Pokemon.
+  const auto ot_bytes =
+      Gen3Text::Encode(m_save->GetTrainerName(), EmeraldSave::TRAINER_NAME_LEN, error);
+  if (!ot_bytes)
+    return false;
+  for (Gen3Mon& mon : m_party)
+    std::copy(ot_bytes->begin(), ot_bytes->end(), mon.ot_name_raw.begin());
+  return true;
+}
+
 void TeamEditorDialog::ApplyImportText(const std::string& text)
 {
   if (!m_save || !m_data)
   {
     SetMessages({tr("No save loaded.")});
+    return;
+  }
+
+  // Commit the typed trainer name FIRST: MonFactory::Build stamps each mon's
+  // OT from the save's trainer block, so importing before the rename lands
+  // would build the whole party under the previous owner's name.
+  std::string name_error;
+  if (!ApplyTrainerName(&name_error))
+  {
+    SetMessages({tr("Nothing imported — trainer name: %1")
+                     .arg(QString::fromStdString(name_error))});
     return;
   }
 
@@ -375,19 +458,37 @@ void TeamEditorDialog::OnSave()
     SetMessages({tr("No save loaded.")});
     return;
   }
+  // The room may have opened after this dialog last loaded (showEvent is the
+  // only reload). Writing the guest slot now would overwrite the opponent's
+  // submitted party with whatever was loaded before they sent it -- and leave
+  // a .bak of their team behind.
+  if (DeviceNumber() == 2 && Settings::Instance().GetNetPlayServer())
+  {
+    SetMessages({tr("NOT saved — the guest slot holds your opponent's team while you are "
+                    "hosting.")});
+    return;
+  }
+  // Name before party: WriteParty serializes the mons as they stand, and
+  // ApplyTrainerName is what brings their OT names in line with a rename.
+  std::string error;
+  if (!ApplyTrainerName(&error))
+  {
+    SetMessages({tr("NOT saved — trainer name: %1").arg(QString::fromStdString(error))});
+    return;
+  }
   if (!m_save->WriteParty(m_party))
   {
     SetMessages({tr("Party is larger than 6.")});
     return;
   }
-  std::string error;
   if (!VerifiedWriteSaveFile(m_save_path, *m_save, &error))
   {
     SetMessages({tr("NOT saved — %1").arg(QString::fromStdString(error))});
     return;
   }
-  SetMessages({tr("Saved %1 Pokémon to %2 (verified; previous save backed up as .bak)")
+  SetMessages({tr("Saved %1 Pokémon as %2 to %3 (verified; previous save backed up as .bak)")
                    .arg(static_cast<int>(m_party.size()))
+                   .arg(QString::fromStdString(m_save->GetTrainerName()))
                    .arg(QString::fromStdString(m_save_path))});
 }
 

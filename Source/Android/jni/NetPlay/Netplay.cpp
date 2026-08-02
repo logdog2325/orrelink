@@ -18,6 +18,7 @@
 #include "Core/NetPlayCommon.h"
 #include "Core/NetPlayServer.h"
 #include "UICommon/GameFile.h"
+#include "UICommon/XDNetplay/TeamInjector.h"
 
 #include "jni/AndroidCommon/AndroidCommon.h"
 #include "jni/AndroidCommon/IDCache.h"
@@ -55,12 +56,19 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSendMessage
 JNIEXPORT void JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitTeam(JNIEnv* env,
                                                                                 jobject obj,
-                                                                                jstring jteam)
+                                                                                jstring jteam,
+                                                                                jstring jname)
 {
-  // XD Netplay: hand this player's Showdown team to the host, which writes it
-  // into the GBA save it syncs at start (UICommon/XDNetplay/TeamInjector.h).
+  // XD Netplay: hand this player's Showdown team -- and the in-game trainer
+  // name they want to play under -- to the host, which writes both into the GBA
+  // save it syncs at start. The two travel in ONE TeamData string; the payload
+  // grammar lives in UICommon/XDNetplay/TeamInjector.h. An empty name means
+  // "keep the host save's existing name".
   if (auto* client = GetClientPointer(env, obj))
-    client->SendTeamSubmission(GetJString(env, jteam));
+  {
+    client->SendTeamSubmission(XDNetplay::BuildTeamSubmissionPayload(GetJString(env, jteam),
+                                                                    GetJString(env, jname)));
+  }
 }
 
 JNIEXPORT void JNICALL
@@ -83,8 +91,18 @@ JNIEXPORT void JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeAdjustServerPadBufferSize(
     JNIEnv* env, jobject obj, jint buffer)
 {
+  // This is the host's own buffer control in the room UI, i.e. a manual edit:
+  // it takes the automatic sizer out of the loop so the typed value sticks.
   if (auto* server = GetServerPointer(env, obj))
-    server->AdjustPadBufferSize(static_cast<u32>(buffer));
+    server->SetPadBufferSizeManual(static_cast<u32>(buffer));
+}
+
+JNIEXPORT void JNICALL
+Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetAutoPadBuffer(
+    JNIEnv* env, jobject obj, jboolean enable)
+{
+  if (auto* server = GetServerPointer(env, obj))
+    server->SetAutoPadBufferEnabled(static_cast<bool>(enable));
 }
 
 JNIEXPORT jlong JNICALL
