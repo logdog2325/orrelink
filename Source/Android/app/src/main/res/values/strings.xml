@@ -1083,6 +1083,8 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="netplay_network_mode_host_input_authority">Host Input Authority</string>
     <string name="netplay_network_mode_golf">Golf Mode</string>
     <string name="netplay_buffer">Buffer</string>
+    <string name="netplay_auto_buffer">Automatic buffer</string>
+    <string name="netplay_auto_buffer_description">Sizes the buffer from the measured ping and keeps it sized. A 200 ms connection needs about 12 frames. Changing the buffer by hand turns this off.</string>
     <string name="netplay_client_buffer">Max buffer</string>
     <string name="netplay_connection_lost">Netplay connection lost</string>
     <string name="netplay_save_transfer_progress_close">Close</string>

@@ -191,6 +191,14 @@
             android:exported="false"
             android:theme="@style/Theme.Dolphin.Main" />
 
+        <!-- Only runs while a netplay session is live. android:stopWithTask must stay
+             false: "true" makes the system kill the service silently on a task swipe,
+             which is exactly the callback we need. -->
+        <service
+            android:name=".features.netplay.NetplayTaskWatcherService"
+            android:exported="false"
+            android:stopWithTask="false"/>
+
         <service
             android:name=".services.SyncChannelJobService"
             android:exported="false"

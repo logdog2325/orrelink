@@ -171,14 +171,23 @@ std::string NetPlayUICallbacks::OnTeamSubmission(const std::string& player,
 {
   // Host side. Writes the joiner's team into the socket-3 save that netplay
   // syncs at start; the caller relays the returned line into the room chat.
+  //
+  // The payload may carry an in-game trainer name ahead of the team; a client
+  // that predates that just sends the bare team (TeamInjector.h documents the
+  // grammar and both compatibility directions).
+  const XDNetplay::TeamSubmission submission = XDNetplay::ParseTeamSubmissionPayload(text);
   std::string status;
-  if (!XDNetplay::InjectGuestTeam(text, 2, &status))
+  if (!XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status))
     return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
   return status;
 }
 
 void NetPlayUICallbacks::OnRoomClosed()
 {
+  // Restores the host's own team AND erases every remaining copy of the
+  // opponent's party (.bak/.tmp beside the save, netplay's NetPlayTemp GBA
+  // saves). May defer itself until emulation has fully stopped -- the mGBA
+  // core rewrites the save at teardown, so anything done sooner is undone.
   XDNetplay::RestoreHostTeam(2);
 }
 
