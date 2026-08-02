@@ -29,7 +29,6 @@ import org.dolphinemu.dolphinemu.overlay.InputOverlayDrawableButton
 import org.dolphinemu.dolphinemu.overlay.InputOverlayDrawableDpad
 import kotlin.math.abs
 import kotlin.math.floor
-import kotlin.math.max
 
 class GbaScreenView @JvmOverloads constructor(
     context: Context,
@@ -47,16 +46,6 @@ class GbaScreenView @JvmOverloads constructor(
         textAlign = Paint.Align.CENTER
         textSize = sp(22f)
     }
-
-    // Hoisted out of drawLinkDiagnostic(): this view repaints every GBA frame,
-    // so the diagnostic must not allocate a Paint/StringBuilder 60 times a
-    // second. Only the finished line Strings are unavoidable.
-    private val diagPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFFFEE55.toInt()
-        textAlign = Paint.Align.LEFT
-    }
-    private val diagBuilder = StringBuilder(96)
-    private val diagLines = arrayOfNulls<String>(DIAG_LINE_COUNT)
 
     private var bitmap: Bitmap? = null
     private var visibleDevice = GbaHostBridge.NO_DEVICE
@@ -130,8 +119,6 @@ class GbaScreenView @JvmOverloads constructor(
         } else {
             drawStatusText(canvas)
         }
-
-        drawLinkDiagnostic(canvas)
 
         if (titleVisible && title.isNotEmpty()) {
             canvas.drawText(title, width / 2f, sp(34f), textPaint)
@@ -265,7 +252,8 @@ class GbaScreenView @JvmOverloads constructor(
                 scheduleTitleHide()
             }
         }
-        // Always repaint so the link diagnostic reflects every core's state.
+        // Repaint on every core update: the visible port can change without a
+        // new frame arriving, and the title/status text has to follow it.
         invalidate()
     }
 
@@ -507,85 +495,6 @@ class GbaScreenView @JvmOverloads constructor(
         canvas.drawText(text, width / 2f, height / 2f, textPaint)
     }
 
-    /**
-     * Always-visible readout of each GBA core's state, so a link failure is
-     * diagnosable on-device (OSD messages fire at boot and expire). Rendered
-     * on the plain Android canvas, independent of frame delivery.
-     */
-    private fun drawLinkDiagnostic(canvas: Canvas) {
-        for (d in 0..3) {
-            val info = GbaHostBridge.snapshot(d)
-            val diag = GbaHostBridge.getLinkDiag(d)
-            diagBuilder.setLength(0)
-            diagBuilder.append("GBA").append(d + 1).append(':')
-            if (info == null) {
-                diagBuilder.append(" no core")
-            } else {
-                diagBuilder.append(" rom=").append(bit(info.hasRom))
-                    .append(" gba=").append(bit(info.isGba))
-                    .append(" loc=").append(bit(info.isLocal))
-            }
-            // The link state is printed even without a CoreInfo: a port whose
-            // core never announced itself is exactly the case worth seeing.
-            diagBuilder.append(" lk=").append(bit(GbaHostBridge.linkDiagLinkOpen(diag)))
-                .append(" win=").append(GbaHostBridge.linkDiagWindowCount(diag))
-                .append(" rst=").append(GbaHostBridge.linkDiagResetCount(diag))
-                // The packed counter saturates at 16 bits; say so instead of
-                // showing a frozen 65535 that reads like a real value.
-                .append(" prb=").append(
-                    GbaHostBridge.linkDiagProbeCount(diag).let {
-                        if (it >= 0xFFFF) "65535+" else it.toString()
-                    }
-                )
-                .append(" est=").append(bit(GbaHostBridge.linkDiagEstablished(diag)))
-                .append(" lck=").append(bit(GbaHostBridge.linkDiagLocked(diag)))
-                .append(" cmd=").append(
-                    Integer.toHexString(GbaHostBridge.linkDiagLastCommand(diag))
-                )
-            if (info != null && info.title.isNotEmpty()) {
-                diagBuilder.append(' ').append(truncate(info.title))
-            }
-            diagLines[d] = diagBuilder.toString()
-        }
-
-        // No advisory text here: a press/time heuristic cannot tell a parked
-        // connect-screen entry from innocent menu idling, and misplaced advice
-        // is worse than none. The recovery rule lives in the release notes.
-        diagBuilder.setLength(0)
-        diagBuilder.append("visible=")
-        if (visibleDevice in 0..3) {
-            diagBuilder.append(visibleDevice + 1)
-        } else {
-            diagBuilder.append('-')
-        }
-        diagBuilder.append("  (long-press to switch GBA)")
-        diagLines[DIAG_LINE_COUNT - 1] = diagBuilder.toString()
-
-        // These lines are long and the view can be narrow, so shrink to fit
-        // rather than run off the edge -- an unreadable diagnostic is no
-        // diagnostic. measureText() allocates nothing.
-        diagPaint.textSize = sp(DIAG_TEXT_SP)
-        var widest = 0f
-        for (line in diagLines) {
-            widest = max(widest, diagPaint.measureText(line ?: ""))
-        }
-        val available = width - sp(12f)
-        if (widest > available && available > 0f) {
-            diagPaint.textSize = max(sp(DIAG_TEXT_SP) * available / widest, sp(6f))
-        }
-
-        var y = diagPaint.textSize * 1.2f
-        for (line in diagLines) {
-            canvas.drawText(line ?: "", sp(6f), y, diagPaint)
-            y += diagPaint.textSize * 1.2f
-        }
-    }
-
-    private fun bit(value: Boolean): Char = if (value) '1' else '0'
-
-    private fun truncate(title: String): String =
-        if (title.length <= DIAG_TITLE_CHARS) title else title.substring(0, DIAG_TITLE_CHARS)
-
     private fun displayTitle(info: GbaHostBridge.CoreInfo?): String {
         if (info == null || info.deviceNumber !in 0..3) {
             return info?.title.orEmpty()
@@ -779,10 +688,6 @@ class GbaScreenView @JvmOverloads constructor(
     companion object {
         private const val TITLE_VISIBLE_MILLIS = 10_000L
 
-        // Four link ports plus the "visible=" footer.
-        private const val DIAG_LINE_COUNT = 5
-        private const val DIAG_TEXT_SP = 12f
-        private const val DIAG_TITLE_CHARS = 10
         private val LONG_PRESS_MILLIS = ViewConfiguration.getLongPressTimeout().toLong()
     }
 }
