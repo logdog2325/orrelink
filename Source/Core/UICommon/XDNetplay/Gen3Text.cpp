@@ -167,4 +167,22 @@ std::optional<std::vector<u8>> Encode(const std::string& text, size_t max_len, s
   }
   return out;
 }
+
+std::string Sanitize(const std::string& text, size_t max_len)
+{
+  std::u32string out;
+  for (const char32_t c : DecodeUtf8(text))
+  {
+    if (max_len != 0 && out.size() == max_len)
+      break;
+    char32_t mapped = c;
+    if (c == U'\'')
+      mapped = U'’';
+    else if (c == U'"')
+      mapped = U'”';
+    if (CanEncode(mapped))
+      out.push_back(mapped);
+  }
+  return EncodeUtf8(out);
+}
 }  // namespace XDNetplay::Gen3Text

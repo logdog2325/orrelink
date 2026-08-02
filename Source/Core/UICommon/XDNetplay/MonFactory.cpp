@@ -48,21 +48,11 @@ std::optional<int> ResolveMoveId(const std::string& name, const Gen3Data& data)
 }
 
 // Make text Gen 3-encodable: straight ASCII quotes become the charset's curly
-// forms, anything else unencodable is dropped.
+// forms, anything else unencodable is dropped. (The implementation moved to
+// Gen3Text so the save's trainer-name setter shares exactly this behaviour.)
 std::string SanitizeText(const std::string& text)
 {
-  std::u32string out;
-  for (const char32_t c : Gen3Text::DecodeUtf8(text))
-  {
-    char32_t mapped = c;
-    if (c == U'\'')
-      mapped = U'’';
-    else if (c == U'"')
-      mapped = U'”';
-    if (Gen3Text::CanEncode(mapped))
-      out.push_back(mapped);
-  }
-  return Gen3Text::EncodeUtf8(out);
+  return Gen3Text::Sanitize(text);
 }
 
 // Gen 3 stat formula, integer division exactly as the game:

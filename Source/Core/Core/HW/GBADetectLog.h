@@ -57,6 +57,19 @@ void LogJoybus(int channel, u64 tick, char dir, const u8* bytes, int len, bool s
 void LogSummary(int channel, u64 tick, bool rom, bool gba, bool loc, bool lk, u32 win, u32 rst,
                 u32 prb, bool est, bool lck, u8 cmd, u32 rd, u32 wr);
 
+// Append one line AFTER the session's log has already been closed.
+//
+// OnDeviceDestroyed() closes the file as soon as the last GBA device is torn
+// down, but the end-of-session save cleanup deliberately runs later than that
+// (it has to: the mGBA core rewrites the .sav from its in-memory copy during
+// that very teardown). This reopens the most recent session's file in append
+// mode, writes one line, and closes it again -- so the cleanup is visible in
+// the same log a user already knows how to hand over. No-op before any
+// session has run. Called from the emulation thread at shutdown or from the
+// UI thread when a room closes with emulation already down; bounded to a
+// handful of lines per session.
+void LogPostSession(const std::string& detail);
+
 // Shared last-GC-pad-press tick (A/B/Start rising edges), written by the GC
 // controller tap and read by the GBA devices for the per-roll state lines.
 // Diagnostic only; never feeds emulation.

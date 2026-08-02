@@ -86,6 +86,65 @@ static std::mutex crit_netplay_client;
 static NetPlayClient* netplay_client = nullptr;
 static bool s_si_poll_batching = false;
 
+// XD netplay peer-vanish watchdog -- see WaitOnRemote() for the full story.
+//
+// Every number here is about the CONNECTION, never about emulated state. A
+// timeout in this file can only ever end the session; it can never invent a pad
+// frame, so none of it can desync anybody. They are also all deliberately
+// enormous next to this fork's real traffic: our users play transatlantic at
+// ~200 ms with buffer 10-14 (about 200 ms of cushion) and see 300 ms+ spikes,
+// so the smallest bound below is still ~10x the worst spike we have on record.
+//
+// More important than any of the numbers: none of them ends a session on
+// elapsed time ALONE. Every rule in WaitOnRemote() also needs corroboration
+// that the session is genuinely over, because a peer that is merely paused --
+// which Android does on every backgrounding -- can outlast any threshold
+// anybody would be willing to pick, and must find the session still there when
+// it comes back.
+namespace
+{
+// One slice of a bounded wait. Also the granularity at which a wedged CPU
+// thread notices a stop request, so keep it short; it costs 4 wakeups a second
+// on a thread that would otherwise be asleep anyway.
+constexpr std::chrono::milliseconds PAD_WAIT_SLICE = std::chrono::milliseconds(250);
+// First "we are waiting on somebody" notice. Purely cosmetic -- no action is
+// taken -- so it can afford to be near the edge of plausible jitter.
+constexpr u64 PAD_STALL_NOTICE_MS = 3000;
+// How often to repeat that notice so the window never looks simply dead.
+constexpr u64 PAD_STALL_REPEAT_MS = 5000;
+// ...and how often to repeat it once the stall has gone on for
+// PAD_STALL_SLOW_NOTICE_AFTER_MS. A wait can now legitimately last as long as
+// an opponent's phone call (see rule 3 in WaitOnRemote()), and a banner every
+// five seconds for ten minutes stops being information.
+constexpr u64 PAD_STALL_SLOW_NOTICE_AFTER_MS = 60000;
+constexpr u64 PAD_STALL_REPEAT_SLOW_MS = 30000;
+// Starved of remote frames AND not one netplay packet from the server in this
+// long. The server pings every client at 1 Hz, so this is 20 consecutive missed
+// pings: the peer we actually hold a socket to is gone, not slow. ENet's own
+// verdict (PEER_TIMEOUT, 30 s) still arrives and is still authoritative -- this
+// only stops us from being a frozen window for the last third of that wait.
+constexpr u64 LINK_SILENT_MS = 20000;
+// Backstop for "starved of a pad whose owner has already left the room".
+// Deliberately parked past PEER_TIMEOUT so that in every topology we understand
+// the server's own DisableGame broadcast wins the race and this never fires; it
+// is here for the case where the server told us the player left but never told
+// us to stop. Note what it is NOT: a plain "no pad for 45 s" timer. See rule 3
+// in WaitOnRemote() for why an unconditional one is unsafe in this fork.
+constexpr u64 PAD_OWNER_GONE_ABORT_MS = 45000;
+// How long a locally requested stop may sit unanswered before we stop anyway.
+// RequestStopGame() only mails a packet to the server; if the server IS the
+// machine that vanished, that packet goes nowhere and upstream leaves the CPU
+// thread waiting on remote pads for a game the user already quit.
+constexpr u64 LOCAL_STOP_GRACE_MS = 2000;
+
+u64 SteadyNowMs()
+{
+  return static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch())
+                              .count());
+}
+}  // namespace
+
 // called from ---GUI--- thread
 NetPlayClient::~NetPlayClient()
 {
@@ -125,6 +184,19 @@ NetPlayClient::~NetPlayClient()
   {
     Common::ReleaseTraversalClient();
   }
+
+  // The session is over for THIS machine, whichever end of it we were.
+  //
+  // ~NetPlayServer makes the same call, but only a host has a server: without
+  // this a joiner never cleaned up, and a joiner is the one left holding
+  // NetPlayTemp2.sav -- a byte-for-byte copy of the HOST's party, EVs, IVs and
+  // natures included. The call is idempotent, so a host simply gets it twice.
+  //
+  // Note this runs BEFORE the emulation shutdown that StopGame() above kicked
+  // off has finished; OnRoomClosed defers the actual work until the GBA cores
+  // have stopped and flushed. See XDNetplay::RestoreHostTeam.
+  if (m_dialog)
+    m_dialog->OnRoomClosed();
 }
 
 // called from ---GUI--- thread
@@ -1612,8 +1684,46 @@ void NetPlayClient::ThreadFunc()
     }
   }
 
+  // XD netplay: set once we have run the teardown DeclareSessionLost() asked
+  // for. Thread-local to this loop, so it needs no synchronisation.
+  bool session_lost_handled = false;
+
   while (m_do_loop.IsSet())
   {
+    // XD netplay: the CPU thread concluded the session is unrecoverable and
+    // freed itself, but it cannot run StopGame() from inside GetNetPads (it
+    // holds crit_netplay_client there, and StopGame reaches NetPlay_Disable
+    // which wants the same non-recursive mutex). Finish the job here, on the
+    // thread that is allowed to.
+    const SessionEndKind session_end = m_session_end.load(std::memory_order_acquire);
+    if (session_end == SessionEndKind::None)
+    {
+      // Re-arm. This thread outlives individual games -- a room can start a
+      // second battle after the first one was ended by a drop -- and StartGame()
+      // clears m_session_end, so the latch has to come back with it or the next
+      // drop in the same room would go unhandled.
+      session_lost_handled = false;
+    }
+    else if (!session_lost_handled)
+    {
+      session_lost_handled = true;
+      // Only announce a drop when there actually was one. The other kind is the
+      // local user's own Stop completing without the server's acknowledgement,
+      // which needs the teardown below just the same but must not tell the room
+      // that somebody disconnected.
+      if (session_end == SessionEndKind::PeerLost)
+      {
+        m_dialog->AppendChat(
+            Common::GetStringT("NetPlay session ended: a player disconnected unexpectedly."));
+      }
+      // Deliberately NOT m_dialog->OnConnectionLost(): that one means "our own
+      // socket to the server died", which is only one of the ways we get here,
+      // and on Android it drives a modal. When it IS true, ENet raises its own
+      // disconnect event below and calls it for us. StopGame() is what puts
+      // every platform into a defined, unfrozen state.
+      StopGame();
+    }
+
     ENetEvent netEvent;
     int net;
     if (m_traversal_client)
@@ -1639,6 +1749,12 @@ void NetPlayClient::ThreadFunc()
         break;
       case ENET_EVENT_TYPE_RECEIVE:
         INFO_LOG_FMT(NETPLAY, "enet_host_service: receive event");
+
+        // Proof of life for the pad-wait watchdog. Any netplay packet counts,
+        // not just pad data -- the point is "the machine we hold a socket to is
+        // still talking", and the server's 1 Hz Ping guarantees this keeps
+        // ticking even when the GAME is fully starved. See WaitOnRemote().
+        m_last_recv_ms.store(SteadyNowMs(), std::memory_order_relaxed);
 
         rpac.append(netEvent.packet->data, netEvent.packet->dataLength);
         OnData(rpac);
@@ -1706,15 +1822,21 @@ void NetPlayClient::SendChatMessage(const std::string& msg)
   SendAsync(std::move(packet));
 }
 
-void NetPlayClient::SendTeamSubmission(const std::string& showdown_text)
+void NetPlayClient::SendTeamSubmission(const std::string& payload)
 {
   // Showdown text, not prebuilt party bytes: the host has to construct the
   // Pokemon against ITS save's trainer name/ID, and it is the single place
   // that parses untrusted team text. Pokepaste links are resolved by the
   // submitting client before this call, so the host never fetches a URL.
+  //
+  // The payload MAY carry an in-game trainer name ahead of the team ("Name: x"
+  // then a blank line); it is built and parsed by
+  // UICommon/XDNetplay/TeamInjector.h, which documents the grammar. Core does
+  // not look inside it -- it stays one opaque string on one message ID, so an
+  // older peer at either end still exchanges teams.
   sf::Packet packet;
   packet << MessageID::TeamData;
-  packet << showdown_text;
+  packet << payload;
 
   SendAsync(std::move(packet));
 }
@@ -1777,6 +1899,13 @@ bool NetPlayClient::StartGame(const std::string& path)
   m_timebase_frame = 0;
   m_current_golfer = 1;
   m_wait_on_input = false;
+
+  // XD netplay: arm the peer-vanish watchdog for this game. m_last_recv_ms must
+  // start non-zero or the very first pad wait would read "silent since forever"
+  // and the link-silence rule would trip on a session that has been fine.
+  m_last_recv_ms.store(SteadyNowMs(), std::memory_order_relaxed);
+  m_stop_requested_ms.store(0, std::memory_order_relaxed);
+  m_session_end.store(SessionEndKind::None, std::memory_order_release);
 
   m_is_running.Set();
   NetPlay_Enable(this);
@@ -1963,6 +2092,255 @@ void NetPlayClient::OnConnectFailed(Common::TraversalConnectFailedReason reason)
 }
 
 // called from ---CPU--- thread
+//
+// Name of the player who owns an in-game pad, for the "who are we waiting on?"
+// message. Deliberately does NOT go through NetPlay::GetPadDetails(): that free
+// function locks crit_netplay_client, and every caller of this one is already
+// holding it (NetPlay_GetInput takes it for the whole of GetNetPads), so it
+// would self-deadlock a plain std::mutex. Reading m_players under m_crit.players
+// is fine -- that lock is only ever held for a handful of instructions.
+std::string NetPlayClient::DescribePadOwner(const int pad_nb)
+{
+  if (pad_nb < 0 || static_cast<size_t>(pad_nb) >= m_net_settings.pad_map.size())
+    return {};
+
+  const PlayerId owner = m_net_settings.pad_map[pad_nb];
+  if (owner == 0)
+    return {};
+
+  std::lock_guard lkp(m_crit.players);
+  const auto it = m_players.find(owner);
+  return it == m_players.end() ? std::string{} : it->second.name;
+}
+
+// called from ---CPU--- thread
+//
+// True only when we can PROVE the pad's owner is no longer in the room: we know
+// which player owns the slot, and the server has since told us they left --
+// MessageID::PlayerLeave, which is the only thing that erases anybody from
+// m_players (see OnPlayerLeave). Everything we cannot answer confidently,
+// including "that index is not a pad index" and "the slot is unmapped",
+// answers false.
+//
+// The asymmetry is deliberate, because this gates the backstop in
+// WaitOnRemote(): a wrong "true" ends a session that is alive, while a wrong
+// "false" only means we keep waiting -- which is exactly the situation ENet's
+// PEER_TIMEOUT already exists to resolve. Same locking note as
+// DescribePadOwner(): m_crit.players directly, never NetPlay::GetPadDetails().
+bool NetPlayClient::PadOwnerHasLeftRoom(const int pad_nb)
+{
+  if (pad_nb < 0 || static_cast<size_t>(pad_nb) >= m_net_settings.pad_map.size())
+    return false;
+
+  const PlayerId owner = m_net_settings.pad_map[pad_nb];
+  if (owner == 0)
+    return false;
+
+  std::lock_guard lkp(m_crit.players);
+  return m_players.find(owner) == m_players.end();
+}
+
+// called from ---CPU--- thread (safe from any thread)
+void NetPlayClient::DeclareSessionLost(const SessionEndKind kind, const std::string& reason)
+{
+  // First one in wins; later slices of the same stall must not re-announce.
+  // Kind and "who won" live in the same atomic on purpose: with a separate flag
+  // plus a separate payload, a losing caller could overwrite the winner's kind,
+  // or the netplay thread could see the flag before the kind it belongs to.
+  SessionEndKind expected = SessionEndKind::None;
+  if (!m_session_end.compare_exchange_strong(expected, kind, std::memory_order_acq_rel,
+                                             std::memory_order_relaxed))
+  {
+    return;
+  }
+
+  if (kind == SessionEndKind::LocalStopCompleted)
+  {
+    // NOT an error and NOT worth alarming anybody about. The user asked for this
+    // stop; all that happened is that we finished it ourselves instead of
+    // waiting on an acknowledgement that was slow or was never coming. Both UIs
+    // call RequestStopGame() from the Core state-changed hook, so this path is
+    // reached by ORDINARY shutdowns on a laggy link -- a red "the server never
+    // acknowledged the stop" banner there would be a scary lie about a session
+    // that ended correctly. A log line is the right amount of noise.
+    INFO_LOG_FMT(NETPLAY, "Netplay session ended locally: {}", reason);
+  }
+  else
+  {
+    ERROR_LOG_FMT(NETPLAY, "Ending netplay session: {}", reason);
+
+    // The OSD is the part the player is actually looking at when this fires --
+    // they are staring at a stopped render window, not at the netplay dialog --
+    // so put the explanation there. OSD::AddMessage takes its own lock and is
+    // called from the CPU thread all over Dolphin.
+    OSD::AddMessage(reason, OSD::Duration::VERY_LONG, OSD::Color::RED);
+  }
+
+  // Free the CPU thread immediately: every wait in this class keys off
+  // m_is_running, and InvokeStop() touches nothing but flags and events.
+  InvokeStop();
+
+  // The REST of the teardown has to happen on the NETPLAY thread. StopGame()
+  // reaches NetPlay_Disable(), which locks crit_netplay_client -- and when we
+  // are called from the CPU thread that mutex is already held by us one frame
+  // up in NetPlay_GetInput(). It is a plain std::mutex, so re-entering it here
+  // would be a self-deadlock: the same freeze we are removing, moved one
+  // function over. Poke the netplay thread instead; its loop notices the flag
+  // on the next pass (immediately thanks to the wakeup, and within 250 ms even
+  // if the wakeup datagram is dropped, since that is its enet_host_service
+  // timeout).
+  if (m_client)
+    Common::ENet::WakeupThread(m_client);
+}
+
+// called from ---CPU--- thread
+//
+// One bounded slice of "block until a remote player's frame shows up".
+//
+// Upstream spends these waits in a bare Common::Event::Wait(), which is only
+// correct for as long as SOMETHING is guaranteed to eventually call
+// InvokeStop(). Nothing is, once a peer's process is killed outright. A
+// swiped-away Android task never runs its teardown, so no ENet disconnect is
+// ever put on the wire; the surviving clients' only remaining escape is
+// whoever is hosting noticing the silence after PEER_TIMEOUT (30 s) and
+// broadcasting DisableGame. And if the machine that vanished WAS the host,
+// even that never comes: the local user's own Stop cannot rescue them either,
+// because RequestStopGame() only mails a packet at the dead server. The CPU
+// thread then sits in Wait() forever while holding crit_netplay_client, the
+// render window stops updating, and Core::Stop() can never join the emu
+// thread -- the reported "have to force-quit" freeze.
+//
+// So: wait in slices and look around in between. Nothing here touches pad
+// contents or any emulated state. A timeout can only ever END the session; it
+// never fabricates an input, so it cannot desync anyone. Returns false when the
+// caller must abandon its wait -- by then m_is_running is clear, so the caller
+// bails through exactly the same path a normal stop uses.
+//
+// Note what this deliberately does NOT do: end a session merely because time has
+// passed. Every rule below needs evidence that the session is actually over --
+// the user asked to stop (1), our own socket has gone silent (2), or the server
+// has told us the player we are waiting on left the room (3). Waiting is not a
+// failure state in this fork: an Android peer that got a phone call is paused,
+// not gone, and it must still be here when they come back. See rule 3.
+bool NetPlayClient::WaitOnRemote(Common::Event& wait_event, const int pad_nb,
+                                 RemoteWaitState& state)
+{
+  if (!state.started_valid)
+  {
+    // Stamped once per wait loop, never refreshed. Refreshing it whenever the
+    // event fires would be wrong: the pad events are shared across all pads, so
+    // in a 3+ player room a healthy player's frames would keep resetting the
+    // clock on a dead player's stall and the watchdog would never fire.
+    state.started = std::chrono::steady_clock::now();
+    state.started_valid = true;
+    state.next_notice_ms = PAD_STALL_NOTICE_MS;
+  }
+
+  if (wait_event.WaitFor(PAD_WAIT_SLICE))
+    return true;
+
+  const auto now = std::chrono::steady_clock::now();
+  const u64 now_ms =
+      static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch())
+                           .count());
+  const u64 stalled_ms = static_cast<u64>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - state.started).count());
+
+  // 1. The user already asked to quit and no stop has landed yet. Very often the
+  // server IS the machine that vanished, so waiting for its blessing is waiting
+  // forever -- but the ordinary case is just a slow link, so this is a
+  // completely expected outcome and is reported as one. The stamp is cleared by
+  // InvokeStop(), i.e. the moment any real stop lands, so reaching here means no
+  // stop has landed by any route.
+  if (const u64 stop_requested = m_stop_requested_ms.load(std::memory_order_relaxed);
+      stop_requested != 0 && now_ms - stop_requested >= LOCAL_STOP_GRACE_MS)
+  {
+    DeclareSessionLost(SessionEndKind::LocalStopCompleted,
+                       Common::GetStringT("NetPlay: finishing the requested stop locally."));
+    return false;
+  }
+
+  // 2. Dead silence on our own socket. The server pings every client at 1 Hz
+  // while a room is open, so LINK_SILENT_MS is 20 consecutive missed pings on
+  // top of an already-starved game -- that is a gone host, not a slow one.
+  // ENet's own PEER_TIMEOUT verdict is still coming and is still authoritative;
+  // this just stops us from being a dead window for the rest of that wait.
+  if (const u64 last_recv = m_last_recv_ms.load(std::memory_order_relaxed);
+      last_recv != 0 && now_ms - last_recv >= LINK_SILENT_MS)
+  {
+    DeclareSessionLost(
+        SessionEndKind::PeerLost,
+        Common::GetStringT("NetPlay: lost contact with the host. Ending this session."));
+    return false;
+  }
+
+  // 3. The pad we are starved of belongs to a player the server has already told
+  // us left the room. Nobody is ever going to send that slot's frames again, so
+  // waiting is pointless however healthy our own link looks. Parked past
+  // PEER_TIMEOUT so that normally the server's DisableGame broadcast (it sends
+  // one whenever a player with a mapped pad drops) gets here first and this
+  // never fires; it covers the case where PlayerLeave arrived but a stop never
+  // did.
+  //
+  // The membership test is load-bearing, not a refinement. This rule used to be
+  // an unconditional "no pad for 45 s -> end the session", and that was wrong in
+  // the way that matters most to this fork: Android pauses emulation on ANY
+  // backgrounding -- screen lock, incoming call, pulling down the notification
+  // shade -- and a paused peer stops producing pad frames while its socket stays
+  // wide open. The server's 1 Hz ping therefore keeps rule 2 quiet and ENet
+  // never times out, so the unconditional backstop was the only thing that
+  // fired, and it fired on a completely healthy session: it hung up on people
+  // for glancing at a notification, the exact behaviour
+  // NetplayTaskWatcherService documents that we must never ship. A paused
+  // opponent has to be able to come back and find the battle still there, and no
+  // wall-clock number can tell "paused" from "gone" -- a phone call can outlast
+  // any threshold anybody would accept.
+  //
+  // Room membership is the one signal that cannot be confused with a pause: a
+  // paused player is still in m_players and only the server removing them takes
+  // them out. So there is deliberately no unconditional timer left here. The
+  // remaining gap -- a peer that is truly gone but that the server still lists,
+  // or a stall on a wait with no pad owner to check (golf handoff, Wiimote) --
+  // is closed by ENet's own PEER_TIMEOUT at both ends: the server drops the dead
+  // peer at 30 s and broadcasts DisableGame + PlayerLeave, and if the dead
+  // machine WAS the server, rule 2 has already fired at 20 s. And the user's own
+  // Stop now always works within LOCAL_STOP_GRACE_MS via rule 1, which is the
+  // right escape hatch for "my opponent has been paused for ten minutes":
+  // a human decision, not a timer's.
+  if (stalled_ms >= PAD_OWNER_GONE_ABORT_MS && PadOwnerHasLeftRoom(pad_nb))
+  {
+    DeclareSessionLost(SessionEndKind::PeerLost,
+                       Common::GetStringT("NetPlay: the other player left the room. "
+                                          "Ending this session."));
+    return false;
+  }
+
+  // Still plausibly alive: somebody's console is just behind. Say so on screen,
+  // and keep saying it, so the window never simply looks dead. This is the part
+  // that turns a mystery freeze into "oh, they dropped".
+  if (stalled_ms >= state.next_notice_ms)
+  {
+    state.next_notice_ms = stalled_ms + (stalled_ms >= PAD_STALL_SLOW_NOTICE_AFTER_MS ?
+                                             PAD_STALL_REPEAT_SLOW_MS :
+                                             PAD_STALL_REPEAT_MS);
+
+    const std::string who = DescribePadOwner(pad_nb);
+    const u64 stalled_s = stalled_ms / 1000;
+    std::string msg;
+    if (who.empty())
+      msg = Common::FmtFormatT("Waiting for the other player... ({0}s)", stalled_s);
+    else
+      msg = Common::FmtFormatT("Waiting for {0}... ({1}s)", who, stalled_s);
+
+    OSD::AddTypedMessage(OSD::MessageType::NetPlayLatency, msg, OSD::Duration::NORMAL,
+                         OSD::Color::YELLOW);
+    WARN_LOG_FMT(NETPLAY, "Stalled {} ms waiting on in-game pad {}", stalled_ms, pad_nb);
+  }
+
+  return true;
+}
+
+// called from ---CPU--- thread
 bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatus* pad_status)
 {
   // The interface for this is extremely silly.
@@ -1993,6 +2371,7 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
   // and send it.
 
   // When here when told to so we don't deadlock in certain situations
+  RemoteWaitState golf_wait;
   while (m_wait_on_input)
   {
     if (!m_is_running.IsSet())
@@ -2010,7 +2389,12 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
       m_wait_on_input_received = false;
     }
 
-    m_wait_on_input_event.Wait();
+    // Same watchdog as the pad wait below: the handoff we are waiting for comes
+    // from the host, so it never lands if the host is the machine that died.
+    // pad_nb is meaningless here (this wait is about input control, not one
+    // slot), so -1.
+    if (!WaitOnRemote(m_wait_on_input_event, -1, golf_wait))
+      return false;
   }
 
   if (IsFirstInGamePad(pad_nb) && batching)
@@ -2077,6 +2461,7 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
   // Now, we either use the data pushed earlier, or wait for the
   // other clients to send it to us
   const auto lat_t0 = std::chrono::steady_clock::now();
+  RemoteWaitState pad_wait;
   while (m_pad_buffer[pad_nb].Size() == 0)
   {
     if (!m_is_running.IsSet())
@@ -2084,7 +2469,11 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
       return false;
     }
 
-    m_gc_pad_event.Wait();
+    // THE hang. This used to be an unbounded m_gc_pad_event.Wait(), which is
+    // where a desktop client parks forever when the Android player's process is
+    // killed mid-battle. See WaitOnRemote().
+    if (!WaitOnRemote(m_gc_pad_event, pad_nb, pad_wait))
+      return false;
   }
 
   // Latency telemetry: how long this pad fetch had to wait for a remote frame,
@@ -2183,6 +2572,7 @@ bool NetPlayClient::WiimoteUpdate(const std::span<WiimoteDataBatchEntry>& entrie
 
     // Now, we either use the data pushed earlier, or wait for the
     // other clients to send it to us
+    RemoteWaitState wiimote_wait;
     while (m_wiimote_buffer[entry.wiimote].Size() == 0)
     {
       if (!m_is_running.IsSet())
@@ -2190,7 +2580,13 @@ bool NetPlayClient::WiimoteUpdate(const std::span<WiimoteDataBatchEntry>& entrie
         return false;
       }
 
-      m_wii_pad_event.Wait();
+      // Same watchdog as GetNetPads: this is the identical hang with a Wiimote
+      // instead of a pad. XD never gets here, but leaving one unbounded Wait()
+      // in the class would just relocate the freeze for anyone who does. -1
+      // rather than the slot, because DescribePadOwner reads pad_map and this
+      // index belongs to wiimote_map -- it would name the wrong player.
+      if (!WaitOnRemote(m_wii_pad_event, -1, wiimote_wait))
+        return false;
     }
 
     m_wiimote_buffer[entry.wiimote].Pop(*entry.state);
@@ -2304,12 +2700,18 @@ void NetPlayClient::SendPadHostPoll(const PadIndex pad_num)
       if (m_net_settings.pad_map[i] <= 0)
         continue;
 
+      // Bounded for the same reason as GetNetPads': the first pad status comes
+      // from another player, so a player who dies before sending it would wedge
+      // the golfer here forever.
+      RemoteWaitState first_status_wait;
       while (!m_first_pad_status_received[i])
       {
         if (!m_is_running.IsSet())
           return;
 
-        m_first_pad_status_received_event.Wait();
+        if (!WaitOnRemote(m_first_pad_status_received_event, static_cast<int>(i),
+                          first_status_wait))
+          return;
       }
     }
 
@@ -2325,12 +2727,14 @@ void NetPlayClient::SendPadHostPoll(const PadIndex pad_num)
   }
   else if (m_net_settings.pad_map[pad_num] != 0)
   {
+    RemoteWaitState first_status_wait;
     while (!m_first_pad_status_received[pad_num])
     {
       if (!m_is_running.IsSet())
         return;
 
-      m_first_pad_status_received_event.Wait();
+      if (!WaitOnRemote(m_first_pad_status_received_event, pad_num, first_status_wait))
+        return;
     }
 
     if (m_pad_buffer[pad_num].Size() == 0)
@@ -2347,6 +2751,22 @@ void NetPlayClient::SendPadHostPoll(const PadIndex pad_num)
 void NetPlayClient::InvokeStop()
 {
   m_is_running.Clear();
+
+  // XD netplay: a stop has now really landed, so the "our Stop has not been
+  // answered yet" deadline is satisfied and must be disarmed. Every route by
+  // which a game actually stops funnels through here -- StopGame() (which is
+  // what the server's StopGame/DisableGame broadcast runs), Stop(),
+  // OnPowerButton(), DeclareSessionLost() -- which is why the clear belongs
+  // here and not in any one of them.
+  //
+  // Previously only StartGame() cleared it, and that produced a false alarm on
+  // perfectly ordinary shutdowns: both UIs call RequestStopGame() from the Core
+  // state-changed hook (on Stopping, while the CPU thread can still be parked in
+  // a pad wait), and it does not even put a packet on the wire unless we have a
+  // pad mapped. The stamp therefore stayed armed through a normal stop and, on a
+  // slow link, rule 1 in WaitOnRemote() fired and shouted about a server that
+  // had done nothing wrong.
+  m_stop_requested_ms.store(0, std::memory_order_relaxed);
 
   // stop waiting for input
   m_gc_pad_event.Set();
@@ -2385,6 +2805,21 @@ void NetPlayClient::Stop()
 
 void NetPlayClient::RequestStopGame()
 {
+  // XD netplay: arm the local-stop deadline BEFORE sending, so the CPU thread's
+  // pad wait can give up on the server's answer. This call is only ever made
+  // when the local core is already on its way down (both UIs hook it to the
+  // Core state-changed callback), so stopping ourselves after the grace period
+  // is not a policy decision -- it is finishing what the user asked for. Without
+  // it, hitting Stop while starved of a dead player's frames does nothing at
+  // all: the packet below goes to a server that is very often the machine that
+  // just vanished, and we would wait on the reply forever.
+  //
+  // Gated on m_is_running so a stale queued EmulationStateChanged(Uninitialized)
+  // from the PREVIOUS game cannot land just after StartGame() cleared this and
+  // arm a stop deadline against a session that is only now booting.
+  if (m_is_running.IsSet())
+    m_stop_requested_ms.store(SteadyNowMs(), std::memory_order_relaxed);
+
   // Tell the server to stop if we have a pad mapped in game.
   if (LocalPlayerHasControllerMapped())
     SendStopGamePacket();

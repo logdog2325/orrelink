@@ -41,6 +41,7 @@ extern const Info<u32> NETPLAY_CHUNKED_UPLOAD_LIMIT;
 
 extern const Info<u32> NETPLAY_BUFFER_SIZE;
 extern const Info<u32> NETPLAY_CLIENT_BUFFER_SIZE;
+extern const Info<bool> NETPLAY_AUTO_BUFFER;
 
 extern const Info<bool> NETPLAY_SAVEDATA_LOAD;
 extern const Info<bool> NETPLAY_SAVEDATA_WRITE;

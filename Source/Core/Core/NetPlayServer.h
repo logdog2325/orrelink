@@ -5,6 +5,7 @@
 
 #include <SFML/Network/Packet.hpp>
 
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -62,7 +63,21 @@ public:
   PadMappingArray GetWiimoteMapping() const;
   void SetWiimoteMapping(const PadMappingArray& mappings);
 
+  // Low-level, already-synced setter: stores the value and broadcasts
+  // MessageID::PadBuffer to every client. Used for session setup and by the
+  // automatic sizer. A host UI editing the number by hand must NOT call this
+  // directly -- use SetPadBufferSizeManual so auto stands down.
   void AdjustPadBufferSize(unsigned int size);
+
+  // The host typed/stepped a buffer value. Manual always wins: this switches
+  // the automatic sizer off (and persists that) before applying the value, so
+  // auto can never overwrite the host's number a second later.
+  void SetPadBufferSizeManual(unsigned int size);
+
+  // Opt-out switch for the automatic sizer (Config::NETPLAY_AUTO_BUFFER).
+  void SetAutoPadBufferEnabled(bool enabled);
+  bool IsAutoPadBufferEnabled() const { return m_auto_buffer_enabled.load(); }
+
   void SetHostInputAuthority(bool enable);
 
   void KickPlayer(PlayerId player);
@@ -152,6 +167,9 @@ private:
   void SetupIndex();
   bool PlayerHasControllerMapped(PlayerId pid) const;
 
+  // ---NETPLAY--- thread only, once per second off the ping tick.
+  void UpdateAutoPadBuffer();
+
   // pulled from OnConnect()
   void AssignNewUserAPad(const Client& player);
   // pulled from OnConnect()
@@ -178,6 +196,17 @@ private:
   bool m_host_input_authority = false;
   PlayerId m_current_golfer = 1;
   PlayerId m_pending_golfer = 0;
+
+  // --- automatic pad buffer (host-owned; see UpdateAutoPadBuffer) ---
+  // Toggled from the GUI thread, read from the netplay thread.
+  std::atomic<bool> m_auto_buffer_enabled{true};
+  // Everything below is owned by the ---NETPLAY--- thread and never locked.
+  bool m_auto_buffer_was_enabled = true;
+  bool m_auto_buffer_was_running = false;
+  unsigned int m_auto_buffer_raise_streak = 0;
+  unsigned int m_auto_buffer_lower_streak = 0;
+  u64 m_auto_buffer_quiet_until_ms = 0;
+  u64 m_auto_buffer_last_change_ms = 0;
 
   std::map<PlayerId, Client> m_players;
 

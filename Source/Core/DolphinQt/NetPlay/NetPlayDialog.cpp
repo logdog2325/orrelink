@@ -6,16 +6,19 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QHBoxLayout>
 #include <QHeaderView>
-#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -24,6 +27,7 @@
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTextBrowser>
+#include <QVBoxLayout>
 
 #include <algorithm>
 #include <thread>
@@ -68,6 +72,7 @@
 
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/GameFile.h"
+#include "UICommon/XDNetplay/Gen3Save.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 #include "UICommon/UICommon.h"
 
@@ -139,6 +144,12 @@ void NetPlayDialog::CreateMainLayout()
   m_start_button = new QPushButton(tr("Start"));
   m_buffer_size_box = new QSpinBox;
   m_buffer_label = new QLabel(tr("Buffer:"));
+  m_auto_buffer_box = new QCheckBox(tr("Auto"));
+  m_auto_buffer_box->setToolTip(
+      tr("Size the netplay buffer automatically from the measured ping, and keep it sized as the "
+         "connection changes.\nA 200 ms connection needs about 12 frames of buffer; the old fixed "
+         "default of 5 stutters badly on anything transatlantic.\nTyping a buffer value by hand "
+         "turns this off, and your value is kept."));
   m_quit_button = new QPushButton(tr("Quit"));
   m_splitter = new QSplitter(Qt::Horizontal);
   m_menu_bar = new QMenuBar(this);
@@ -259,8 +270,9 @@ void NetPlayDialog::CreateMainLayout()
   options_widget->addWidget(m_start_button, 0, 0, Qt::AlignVCenter);
   options_widget->addWidget(m_buffer_label, 0, 1, Qt::AlignVCenter);
   options_widget->addWidget(m_buffer_size_box, 0, 2, Qt::AlignVCenter);
-  options_widget->addWidget(m_quit_button, 0, 3, Qt::AlignVCenter | Qt::AlignRight);
-  options_widget->setColumnStretch(3, 1000);
+  options_widget->addWidget(m_auto_buffer_box, 0, 3, Qt::AlignVCenter);
+  options_widget->addWidget(m_quit_button, 0, 4, Qt::AlignVCenter | Qt::AlignRight);
+  options_widget->setColumnStretch(4, 1000);
 
   m_main_layout->addLayout(options_widget, 2, 0, 1, -1, Qt::AlignRight);
   m_main_layout->setRowStretch(1, 1000);
@@ -377,9 +389,24 @@ void NetPlayDialog::ConnectWidgets()
     const auto client = Settings::Instance().GetNetPlayClient();
     const auto server = Settings::Instance().GetNetPlayServer();
     if (server && !m_host_input_authority)
-      server->AdjustPadBufferSize(value);
+    {
+      // A hand-typed value always wins over the automatic sizer, which would
+      // otherwise overwrite it within a few seconds. Untick the box first so
+      // the host can SEE why auto stopped -- SetPadBufferSizeManual would turn
+      // it off silently otherwise.
+      if (m_auto_buffer_box->isChecked())
+        m_auto_buffer_box->setChecked(false);
+      server->SetPadBufferSizeManual(value);
+    }
     else
+    {
       client->AdjustPadBufferSize(value);
+    }
+  });
+
+  connect(m_auto_buffer_box, &QCheckBox::toggled, this, [this](bool checked) {
+    if (const auto server = Settings::Instance().GetNetPlayServer())
+      server->SetAutoPadBufferEnabled(checked);
   });
 
   const auto hia_function = [this](bool enable) {
@@ -431,6 +458,7 @@ void NetPlayDialog::ConnectWidgets()
   // SaveSettings() - Save Hosting-Dialog Settings
 
   connect(m_buffer_size_box, &QSpinBox::valueChanged, this, &NetPlayDialog::SaveSettings);
+  connect(m_auto_buffer_box, &QCheckBox::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_savedata_none_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_savedata_load_only_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
   connect(m_savedata_load_and_write_action, &QAction::toggled, this, &NetPlayDialog::SaveSettings);
@@ -566,6 +594,9 @@ void NetPlayDialog::show(std::string nickname, bool use_traversal)
   // Only a joiner submits a team; the host edits its own saves directly.
   m_submit_team_button->setHidden(is_hosting);
   m_start_button->setHidden(!is_hosting);
+  // Only the host owns the session buffer, so only the host gets the Auto box.
+  // OnHostInputAuthorityChanged refines this once the mode is known.
+  m_auto_buffer_box->setHidden(!is_hosting);
   m_kick_button->setHidden(!is_hosting);
   m_assign_ports_button->setHidden(!is_hosting);
   m_room_box->setHidden(!is_hosting);
@@ -843,14 +874,23 @@ std::string NetPlayDialog::OnTeamSubmission(const std::string& player, const std
   // Host side, NETPLAY thread. The write must finish before we return: the
   // caller acks only afterwards, so the file is on disk before any Start can
   // read it. Touches no widgets -- the caller relays the text into chat.
+  //
+  // The payload may carry an in-game trainer name ahead of the team; a client
+  // that predates that just sends the bare team (TeamInjector.h documents the
+  // grammar and both compatibility directions).
+  const XDNetplay::TeamSubmission submission = XDNetplay::ParseTeamSubmissionPayload(text);
   std::string status;
-  if (!XDNetplay::InjectGuestTeam(text, 2, &status))
+  if (!XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status))
     return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
   return status;
 }
 
 void NetPlayDialog::OnRoomClosed()
 {
+  // Restores the host's own team AND erases every remaining copy of the
+  // opponent's party (.bak/.tmp beside the save, netplay's NetPlayTemp GBA
+  // saves). May defer itself until emulation has fully stopped -- the mGBA
+  // core rewrites the save at teardown, so anything done sooner is undone.
   XDNetplay::RestoreHostTeam(2);
 }
 
@@ -859,26 +899,68 @@ void NetPlayDialog::OnSubmitTeam()
   // Joiner side. A pokepast.es link is resolved HERE, on the submitting
   // client, so the host only ever parses plain text it was handed -- it never
   // fetches a URL a stranger chose.
-  QInputDialog dialog(this);
+  QDialog dialog(this);
   dialog.setWindowTitle(tr("Submit Team"));
-  dialog.setLabelText(tr("Paste a Showdown team export, or a pokepast.es link.\n"
-                         "The host writes it into the save you'll play with."));
-  dialog.setInputMode(QInputDialog::TextInput);
-  dialog.setOption(QInputDialog::UsePlainTextEditForTextInput);
-  dialog.resize(500, 400);
+
+  auto* dialog_layout = new QVBoxLayout(&dialog);
+  dialog_layout->addWidget(new QLabel(
+      tr("Paste a Showdown team export, or a pokepast.es link.\n"
+         "The host writes it into the save you'll play with."),
+      &dialog));
+
+  // In-game name, pre-filled with the netplay nickname so the common case is
+  // zero typing. Sanitized to what a Gen 3 save can actually hold (7
+  // characters from its own charset) BEFORE it is shown, so what the field
+  // says is what the opponent will see -- no silent surprise later.
+  auto* name_layout = new QHBoxLayout;
+  auto* name_edit = new QLineEdit(
+      QString::fromStdString(XDNetplay::EmeraldSave::SanitizeTrainerName(
+          Config::Get(Config::NETPLAY_NICKNAME))),
+      &dialog);
+  name_edit->setMaxLength(
+      static_cast<int>(XDNetplay::EmeraldSave::TRAINER_NAME_LEN));
+  name_edit->setPlaceholderText(tr("In-game name"));
+  name_layout->addWidget(new QLabel(tr("In-game name (max 7):"), &dialog));
+  name_layout->addWidget(name_edit, 1);
+  dialog_layout->addLayout(name_layout);
+
+  auto* team_edit = new QPlainTextEdit(&dialog);
+  team_edit->setPlaceholderText(tr("Showdown export or pokepast.es link"));
+  dialog_layout->addWidget(team_edit, 1);
+
+  auto* buttons =
+      new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+  buttons->button(QDialogButtonBox::Ok)->setText(tr("Send"));
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  dialog_layout->addWidget(buttons);
+
+  dialog.resize(500, 440);
   if (dialog.exec() != QDialog::Accepted)
     return;
 
-  const QString text = dialog.textValue().trimmed();
+  const QString text = team_edit->toPlainText().trimmed();
   if (text.isEmpty())
     return;
+
+  // Sanitize again on the way out: the field is a QLineEdit, so the user can
+  // still have typed something the Gen 3 charset has no byte for. An empty
+  // result simply means "no rename" -- the host keeps its own save's name.
+  const std::string trainer_name = XDNetplay::EmeraldSave::SanitizeTrainerName(
+      name_edit->text().toStdString());
+  if (trainer_name.empty() && !name_edit->text().trimmed().isEmpty())
+  {
+    DisplayMessage(
+        tr("That in-game name has no Gen 3 equivalent — sending the team without it."), "");
+  }
 
   const QRegularExpression pokepaste_re(
       QStringLiteral("^https?://pokepast\\.es/[A-Za-z0-9]+"));
   const QRegularExpressionMatch match = pokepaste_re.match(text);
   if (!match.hasMatch())
   {
-    Settings::Instance().GetNetPlayClient()->SendTeamSubmission(text.toStdString());
+    Settings::Instance().GetNetPlayClient()->SendTeamSubmission(
+        XDNetplay::BuildTeamSubmissionPayload(text.toStdString(), trainer_name));
     DisplayMessage(tr("Team sent to the host."), "");
     return;
   }
@@ -886,13 +968,13 @@ void NetPlayDialog::OnSubmitTeam()
   const std::string url = match.captured(0).toStdString() + "/raw";
   DisplayMessage(tr("Fetching %1…").arg(match.captured(0)), "");
   QPointer<NetPlayDialog> self(this);
-  std::thread([self, url] {
+  std::thread([self, url, trainer_name] {
     Common::HttpRequest request;
     request.FollowRedirects();
     Common::HttpRequest::Response response = request.Get(url);
     if (!self)
       return;
-    QueueOnObject(self.data(), [self, response = std::move(response)] {
+    QueueOnObject(self.data(), [self, trainer_name, response = std::move(response)] {
       if (!self)
         return;
       if (!response)
@@ -902,7 +984,8 @@ void NetPlayDialog::OnSubmitTeam()
       }
       if (auto client = Settings::Instance().GetNetPlayClient())
       {
-        client->SendTeamSubmission(std::string(response->begin(), response->end()));
+        client->SendTeamSubmission(XDNetplay::BuildTeamSubmissionPayload(
+            std::string(response->begin(), response->end()), trainer_name));
         self->DisplayMessage(tr("Team sent to the host."), "");
       }
     });
@@ -1017,10 +1100,23 @@ void NetPlayDialog::OnPadBufferChanged(u32 buffer)
   QueueOnObject(this, [this, buffer] {
     const QSignalBlocker blocker(m_buffer_size_box);
     m_buffer_size_box->setValue(buffer);
+
+    // Say WHY the number moved. A host with Auto on did not touch the spinbox,
+    // so an unexplained jump would read as a glitch. (Ask the server rather
+    // than the checkbox: only the host runs the sizer, and only in fixed
+    // delay, which is exactly what IsAutoPadBufferEnabled reports.)
+    const auto server = Settings::Instance().GetNetPlayServer();
+    if (server && !m_host_input_authority && server->IsAutoPadBufferEnabled())
+    {
+      DisplayMessage(tr("Buffer size changed to %1 (automatic, from ping)").arg(buffer),
+                     "darkcyan");
+      return;
+    }
+
+    DisplayMessage(m_host_input_authority ? tr("Max buffer size changed to %1").arg(buffer) :
+                                            tr("Buffer size changed to %1").arg(buffer),
+                   "darkcyan");
   });
-  DisplayMessage(m_host_input_authority ? tr("Max buffer size changed to %1").arg(buffer) :
-                                          tr("Buffer size changed to %1").arg(buffer),
-                 "darkcyan");
 
   m_buffer_size = static_cast<int>(buffer);
 }
@@ -1049,6 +1145,13 @@ void NetPlayDialog::OnHostInputAuthorityChanged(bool enabled)
       m_buffer_size_box->setHidden(!enable_buffer);
       m_buffer_label->setHidden(!enable_buffer);
     }
+
+    // The automatic sizer is host-side and fixed-delay only: under host input
+    // authority each client owns its own buffer, so there is no single
+    // host-owned value to size and the server deliberately leaves it alone.
+    const bool show_auto_buffer = is_hosting && !enabled;
+    m_auto_buffer_box->setHidden(!show_auto_buffer);
+    m_auto_buffer_box->setEnabled(show_auto_buffer);
 
     m_buffer_label->setText(enabled ? tr("Max Buffer:") : tr("Buffer:"));
     if (enabled)
@@ -1221,6 +1324,7 @@ std::string NetPlayDialog::FindGBARomPath(const std::array<u8, 20>& hash, std::s
 void NetPlayDialog::LoadSettings()
 {
   const int buffer_size = Config::Get(Config::NETPLAY_BUFFER_SIZE);
+  const bool auto_buffer = Config::Get(Config::NETPLAY_AUTO_BUFFER);
   const bool savedata_load = Config::Get(Config::NETPLAY_SAVEDATA_LOAD);
   const bool savedata_write = Config::Get(Config::NETPLAY_SAVEDATA_WRITE);
   const bool sync_all_wii_saves = Config::Get(Config::NETPLAY_SAVEDATA_SYNC_ALL_WII);
@@ -1231,6 +1335,7 @@ void NetPlayDialog::LoadSettings()
   const bool hide_remote_gbas = Config::Get(Config::NETPLAY_HIDE_REMOTE_GBAS);
 
   m_buffer_size_box->setValue(buffer_size);
+  m_auto_buffer_box->setChecked(auto_buffer);
 
   if (!savedata_load)
     m_savedata_none_action->setChecked(true);
@@ -1275,6 +1380,8 @@ void NetPlayDialog::SaveSettings()
     Config::SetBase(Config::NETPLAY_CLIENT_BUFFER_SIZE, m_buffer_size_box->value());
   else
     Config::SetBase(Config::NETPLAY_BUFFER_SIZE, m_buffer_size_box->value());
+
+  Config::SetBase(Config::NETPLAY_AUTO_BUFFER, m_auto_buffer_box->isChecked());
 
   const bool write_savedata = m_savedata_load_and_write_action->isChecked();
   const bool load_savedata = write_savedata || m_savedata_load_only_action->isChecked();
