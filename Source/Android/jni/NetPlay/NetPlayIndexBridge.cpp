@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 // Android bridge for the NetPlay session index ("lobby server", NETPLAY_INDEX_URL,
-// default https://lobby.dolphin-emu.org).
+// default https://lobby.dolphin-emu.org), plus the XD Netplay release check that shares this
+// file because it is the other stateless xdnetplay-package bridge (see the second extern "C"
+// group at the bottom; Kotlin counterpart features/xdnetplay/UpdateCheckBridge).
 //
 // Listing only. Publishing is deliberately NOT exposed here: Core's NetPlayServer
 // already owns a NetPlayIndex (NetPlayServer::m_index) and publishes automatically
@@ -39,6 +41,8 @@
 
 #include "Common/Version.h"
 #include "UICommon/NetPlayIndex.h"
+#include "UICommon/XDNetplay/UpdateCheck.h"
+#include "UICommon/XDNetplay/Version.h"
 
 #include "jni/AndroidCommon/AndroidCommon.h"
 
@@ -185,6 +189,50 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_NetPlayIndexBridge_nativeGetRe
     flat.push_back(label);
   }
   return SpanToJStringArray(env, flat);
+}
+
+// The XD Netplay release this build belongs to, for the hub's version line.
+JNIEXPORT jstring JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_UpdateCheckBridge_nativeGetVersion(JNIEnv* env,
+                                                                                     jobject)
+{
+  return ToJString(env, XDNetplay::VERSION);
+}
+
+// Blocking HTTP call -- must be invoked off the Android main thread (Dispatchers.IO on the
+// Kotlin side). Flattened as [status, latest_tag, release_name, html_url, published_at, message];
+// status is one of "uptodate" / "update" / "unknown" / "network", matching UpdateStatus.
+JNIEXPORT jobjectArray JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_UpdateCheckBridge_nativeCheckForUpdate(
+    JNIEnv* env, jobject)
+{
+  const XDNetplay::UpdateCheckResult result = XDNetplay::CheckForUpdate();
+
+  const char* status = "unknown";
+  switch (result.status)
+  {
+  case XDNetplay::Status::UpToDate:
+    status = "uptodate";
+    break;
+  case XDNetplay::Status::UpdateAvailable:
+    status = "update";
+    break;
+  case XDNetplay::Status::NetworkError:
+    status = "network";
+    break;
+  case XDNetplay::Status::Unknown:
+    break;
+  }
+
+  const std::vector<std::string> fields{
+      status,
+      result.latest_tag,
+      result.release_name,
+      result.html_url,
+      result.published_at,
+      result.message,
+  };
+  return SpanToJStringArray(env, fields);
 }
 
 }  // extern "C"

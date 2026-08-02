@@ -5,6 +5,8 @@
 
 #include <QDialog>
 
+#include "UICommon/XDNetplay/UpdateCheck.h"
+
 class QCheckBox;
 class QPushButton;
 class QShowEvent;
@@ -42,7 +44,13 @@ private:
   void CreateMainLayout();
   void ConnectWidgets();
 
+  void CheckForUpdates();
+  void ShowUpdateResult(const XDNetplay::UpdateCheckResult& result);
+
   QPushButton* m_xd_button;
   QPushButton* m_pbr_button;
+  QPushButton* m_update_button;
   QCheckBox* m_show_on_startup_check;
+
+  bool m_checking_for_update = false;
 };

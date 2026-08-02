@@ -33,6 +33,9 @@ add_library(uicommon
   XDNetplay/ShowdownParser.h
   XDNetplay/TeamInjector.cpp
   XDNetplay/TeamInjector.h
+  XDNetplay/UpdateCheck.cpp
+  XDNetplay/UpdateCheck.h
+  XDNetplay/Version.h
 )
 
 target_link_libraries(uicommon
