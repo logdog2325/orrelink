@@ -193,6 +193,40 @@ class EmeraldSave(raw: ByteArray) {
     val trainerName: String
         get() = Gen3Text.decode(raw, sectionOffsets[0] + TRAINER_NAME_OFFSET, TRAINER_NAME_LEN)
 
+    /**
+     * Overwrite the trainer name in the trainer block and fix section 0's
+     * checksum. [name] must be 1..[TRAINER_NAME_LEN] (7) characters, every one
+     * of them encodable in the Gen 3 charset.
+     *
+     * An unencodable character throws and leaves the save completely
+     * untouched, rather than writing a '?' or a truncated field. Use
+     * [sanitizeTrainerName] first for input that should degrade instead.
+     *
+     * NOTE for callers that also rebuild the party: every Pokemon carries its
+     * own OT name copy, so renaming the trainer does NOT rename the mons
+     * already in the party. Set the name FIRST, then build/re-stamp the party.
+     *
+     * @throws IllegalArgumentException on an empty, over-long, or unencodable name.
+     */
+    fun setTrainerName(name: String) {
+        require(name.isNotEmpty()) { "trainer name cannot be empty" }
+        // encode() would silently truncate; for a name a human just typed, say
+        // so instead.
+        require(name.length <= TRAINER_NAME_LEN) {
+            "trainer name is longer than $TRAINER_NAME_LEN characters"
+        }
+        // Encode first: it throws on any character with no Gen 3 byte, before
+        // a single byte of the save has been touched.
+        val encoded = Gen3Text.encode(name, TRAINER_NAME_LEN)
+        val off = sectionOffsets[0] + TRAINER_NAME_OFFSET
+        encoded.copyInto(raw, off)
+        // encode() already 0xFF-pads the 7 usable bytes; byte 7 is the field's
+        // hard terminator, which the game keeps at 0xFF even for a 7-character
+        // name. Byte 8 is the gender and must not be disturbed.
+        raw[off + TRAINER_NAME_LEN] = Gen3Text.TERMINATOR.toByte()
+        updateSectionChecksum(0)
+    }
+
     /** Raw u32: low u16 = public (visible) trainer ID, high u16 = secret ID. */
     val trainerId: Int
         get() = Gen3Bytes.readU32(raw, sectionOffsets[0] + TRAINER_ID_OFFSET)
@@ -265,8 +299,28 @@ class EmeraldSave(raw: ByteArray) {
         // Section 0 (Trainer Info) offsets - Emerald.
         const val TRAINER_NAME_OFFSET = 0x0000 // 7 bytes + 0xFF
         const val TRAINER_NAME_LEN = 7
+        // The field the game reserves is 8 bytes (pokeemerald: playerName is
+        // PLAYER_NAME_LENGTH + 1): 7 usable characters plus a byte that is
+        // ALWAYS the 0xFF terminator. Byte 8 is the gender.
+        const val TRAINER_NAME_FIELD_SIZE = TRAINER_NAME_LEN + 1
         const val TRAINER_GENDER_OFFSET = 0x0008
         const val TRAINER_ID_OFFSET = 0x000A   // u32: low u16 public, high u16 secret
+
+        /**
+         * Coerce arbitrary (possibly untrusted, possibly over-long) text into
+         * something [setTrainerName] will accept: trim surrounding whitespace,
+         * map straight quotes to the charset's curly forms, DROP anything still
+         * unencodable, clamp to [TRAINER_NAME_LEN] characters.
+         *
+         * Returns "" when nothing survives -- callers decide whether that means
+         * "keep the existing name" or "reject the request".
+         */
+        fun sanitizeTrainerName(name: String): String =
+            // Trim first: a leading space IS encodable (0x00) and would
+            // otherwise eat one of the seven slots and render blank in-game.
+            // Trim again after dropping unencodable characters, since dropping
+            // one can expose new surrounding whitespace ("Lo 🐬 gan").
+            Gen3Text.sanitize(name.trim(), TRAINER_NAME_LEN).trim()
 
         /**
          * Per-section valid data length used by the checksum (Emerald).
