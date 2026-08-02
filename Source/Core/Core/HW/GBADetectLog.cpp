@@ -16,8 +16,6 @@
 #include "Common/CommonPaths.h"
 #include "Common/FileUtil.h"
 
-#include "VideoCommon/OnScreenDisplay.h"
-
 namespace GBADetectLog
 {
 namespace
@@ -143,8 +141,9 @@ void OnDeviceCreated()
   WriteLine("note: a per-socket 'role' line prints once under netplay; rd=/wr= in sum lines are "
             "ungated data-command counts",
             true);
-
-  OSD::AddMessage(fmt::format("GBA detect log: {}", s_path), 12000, OSD::Color::CYAN);
+  // The path is deliberately not announced on screen. FilePath() is what the UI's share/reveal
+  // action uses, and the release notes give the folder per platform -- neither needs a banner
+  // across the game at every boot.
 }
 
 void OnDeviceDestroyed()
