@@ -43,6 +43,11 @@ const Info<u32> NETPLAY_CHUNKED_UPLOAD_LIMIT{{System::Main, "NetPlay", "ChunkedU
 
 const Info<u32> NETPLAY_BUFFER_SIZE{{System::Main, "NetPlay", "BufferSize"}, 5};
 const Info<u32> NETPLAY_CLIENT_BUFFER_SIZE{{System::Main, "NetPlay", "BufferSizeClient"}, 1};
+// Host-side automatic pad buffer sizing from measured ping. On by default: the
+// fixed default of 5 frames is right for a LAN and badly wrong for the ~200-300
+// ms transatlantic links this fork is actually played on, and most hosts never
+// discovered the setting. See NetPlayServer::UpdateAutoPadBuffer.
+const Info<bool> NETPLAY_AUTO_BUFFER{{System::Main, "NetPlay", "AutoBuffer"}, true};
 
 const Info<bool> NETPLAY_SAVEDATA_LOAD{{System::Main, "NetPlay", "SyncSaves"}, true};
 const Info<bool> NETPLAY_SAVEDATA_WRITE{{System::Main, "NetPlay", "WriteSaveData"}, true};

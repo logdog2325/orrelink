@@ -148,6 +148,7 @@ private:
   QPushButton* m_start_button;
   QLabel* m_buffer_label;
   QSpinBox* m_buffer_size_box;
+  QCheckBox* m_auto_buffer_box;
 
   QActionGroup* m_savedata_style_group;
   QAction* m_savedata_none_action;

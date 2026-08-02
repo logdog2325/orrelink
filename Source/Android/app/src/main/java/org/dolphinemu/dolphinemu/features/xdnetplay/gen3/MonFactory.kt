@@ -158,22 +158,11 @@ object MonFactory {
 
     /**
      * Make [text] Gen 3-encodable: straight ASCII quotes become the charset's
-     * curly forms, anything else unencodable is dropped.
+     * curly forms, anything else unencodable is dropped. (The implementation
+     * moved to Gen3Text so the save's trainer-name setter shares exactly this
+     * behaviour.)
      */
-    private fun sanitizeText(text: String): String {
-        val sb = StringBuilder(text.length)
-        for (c in text) {
-            val mapped = when (c) {
-                '\'' -> '’'
-                '"' -> '”'
-                else -> c
-            }
-            if (Gen3Text.canEncode(mapped)) {
-                sb.append(mapped)
-            }
-        }
-        return sb.toString()
-    }
+    private fun sanitizeText(text: String): String = Gen3Text.sanitize(text)
 
     // -- stats ---------------------------------------------------------------
 

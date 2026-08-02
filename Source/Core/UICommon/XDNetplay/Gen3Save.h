@@ -54,6 +54,10 @@ public:
   // Section 0 (Trainer Info) offsets - Emerald.
   static constexpr size_t TRAINER_NAME_OFFSET = 0x0000;  // 7 bytes + 0xFF
   static constexpr size_t TRAINER_NAME_LEN = 7;
+  // The field the game reserves is 8 bytes (pokeemerald: playerName is
+  // PLAYER_NAME_LENGTH + 1): 7 usable characters plus a byte that is ALWAYS the
+  // 0xFF terminator, even for a full-length name. Byte 8 is the gender.
+  static constexpr size_t TRAINER_NAME_FIELD_SIZE = TRAINER_NAME_LEN + 1;
   static constexpr size_t TRAINER_GENDER_OFFSET = 0x0008;
   static constexpr size_t TRAINER_ID_OFFSET = 0x000A;  // u32: low public, high secret
 
@@ -91,6 +95,26 @@ public:
   // -- trainer info (logical section 0) --------------------------------------
 
   std::string GetTrainerName() const;
+
+  // Overwrite the trainer name in the trainer block and fix section 0's
+  // checksum. name is UTF-8 and must be 1..TRAINER_NAME_LEN (7) codepoints,
+  // every one of them encodable in the Gen 3 charset -- an unencodable
+  // character fails the call (with *error naming it) and leaves the save
+  // completely untouched, rather than writing a '?' or a truncated field.
+  //
+  // NOTE for callers that also rebuild the party: every Pokemon carries its own
+  // OT name copy, so renaming the trainer does NOT rename the mons already in
+  // the party. Set the name FIRST, then build/re-stamp the party from it.
+  bool SetTrainerName(const std::string& name, std::string* error = nullptr);
+
+  // Coerce arbitrary (possibly untrusted, possibly over-long) text into
+  // something SetTrainerName will accept: trim surrounding whitespace, map
+  // straight quotes to the charset's curly forms, DROP anything still
+  // unencodable, clamp to TRAINER_NAME_LEN codepoints. Returns "" when nothing
+  // survives -- callers decide whether that means "keep the existing name" or
+  // "reject the request".
+  static std::string SanitizeTrainerName(const std::string& name);
+
   // Raw u32: low u16 = public (visible) trainer ID, high u16 = secret ID.
   u32 GetTrainerId() const;
   u32 GetTrainerPublicId() const { return GetTrainerId() & 0xFFFF; }

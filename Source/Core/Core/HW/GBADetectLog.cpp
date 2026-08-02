@@ -158,6 +158,33 @@ void OnDeviceDestroyed()
   }
 }
 
+void LogPostSession(const std::string& detail)
+{
+  std::lock_guard lock(s_mutex);
+  if (s_path.empty())
+    return;
+
+  const std::string line = fmt::format("t=post {}", detail);
+
+  // A room can close while the session is still live (host closed the window
+  // mid-battle); then the normal sink is still the right one.
+  if (s_file.is_open())
+  {
+    WriteLine(line, true);
+    return;
+  }
+
+  // Session already closed: reopen just long enough to append. Not routed
+  // through WriteLine because the byte cap is accounted against the live
+  // stream, and these lines are few, fixed in number, and the whole point of
+  // the log for this feature.
+  std::ofstream out(s_path, std::ios::out | std::ios::app);
+  if (!out.is_open())
+    return;
+  out << line << '\n';
+  out.flush();
+}
+
 void LogBios(int channel, bool official, const std::string& path, u64 size, bool netplay,
              bool load_ok)
 {
