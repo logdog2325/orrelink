@@ -21,8 +21,11 @@ namespace XDNetplay
 {
 namespace
 {
+// The release LIST, deliberately not .../releases/latest: that endpoint ignores pre-releases, and
+// every build this project has ever shipped is one, so it would report a version from months back
+// and tell everybody they were current forever. Newest-first, so one page is plenty.
 constexpr char RELEASE_API_URL[] =
-    "https://api.github.com/repos/logdog2325/dolphin-xd-netplay/releases/latest";
+    "https://api.github.com/repos/logdog2325/dolphin-xd-netplay/releases?per_page=20";
 constexpr char RELEASES_PAGE_URL[] = "https://github.com/logdog2325/dolphin-xd-netplay/releases";
 
 // GitHub rejects API requests that arrive without a User-Agent.
@@ -164,14 +167,56 @@ UpdateCheckResult CheckForUpdate()
   const char* data = reinterpret_cast<const char*>(response->data());
   picojson::value json;
   const std::string parse_error = picojson::parse(json, data, data + response->size());
-  if (!parse_error.empty() || !json.is<picojson::object>())
+  if (!parse_error.empty() || !json.is<picojson::array>())
   {
     result.status = Status::Unknown;
     result.message = "GitHub's reply could not be read, so the latest release is unknown.";
     return result;
   }
 
-  const picojson::object& release = json.get<picojson::object>();
+  // Newest by VERSION, not by position. GitHub returns the list newest-created-first, which is not
+  // the same ordering as the tags whenever a build is re-cut, and a draft has no download page yet.
+  const picojson::array& releases = json.get<picojson::array>();
+  const picojson::object* newest = nullptr;
+  std::string newest_tag;
+  for (const picojson::value& entry : releases)
+  {
+    if (!entry.is<picojson::object>())
+      continue;
+    const picojson::object& candidate = entry.get<picojson::object>();
+    const auto draft = candidate.find("draft");
+    if (draft != candidate.end() && draft->second.evaluate_as_boolean())
+      continue;
+    const std::optional<std::string> tag = GetStringField(candidate, "tag_name");
+    if (!tag)
+      continue;
+
+    // A tag comparable with itself is one this code can order; an odd one (say "nightly") must not
+    // shadow the real releases just for being listed first, so it is only a last resort.
+    const bool candidate_ranks = CompareVersions(*tag, *tag).has_value();
+    if (newest)
+    {
+      const bool newest_ranks = CompareVersions(newest_tag, newest_tag).has_value();
+      if (newest_ranks && !candidate_ranks)
+        continue;
+      if (newest_ranks == candidate_ranks &&
+          (!candidate_ranks || CompareVersions(newest_tag, *tag).value_or(0) >= 0))
+      {
+        continue;
+      }
+    }
+    newest = &candidate;
+    newest_tag = *tag;
+  }
+
+  if (!newest)
+  {
+    result.status = Status::Unknown;
+    result.message = "GitHub listed no releases, so the latest release is unknown.";
+    return result;
+  }
+
+  const picojson::object& release = *newest;
   const std::optional<std::string> tag_name = GetStringField(release, "tag_name");
   const std::optional<std::string> name = GetStringField(release, "name");
   const std::optional<std::string> html_url = GetStringField(release, "html_url");
