@@ -74,7 +74,7 @@ android {
                 signingConfig = signingConfigs.getByName("release")
             }
 
-            resValue("string", "app_name_suffixed", "XD Netplay")
+            resValue("string", "app_name_suffixed", "OrreLink")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -97,7 +97,7 @@ android {
                 signingConfig = signingConfigs.getByName("release")
             }
 
-            resValue("string", "app_name_suffixed", "XD Netplay")
+            resValue("string", "app_name_suffixed", "OrreLink")
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
             isJniDebuggable = true

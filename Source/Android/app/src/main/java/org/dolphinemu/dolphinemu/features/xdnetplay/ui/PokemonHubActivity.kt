@@ -107,7 +107,7 @@ private fun PokemonHubScreen(onXd: () -> Unit, onPbr: () -> Unit) {
                 modifier = Modifier.padding(vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text("XD Netplay", style = MaterialTheme.typography.titleLarge)
+                Text("OrreLink", style = MaterialTheme.typography.titleLarge)
                 Text("Pokémon XD GBA-link battles, online", style = MaterialTheme.typography.bodySmall)
             }
         }
