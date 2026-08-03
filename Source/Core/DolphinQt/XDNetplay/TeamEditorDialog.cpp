@@ -57,7 +57,7 @@ bool ReadFileBytes(const std::string& path, std::vector<u8>* out)
 
 TeamEditorDialog::TeamEditorDialog(QWidget* parent) : QDialog(parent)
 {
-  setWindowTitle(tr("XD Netplay Team Editor"));
+  setWindowTitle(tr("OrreLink Team Editor"));
 
   CreateMainLayout();
   ConnectWidgets();

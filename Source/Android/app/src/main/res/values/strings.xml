@@ -1112,6 +1112,6 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_update_title">Check for Updates</string>
     <string name="xd_update_download">Download</string>
     <string name="xd_update_close">Close</string>
-    <string name="xd_update_current_version">XD Netplay %1$s</string>
+    <string name="xd_update_current_version">OrreLink %1$s</string>
     <string name="xd_update_no_browser">No app on this device can open the release page.</string>
 </resources>

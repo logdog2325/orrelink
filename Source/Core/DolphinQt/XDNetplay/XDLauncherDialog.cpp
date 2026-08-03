@@ -217,7 +217,7 @@ std::optional<NetPlaySession> PickMatch(const std::vector<NetPlaySession>& sessi
 XDLauncherDialog::XDLauncherDialog(const GameListModel& game_list_model, QWidget* parent)
     : QDialog(parent), m_game_list_model(game_list_model)
 {
-  setWindowTitle(tr("XD Netplay Launcher"));
+  setWindowTitle(tr("OrreLink Launcher"));
 
   CreateMainLayout();
   ConnectWidgets();
@@ -477,12 +477,12 @@ void XDLauncherDialog::OnFixGbaInput()
   if (!XDNetplay::ApplyDefaultGbaInput())
   {
     ModalMessageBox::warning(
-        this, tr("XD Netplay"),
+        this, tr("OrreLink"),
         tr("Could not set default GBA controls. Map them under Controllers > GBA Ports > GBA 1."));
     return;
   }
   ModalMessageBox::information(
-      this, tr("XD Netplay"),
+      this, tr("OrreLink"),
       tr("Default GBA controls applied to GBA 1:\n\n"
          "A = X,  B = Z,  Start = Enter,  Select = Backspace\n"
          "D-Pad = T / G / F / H,  L = Q,  R = W\n\n"
@@ -500,7 +500,7 @@ void XDLauncherDialog::OnFixBios()
   if (!XDNetplay::ImportOfficialBios(path.toStdString()))
   {
     ModalMessageBox::warning(
-        this, tr("XD Netplay"),
+        this, tr("OrreLink"),
         tr("That file is not the official GBA BIOS (16 KB, must match the known hash). "
            "XD cannot detect the GBA without the official dump."));
     return;
@@ -517,14 +517,14 @@ void XDLauncherDialog::OnFixEmeraldRom()
 
   if (!HasGbaHeader(path.toStdString()))
   {
-    ModalMessageBox::warning(this, tr("XD Netplay"),
+    ModalMessageBox::warning(this, tr("OrreLink"),
                              tr("This file does not look like a GBA ROM."));
     return;
   }
 
   if (!ImportEmeraldRom(path.toStdString()))
   {
-    ModalMessageBox::warning(this, tr("XD Netplay"),
+    ModalMessageBox::warning(this, tr("OrreLink"),
                              tr("Failed to copy the ROM into Dolphin's GBA folder."));
     return;
   }
@@ -535,12 +535,12 @@ void XDLauncherDialog::OnFixTeamSaves()
 {
   if (!EmeraldRomConfigured())
   {
-    ModalMessageBox::warning(this, tr("XD Netplay"), tr("Configure the Emerald ROM first."));
+    ModalMessageBox::warning(this, tr("OrreLink"), tr("Configure the Emerald ROM first."));
     return;
   }
   if (!XDNetplay::SeedTeamSaves())
   {
-    ModalMessageBox::warning(this, tr("XD Netplay"),
+    ModalMessageBox::warning(this, tr("OrreLink"),
                              tr("Could not install the bundled team saves."));
   }
   RefreshChecklist();
@@ -550,7 +550,7 @@ void XDLauncherDialog::OnFixVsSave()
 {
   if (!XDNetplay::SeedVsModeGci())
   {
-    ModalMessageBox::warning(this, tr("XD Netplay"),
+    ModalMessageBox::warning(this, tr("OrreLink"),
                              tr("Could not install the bundled VS-mode save."));
   }
   RefreshChecklist();
@@ -579,7 +579,7 @@ void XDLauncherDialog::OnBootSolo()
   if (!game)
   {
     ModalMessageBox::warning(
-        this, tr("XD Netplay"),
+        this, tr("OrreLink"),
         tr("Pokémon XD (USA) was not found in your game list. Add its folder first."));
     return;
   }
@@ -587,7 +587,7 @@ void XDLauncherDialog::OnBootSolo()
   if (!XDNetplay::CheckOfficialBios(nullptr))
   {
     ModalMessageBox::warning(
-        this, tr("XD Netplay"),
+        this, tr("OrreLink"),
         tr("The official GBA BIOS is required — XD cannot detect the GBA without it. "
            "Add it with \"Choose BIOS...\" first."));
     return;
@@ -603,7 +603,7 @@ void XDLauncherDialog::OnHost()
   if (!game)
   {
     ModalMessageBox::warning(
-        this, tr("XD Netplay"),
+        this, tr("OrreLink"),
         tr("Pokémon XD (USA) was not found in your game list. Add its folder first."));
     return;
   }
@@ -611,7 +611,7 @@ void XDLauncherDialog::OnHost()
   if (!XDNetplay::CheckOfficialBios(nullptr))
   {
     ModalMessageBox::warning(
-        this, tr("XD Netplay"),
+        this, tr("OrreLink"),
         tr("The official GBA BIOS is required — XD cannot detect the GBA without it. "
            "Add it with \"Choose BIOS...\" first."));
     return;
@@ -642,7 +642,7 @@ void XDLauncherDialog::OnSearchForMatch()
   if (!game)
   {
     ModalMessageBox::warning(
-        this, tr("XD Netplay"),
+        this, tr("OrreLink"),
         tr("Pokémon XD (USA) was not found in your game list. Add its folder first."));
     return;
   }
@@ -650,7 +650,7 @@ void XDLauncherDialog::OnSearchForMatch()
   if (!XDNetplay::CheckOfficialBios(nullptr))
   {
     ModalMessageBox::warning(
-        this, tr("XD Netplay"),
+        this, tr("OrreLink"),
         tr("The official GBA BIOS is required — XD cannot detect the GBA without it. "
            "Add it with \"Choose BIOS...\" first."));
     return;
@@ -758,7 +758,7 @@ void XDLauncherDialog::OnJoin()
   const std::string code = m_join_code_edit->text().trimmed().toStdString();
   if (code.empty())
   {
-    ModalMessageBox::warning(this, tr("XD Netplay"),
+    ModalMessageBox::warning(this, tr("OrreLink"),
                              tr("Enter the host code your opponent shared."));
     return;
   }
@@ -766,7 +766,7 @@ void XDLauncherDialog::OnJoin()
   if (!XDNetplay::CheckOfficialBios(nullptr))
   {
     ModalMessageBox::warning(
-        this, tr("XD Netplay"),
+        this, tr("OrreLink"),
         tr("The official GBA BIOS is required — XD cannot detect the GBA without it. "
            "Add it with \"Choose BIOS...\" first."));
     return;

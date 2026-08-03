@@ -262,13 +262,13 @@ UpdateCheckResult CheckForUpdate()
   if (*order < 0)
   {
     result.status = Status::UpdateAvailable;
-    result.message = fmt::format("XD Netplay {} is available. This build is {}.", result.latest_tag,
+    result.message = fmt::format("OrreLink {} is available. This build is {}.", result.latest_tag,
                                  VERSION);
     return result;
   }
 
   result.status = Status::UpToDate;
-  result.message = fmt::format("XD Netplay {} is the newest release.", VERSION);
+  result.message = fmt::format("OrreLink {} is the newest release.", VERSION);
   return result;
 }
 }  // namespace XDNetplay
