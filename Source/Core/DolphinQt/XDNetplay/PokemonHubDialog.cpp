@@ -85,7 +85,7 @@ void PokemonHubDialog::CreateMainLayout()
   m_update_button = new NonDefaultQPushButton(tr("Check for Updates"));
   layout->addWidget(m_update_button);
 
-  auto* version_label = new QLabel(tr("XD Netplay %1").arg(QString::fromUtf8(XDNetplay::VERSION)));
+  auto* version_label = new QLabel(tr("OrreLink %1").arg(QString::fromUtf8(XDNetplay::VERSION)));
   layout->addWidget(version_label);
 
   m_show_on_startup_check = new QCheckBox(tr("Show this at startup"));
