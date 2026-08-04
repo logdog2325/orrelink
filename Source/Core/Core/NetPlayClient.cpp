@@ -219,8 +219,18 @@ NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlay
 
     m_client->mtu = std::min(m_client->mtu, NetPlay::MAX_ENET_MTU);
 
-    ENetAddress addr;
-    enet_address_set_host(&addr, address.c_str());
+    // Zero-init and CHECK the resolve. On failure enet leaves addr.host unwritten, so the old
+    // code dialed stack garbage and spent the full 5-second connect timeout producing the same
+    // "Could not communicate with host." a genuine network failure does -- a typo and a firewall
+    // were indistinguishable. Fail fast and say what is actually wrong.
+    ENetAddress addr{};
+    if (enet_address_set_host(&addr, address.c_str()) != 0)
+    {
+      m_dialog->OnConnectionError(
+          _trans("Not a usable address. Enter the host's IP like 192.168.1.5, or IP:port like "
+                 "192.168.1.5:2626."));
+      return;
+    }
     addr.port = port;
 
     m_server = enet_host_connect(m_client, &addr, CHANNEL_COUNT, 0);
@@ -262,6 +272,9 @@ NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlay
     if (!Common::EnsureTraversalClient(traversal_config.traversal_host,
                                        traversal_config.traversal_port))
     {
+      // Without this the join fails in perfect silence -- the spinner stops and nothing is said.
+      m_dialog->OnConnectionError(
+          _trans("Could not reach the traversal server. Check your connection and try again."));
       return;
     }
     m_client = Common::g_MainNetHost.get();
