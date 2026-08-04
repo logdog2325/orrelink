@@ -239,9 +239,12 @@ NetPlayServer::NetPlayServer(const u16 port, const bool forward_port, NetPlayUI*
     {
       m_server->mtu = std::min(m_server->mtu, NetPlay::MAX_ENET_MTU);
       m_server->intercept = Common::ENet::InterceptCallback;
-    }
 
-    SetupIndex();
+      // Inside the null check: SetupIndex publishes GetPort(), which dereferences m_server, so
+      // with lobby publishing enabled a failed bind (port already in use) was a crash instead of
+      // the "is_connected stays false" failure the caller handles.
+      SetupIndex();
+    }
   }
   if (m_server != nullptr)
   {

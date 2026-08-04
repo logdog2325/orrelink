@@ -47,8 +47,17 @@ class NetplayViewModel(
                 if (isTraversal) {
                     put(JoinInfoType.ROOM_ID, JoinAddress.Loading)
                 }
+                else {
+                    // Map order is the chip order, and the first entry is the default selection.
+                    // A DIRECT host's useful address is almost always the LAN one -- the external
+                    // address only works with a port forward -- so Local leads. Traversal keeps
+                    // the room code first for the same reason.
+                    put(JoinInfoType.LOCAL, getLocalIp())
+                }
                 put(JoinInfoType.EXTERNAL, JoinAddress.Loading)
-                put(JoinInfoType.LOCAL, getLocalIp())
+                if (isTraversal) {
+                    put(JoinInfoType.LOCAL, getLocalIp())
+                }
             }
         }
     )
