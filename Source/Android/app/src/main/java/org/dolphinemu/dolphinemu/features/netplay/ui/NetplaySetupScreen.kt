@@ -296,7 +296,9 @@ fun ConnectMenu(
                 onValueChange = onIpAddressChanged,
                 label = { Text(stringResource(R.string.netplay_ip_address_label)) },
                 keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Number,
+                    // Ascii, not Number: the field accepts "ip:port" as displayed on the host's
+                    // room screen, and many numeric IMEs have no ':' key at all.
+                    keyboardType = KeyboardType.Ascii,
                 ),
                 singleLine = true,
                 modifier = Modifier
