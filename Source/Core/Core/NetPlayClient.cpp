@@ -324,7 +324,34 @@ NetPlayClient::NetPlayClient(const std::string& address, const u16 port, NetPlay
       if (connect_timer.ElapsedMs() > 5000)
         break;
     }
-    m_dialog->OnConnectionError(_trans("Could not communicate with host."));
+    // Say which of the very different failures this actually was. The connection state is no use
+    // here -- Disconnect() has already collapsed it to Failure -- but the traversal client still
+    // knows why IT failed, and "the server never answered" vs "the server answered and the punch
+    // died" point at completely different problems on the user's side.
+    if (m_specific_connect_error)
+      return;  // OnConnectFailed already told the user something better than the generic line.
+    if (m_traversal_client && m_traversal_client->HasFailed())
+    {
+      switch (m_traversal_client->GetFailureReason())
+      {
+      case Common::TraversalClient::FailureReason::BadHost:
+      case Common::TraversalClient::FailureReason::SocketSendError:
+      case Common::TraversalClient::FailureReason::ResendTimeout:
+      case Common::TraversalClient::FailureReason::ServerForgotAboutUs:
+        m_dialog->OnConnectionError(
+            _trans("Could not reach the traversal server at all. This network may be blocking the "
+                   "connection -- see the README's section on networks that block peer-to-peer."));
+        return;
+      case Common::TraversalClient::FailureReason::VersionTooOld:
+        m_dialog->OnConnectionError(_trans("The traversal server no longer supports this build."));
+        return;
+      default:
+        break;
+      }
+    }
+    m_dialog->OnConnectionError(
+        _trans("Reached the traversal server, but no connection to the host could be made. This "
+               "usually means a firewall or NAT blocked it on one side."));
   }
 }
 
@@ -2087,19 +2114,28 @@ void NetPlayClient::OnConnectFailed(Common::TraversalConnectFailedReason reason)
 {
   m_connecting = false;
   m_connection_state = ConnectionState::Failure;
+  // Through the dialog, not PanicAlert: on Android a PanicAlert with no emulation activity
+  // degrades to a 3.5-second toast, after which the ctor's generic "Could not communicate with
+  // host." dialog buried the real answer -- a WRONG CODE was indistinguishable from a NAT
+  // failure. The flag suppresses that generic follow-up on every platform.
+  m_specific_connect_error = true;
   switch (reason)
   {
   case Common::TraversalConnectFailedReason::ClientDidntRespond:
-    PanicAlertFmtT("Traversal server timed out connecting to the host");
+    m_dialog->OnConnectionError(
+        _trans("The traversal server reached the host, but the host never answered. The host's "
+               "network may be blocking the connection."));
     break;
   case Common::TraversalConnectFailedReason::ClientFailure:
-    PanicAlertFmtT("Server rejected traversal attempt");
+    m_dialog->OnConnectionError(_trans("The traversal server rejected the connection attempt."));
     break;
   case Common::TraversalConnectFailedReason::NoSuchClient:
-    PanicAlertFmtT("Invalid host");
+    m_dialog->OnConnectionError(
+        _trans("No host with that code exists right now. Check the code with the host -- and have "
+               "them check their room still shows it, since codes die when the room closes."));
     break;
   default:
-    PanicAlertFmtT("Unknown error {0:x}", static_cast<int>(reason));
+    m_dialog->OnConnectionError(_trans("The traversal server reported an unknown error."));
     break;
   }
 }
