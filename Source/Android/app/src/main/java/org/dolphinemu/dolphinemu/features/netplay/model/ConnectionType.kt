@@ -23,7 +23,11 @@ sealed class ConnectionType(
         val all: List<ConnectionType>
             get() = listOf(DirectConnection, TraversalServer)
 
+        // Never throw: this parses a PERSISTED config value, and other writers (upstream desktop
+        // code, older builds, hand-edited INIs) are not bound by this enum. Throwing here crashed
+        // the whole netplay setup screen on open -- an unrecognized string just means traversal,
+        // the app's default.
         fun fromString(value: String): ConnectionType =
-            all.find { it.configValue == value } ?: throw IllegalArgumentException("Invalid connection type: $value")
+            all.find { it.configValue == value } ?: TraversalServer
     }
 }

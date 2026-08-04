@@ -85,10 +85,24 @@ class NetplaySetupViewModel(
     }
 
     fun setIpAddress(ipAddress: String) {
-        if (ipAddress.all { it.isDigit() || it == '.' }) {
-            _ipAddress.value = ipAddress
-            StringSetting.NETPLAY_ADDRESS.setString(NativeConfig.LAYER_BASE, ipAddress)
-        }
+        // The host's room screen displays its address as ONE string, "192.168.1.5:2626", and
+        // people type or paste exactly that. The old digit/dot-only filter silently ate the
+        // colon: a paste was discarded wholesale and typing merged the port digits into the IP
+        // ("192.168.1.52626"), which then dialed garbage and produced the same generic timeout a
+        // real network failure does. So the FIELD keeps the colon exactly as typed, and only the
+        // stored address is split: host part to NetPlay/Address, port part (when complete) to the
+        // connect port. The port field is never cleared by a trailing bare ":" -- that state just
+        // means the user is mid-typing.
+        if (ipAddress.count { it == ':' } > 1)
+            return
+        if (!ipAddress.all { it.isDigit() || it == '.' || it == ':' })
+            return
+        _ipAddress.value = ipAddress
+        val host = ipAddress.substringBefore(':')
+        StringSetting.NETPLAY_ADDRESS.setString(NativeConfig.LAYER_BASE, host)
+        val port = ipAddress.substringAfter(':', "")
+        if (port.isNotEmpty())
+            setConnectPort(port)
     }
 
     fun setHostCode(hostCode: String) {

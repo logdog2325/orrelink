@@ -86,7 +86,12 @@ object XdMatchmaker {
      */
     fun applyJoinConfig(session: LobbySession, serverId: String = session.serverId) {
         StringSetting.NETPLAY_TRAVERSAL_CHOICE.setString(NativeConfig.LAYER_BASE, session.method)
-        IntSetting.NETPLAY_CONNECT_PORT.setInt(NativeConfig.LAYER_BASE, session.port)
+        // These writes are PERSISTENT, and a malformed lobby row can carry port 0 -- which would
+        // sit in the config poisoning every later manual Direct connection with a dial to a port
+        // nothing listens on, five seconds of silence at a time. A row with no usable port keeps
+        // whatever the user had.
+        if (session.port in 1..65535)
+            IntSetting.NETPLAY_CONNECT_PORT.setInt(NativeConfig.LAYER_BASE, session.port)
         if (session.isTraversal) {
             StringSetting.NETPLAY_HOST_CODE.setString(NativeConfig.LAYER_BASE, serverId)
         } else {
