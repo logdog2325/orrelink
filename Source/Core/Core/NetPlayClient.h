@@ -386,6 +386,8 @@ private:
   std::string m_host_spec;
   std::string m_player_name;
   bool m_connecting = false;
+  // OnConnectFailed showed a reason-specific error; the ctor's generic fallback must stay quiet.
+  bool m_specific_connect_error = false;
   Common::TraversalClient* m_traversal_client = nullptr;
   std::thread m_game_digest_thread;
   bool m_should_compute_game_digest = false;
