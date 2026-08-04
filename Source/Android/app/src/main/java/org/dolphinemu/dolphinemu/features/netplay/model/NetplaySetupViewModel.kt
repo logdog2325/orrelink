@@ -106,8 +106,13 @@ class NetplaySetupViewModel(
     }
 
     fun setHostCode(hostCode: String) {
-        _hostCode.value = hostCode
-        StringSetting.NETPLAY_HOST_CODE.setString(NativeConfig.LAYER_BASE, hostCode)
+        // Codes are exactly 8 lowercase hex characters and the server matches them byte-for-byte,
+        // but codes travel through chat apps that auto-capitalize and pad. A case-mangled or
+        // whitespace-wrapped paste used to become a "no such host" with no hint why -- normalize
+        // here so what the server sees is what the host's screen showed.
+        val cleaned = hostCode.trim().lowercase().filter { it.isDigit() || it in 'a'..'f' }.take(8)
+        _hostCode.value = cleaned
+        StringSetting.NETPLAY_HOST_CODE.setString(NativeConfig.LAYER_BASE, cleaned)
     }
 
     fun setConnectPort(port: String) {

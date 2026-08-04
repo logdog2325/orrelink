@@ -324,6 +324,12 @@ fun ConnectMenu(
             value = hostCode,
             onValueChange = onHostCodeChanged,
             label = { Text(stringResource(R.string.netplay_host_code_label)) },
+            keyboardOptions = KeyboardOptions(
+                // Ascii with autocorrect off: IME "corrections" to an 8-char hex code make it a
+                // wrong code, and the server's answer to a wrong code used to be easy to miss.
+                keyboardType = KeyboardType.Ascii,
+                autoCorrectEnabled = false,
+            ),
             singleLine = true,
             modifier = Modifier
                 .fillMaxWidth()
