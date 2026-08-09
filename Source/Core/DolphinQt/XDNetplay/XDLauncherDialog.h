@@ -12,6 +12,7 @@
 #include "UICommon/NetPlayIndex.h"
 
 class QCheckBox;
+class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -95,6 +96,16 @@ private:
   ChecklistRow m_team_saves_row;
   ChecklistRow m_vs_save_row;
   ChecklistRow m_gba_input_row;
+
+  // Battle Style: the host's cosmetic picks (own trainer model, guest-model
+  // fallback, music, location), persisted in the MAIN_XD_STYLE_* keys and
+  // assembled into the synced "$OrreLink Battle Style" AR block by
+  // BattleCustomizer when a session starts. Every combo's first entry is
+  // "Game default", which genuinely emits nothing.
+  QComboBox* m_style_host_model_combo;
+  QComboBox* m_style_guest_model_combo;
+  QComboBox* m_style_music_combo;
+  QComboBox* m_style_venue_combo;
 
   QCheckBox* m_practice_dummy_check;
   QCheckBox* m_cheats_check;

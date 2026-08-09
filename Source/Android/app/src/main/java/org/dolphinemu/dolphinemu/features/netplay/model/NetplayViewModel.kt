@@ -154,8 +154,14 @@ class NetplayViewModel(
      * most seven Gen 3 characters; anything that survives nothing (an all-emoji
      * name, say) is sent as "", which the host reads as "keep your own name"
      * rather than as a reason to reject the team.
+     *
+     * [modelId] is this player's cosmetic trainer-model pick for the battle;
+     * 0 (or anything non-positive) means "no preference" — no Model: header is
+     * sent and the host's Guest-model fallback dropdown decides. The host
+     * validates the id against its own table, so a stale pick can never be
+     * applied, and it can never reject the team.
      */
-    fun submitTeam(text: String, trainerName: String) {
+    fun submitTeam(text: String, trainerName: String, modelId: Int) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) {
             return
@@ -168,7 +174,7 @@ class NetplayViewModel(
         }
         val pokepaste = Regex("^https?://pokepast\\.es/[A-Za-z0-9]+").find(trimmed)?.value
         if (pokepaste == null) {
-            netplaySession.submitTeam(trimmed, name)
+            netplaySession.submitTeam(trimmed, name, modelId)
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -183,7 +189,7 @@ class NetplayViewModel(
                         "Could not fetch that paste (network error)."
                     )
                 } else {
-                    netplaySession.submitTeam(body, name)
+                    netplaySession.submitTeam(body, name, modelId)
                 }
             }
         }

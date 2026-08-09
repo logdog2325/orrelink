@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 // Android bridge for the NetPlay session index ("lobby server", NETPLAY_INDEX_URL,
-// default https://lobby.dolphin-emu.org), plus the XD Netplay release check that shares this
-// file because it is the other stateless xdnetplay-package bridge (see the second extern "C"
-// group at the bottom; Kotlin counterpart features/xdnetplay/UpdateCheckBridge).
+// default https://lobby.dolphin-emu.org), plus the two other small xdnetplay-package bridges
+// that share this file: the XD Netplay release check (second extern "C" group; Kotlin
+// counterpart features/xdnetplay/UpdateCheckBridge) and the cosmetic battle-style selectors
+// (third group; Kotlin counterpart features/xdnetplay/BattleStyleBridge).
 //
 // Listing only. Publishing is deliberately NOT exposed here: Core's NetPlayServer
 // already owns a NetPlayIndex (NetPlayServer::m_index) and publishes automatically
@@ -36,11 +37,15 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
+#include "Common/Config/Config.h"
 #include "Common/Version.h"
+#include "Core/Config/MainSettings.h"
 #include "UICommon/NetPlayIndex.h"
+#include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/UpdateCheck.h"
 #include "UICommon/XDNetplay/Version.h"
 
@@ -61,6 +66,26 @@ std::string GetLastError()
 {
   std::lock_guard lock(s_last_error_mutex);
   return s_last_error;
+}
+
+// Battle-style helper: flatten a BattleCustomizer option table for the Kotlin
+// side as [id, name, tier, ...] triples (id decimal, tier "safe"/
+// "experimental"). Tables are ordered tested-safe first, so a dropdown can
+// insert its "Experimental" divider at the first tier change.
+jobjectArray StyleTableToJava(JNIEnv* env,
+                              std::span<const XDNetplay::BattleCustomizer::StyleOption> table)
+{
+  std::vector<std::string> flat;
+  flat.reserve(table.size() * 3);
+  for (const auto& option : table)
+  {
+    flat.push_back(std::to_string(option.id));
+    flat.push_back(option.name);
+    flat.push_back(option.tier == XDNetplay::BattleCustomizer::Tier::Experimental ?
+                       "experimental" :
+                       "safe");
+  }
+  return SpanToJStringArray(env, flat);
 }
 }  // namespace
 
@@ -233,6 +258,105 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_UpdateCheckBridge_nativeCheckF
       result.message,
   };
   return SpanToJStringArray(env, fields);
+}
+
+// ---------------------------------------------------------------------------
+// Battle-style bridge (Kotlin counterpart: features/xdnetplay/BattleStyleBridge)
+// ---------------------------------------------------------------------------
+//
+// The cosmetic battle-style selectors: the option tables live ONLY in
+// UICommon/XDNetplay/BattleCustomizer (Kotlin never duplicates them), and the
+// four host selections live in the MAIN_XD_STYLE_* config keys that
+// BattleCustomizer::ConfigSelection reads when the host assembles the
+// "$OrreLink Battle Style" AR code. Nothing here touches AR codes -- the code
+// block is assembled in shared core at host time (nativeStartGame ->
+// BattleCustomizer::PrepareForStart and the TeamData arrival hook).
+//
+// Table encoding: flat [id, name, tier, id, name, tier, ...] with id decimal
+// and tier "safe" or "experimental". Tables are ordered tested-safe first, so
+// a dropdown can insert its "Experimental" divider at the first tier change.
+//
+// Selection encoding ("which", shared with BattleStyleBridge.kt):
+//   0 = host's own model   1 = guest-model fallback   2 = music   3 = venue
+// A selection of 0 is "Game default" (the AR section is absent, never a write
+// of the vanilla value). Setters validate against the same tables the host
+// assembly validates against: an unknown id is stored as 0, never clamped.
+
+JNIEXPORT jobjectArray JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativeGetModelTable(JNIEnv* env,
+                                                                                        jobject)
+{
+  return StyleTableToJava(env, XDNetplay::BattleCustomizer::ModelTable());
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativeGetMusicTable(JNIEnv* env,
+                                                                                        jobject)
+{
+  return StyleTableToJava(env, XDNetplay::BattleCustomizer::MusicTable());
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativeGetVenueTable(JNIEnv* env,
+                                                                                        jobject)
+{
+  return StyleTableToJava(env, XDNetplay::BattleCustomizer::VenueTable());
+}
+
+JNIEXPORT jint JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativeGetSelection(JNIEnv*,
+                                                                                       jobject,
+                                                                                       jint which)
+{
+  switch (which)
+  {
+  case 0:
+    return Config::Get(Config::MAIN_XD_STYLE_HOST_MODEL);
+  case 1:
+    return Config::Get(Config::MAIN_XD_STYLE_GUEST_MODEL);
+  case 2:
+    return Config::Get(Config::MAIN_XD_STYLE_MUSIC);
+  case 3:
+    return Config::Get(Config::MAIN_XD_STYLE_VENUE);
+  default:
+    return 0;
+  }
+}
+
+JNIEXPORT void JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativeSetSelection(JNIEnv*,
+                                                                                       jobject,
+                                                                                       jint which,
+                                                                                       jint id)
+{
+  // The dropdowns only offer table entries, but validate anyway so a bad value
+  // can never reach the config keys the host assembles codes from: anything
+  // not in the matching table becomes 0 ("Game default"), never a clamp.
+  const Config::Info<int>* key = nullptr;
+  bool valid = false;
+  switch (which)
+  {
+  case 0:
+    key = &Config::MAIN_XD_STYLE_HOST_MODEL;
+    valid = XDNetplay::BattleCustomizer::IsValidModelId(id);
+    break;
+  case 1:
+    key = &Config::MAIN_XD_STYLE_GUEST_MODEL;
+    valid = XDNetplay::BattleCustomizer::IsValidModelId(id);
+    break;
+  case 2:
+    key = &Config::MAIN_XD_STYLE_MUSIC;
+    valid = XDNetplay::BattleCustomizer::IsValidMusicId(id);
+    break;
+  case 3:
+    key = &Config::MAIN_XD_STYLE_VENUE;
+    valid = XDNetplay::BattleCustomizer::IsValidVenueId(id);
+    break;
+  default:
+    return;
+  }
+  Config::SetBaseOrCurrent(*key, valid ? id : 0);
+  Config::Save();
 }
 
 }  // extern "C"
