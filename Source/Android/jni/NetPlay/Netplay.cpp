@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "Core/NetPlayCommon.h"
 #include "Core/NetPlayServer.h"
 #include "UICommon/GameFile.h"
+#include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 
 #include "jni/AndroidCommon/AndroidCommon.h"
@@ -57,17 +59,22 @@ JNIEXPORT void JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitTeam(JNIEnv* env,
                                                                                 jobject obj,
                                                                                 jstring jteam,
-                                                                                jstring jname)
+                                                                                jstring jname,
+                                                                                jint jmodel)
 {
-  // XD Netplay: hand this player's Showdown team -- and the in-game trainer
-  // name they want to play under -- to the host, which writes both into the GBA
-  // save it syncs at start. The two travel in ONE TeamData string; the payload
-  // grammar lives in UICommon/XDNetplay/TeamInjector.h. An empty name means
-  // "keep the host save's existing name".
+  // XD Netplay: hand this player's Showdown team -- plus the in-game trainer
+  // name they want to play under and their cosmetic trainer-model pick -- to
+  // the host, which writes the team into the GBA save it syncs at start and
+  // folds the model into the "$OrreLink Battle Style" AR block. All three
+  // travel in ONE TeamData string; the payload grammar lives in
+  // UICommon/XDNetplay/TeamInjector.h. An empty name means "keep the host
+  // save's existing name"; model <= 0 means "no preference" (no Model: header
+  // at all -- the host's Guest-model fallback dropdown wins).
   if (auto* client = GetClientPointer(env, obj))
   {
-    client->SendTeamSubmission(XDNetplay::BuildTeamSubmissionPayload(GetJString(env, jteam),
-                                                                    GetJString(env, jname)));
+    client->SendTeamSubmission(XDNetplay::BuildTeamSubmissionPayload(
+        GetJString(env, jteam), GetJString(env, jname),
+        jmodel > 0 ? std::optional<int>(jmodel) : std::nullopt));
   }
 }
 
@@ -192,6 +199,12 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeHost(JNIEnv
   server->SetHostInputAuthority(host_input_authority);
   server->AdjustPadBufferSize(Config::Get(Config::NETPLAY_BUFFER_SIZE));
 
+  // Session-boundary scrub for the cosmetic battle-style feature (mirrors the
+  // desktop EnsureGbaConfig hook): remove any "$OrreLink Battle Style" block a
+  // crashed session left orphaned in the local GXXE01.ini, and start with a
+  // clean guest-model stash for the room this server is about to run.
+  XDNetplay::BattleCustomizer::BeginSession();
+
   return reinterpret_cast<jlong>(server.release());
 }
 
@@ -282,6 +295,14 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
   // packet), but both must precede RequestStartGame.
   server->SetPadMapping(pad_map);
   server->SetGBAConfig(gba_config, /*update_rom=*/true);
+
+  // Rebuild the "$OrreLink Battle Style" cosmetic AR block from the host's
+  // launcher selections plus the guest's submitted model, and force cheats on
+  // when (and only when) the block is non-empty so it actually loads and
+  // ships (mirrors the desktop ApplyStartForcing hook). Must precede
+  // RequestStartGame: that is what snapshots MAIN_ENABLE_CHEATS
+  // (SetupNetSettings) and re-reads the local GXXE01.ini off disk (SyncCodes).
+  XDNetplay::BattleCustomizer::PrepareForStart();
 
   server->RequestStartGame();
 }

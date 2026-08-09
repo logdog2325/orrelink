@@ -421,6 +421,13 @@ const Info<bool> MAIN_GBA_EDGE_RESET{{System::Main, "GBA", "EdgeReset"}, true};
 const Info<bool> MAIN_GBA_FULLBOOT_PRESENCE{{System::Main, "GBA", "FullBootPresence"}, false};
 #endif
 
+// Main.XDNetplay
+
+const Info<int> MAIN_XD_STYLE_HOST_MODEL{{System::Main, "XDNetplay", "StyleHostModel"}, 0};
+const Info<int> MAIN_XD_STYLE_GUEST_MODEL{{System::Main, "XDNetplay", "StyleGuestModel"}, 0};
+const Info<int> MAIN_XD_STYLE_MUSIC{{System::Main, "XDNetplay", "StyleMusic"}, 0};
+const Info<int> MAIN_XD_STYLE_VENUE{{System::Main, "XDNetplay", "StyleVenue"}, 0};
+
 // Main.Network
 
 const Info<bool> MAIN_NETWORK_SSL_DUMP_READ{{System::Main, "Network", "SSLDumpRead"}, false};

@@ -25,6 +25,7 @@ import kotlinx.coroutines.withContext
 import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplayActivity
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplaySetupActivity
+import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
 import org.dolphinemu.dolphinemu.features.xdnetplay.LobbySession
 import org.dolphinemu.dolphinemu.features.xdnetplay.NetPlayIndexBridge
 import org.dolphinemu.dolphinemu.features.xdnetplay.XdMatchmaker
@@ -59,6 +60,18 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var biosLinkReady by mutableStateOf(false)
     private var statusMessage by mutableStateOf<String?>(null)
     private var cheatsEnabled by mutableStateOf(false)
+
+    // Cosmetic battle-style selectors (host side). The option tables live in
+    // native code (BattleCustomizer) and are fetched once directories are
+    // ready; the four selections mirror the native MAIN_XD_STYLE_* config
+    // keys, which is where the host's code assembly reads them at Start.
+    private var modelOptions by mutableStateOf<List<BattleStyleBridge.StyleOption>>(emptyList())
+    private var musicOptions by mutableStateOf<List<BattleStyleBridge.StyleOption>>(emptyList())
+    private var venueOptions by mutableStateOf<List<BattleStyleBridge.StyleOption>>(emptyList())
+    private var hostModelId by mutableStateOf(0)
+    private var guestModelId by mutableStateOf(0)
+    private var musicId by mutableStateOf(0)
+    private var venueId by mutableStateOf(0)
 
     /** True from the moment "Search for Match" is tapped until it joins, hosts or gives up. */
     private var searching by mutableStateOf(false)
@@ -195,6 +208,31 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                         cheatsEnabled = on
                         BooleanSetting.MAIN_ENABLE_CHEATS.setBoolean(NativeConfig.LAYER_BASE, on)
                         NativeConfig.save(NativeConfig.LAYER_BASE)
+                    },
+                    modelOptions = modelOptions,
+                    musicOptions = musicOptions,
+                    venueOptions = venueOptions,
+                    hostModelId = hostModelId,
+                    guestModelId = guestModelId,
+                    musicId = musicId,
+                    venueId = venueId,
+                    onHostModelChanged = { id ->
+                        hostModelId = id
+                        BattleStyleBridge.setSelection(BattleStyleBridge.SELECTION_HOST_MODEL, id)
+                    },
+                    onGuestModelChanged = { id ->
+                        guestModelId = id
+                        BattleStyleBridge.setSelection(
+                            BattleStyleBridge.SELECTION_GUEST_MODEL_FALLBACK, id
+                        )
+                    },
+                    onMusicChanged = { id ->
+                        musicId = id
+                        BattleStyleBridge.setSelection(BattleStyleBridge.SELECTION_MUSIC, id)
+                    },
+                    onVenueChanged = { id ->
+                        venueId = id
+                        BattleStyleBridge.setSelection(BattleStyleBridge.SELECTION_VENUE, id)
                     },
                     onBattle = { NetplaySetupActivity.launch(this) },
                     onSearchForMatch = { searchForMatch() },
@@ -388,6 +426,18 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
 
     private fun refreshChecks() {
         cheatsEnabled = BooleanSetting.MAIN_ENABLE_CHEATS.boolean
+        // Battle-style tables are static native data — fetch once; selections
+        // re-read every refresh so an external config change is reflected.
+        if (modelOptions.isEmpty()) {
+            modelOptions = BattleStyleBridge.modelTable()
+            musicOptions = BattleStyleBridge.musicTable()
+            venueOptions = BattleStyleBridge.venueTable()
+        }
+        hostModelId = BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_HOST_MODEL)
+        guestModelId =
+            BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_GUEST_MODEL_FALLBACK)
+        musicId = BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_MUSIC)
+        venueId = BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_VENUE)
         migrateContentPaths()
         emeraldRomSet = ensureGbaConfig()
         xdGameFound = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID) != null

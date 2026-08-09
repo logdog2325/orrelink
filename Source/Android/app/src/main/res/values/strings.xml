@@ -1114,4 +1114,17 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_update_close">Close</string>
     <string name="xd_update_current_version">OrreLink %1$s</string>
     <string name="xd_update_no_browser">No app on this device can open the release page.</string>
+
+    <string name="xd_style_section_title">Battle Style</string>
+    <string name="xd_style_section_hint">Cosmetic only. When you host, these apply to both players.</string>
+    <string name="xd_style_your_model">Your model</string>
+    <string name="xd_style_guest_model">Guest model</string>
+    <string name="xd_style_guest_model_hint">Used only if they don\'t pick one themselves</string>
+    <string name="xd_style_music">Battle music</string>
+    <string name="xd_style_venue">Battle location</string>
+    <string name="xd_style_game_default">Game default</string>
+    <string name="xd_style_no_preference">No preference</string>
+    <string name="xd_style_experimental">Experimental</string>
+    <string name="xd_style_submit_model_label">Trainer model</string>
+    <string name="xd_style_submit_model_hint">Cosmetic — how you\'ll appear in the battle.</string>
 </resources>
