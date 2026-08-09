@@ -33,6 +33,11 @@ std::ofstream s_file;    // held open for the session; never fopen'd per line
 std::string s_path;
 u64 s_bytes = 0;         // running size, enforces the cap
 int s_live_devices = 0;  // ref-count -> session begin/end
+// Pre-boot context lines (NoteBoot) waiting for the next session's file.
+// Bounded: a user flipping dropdowns for an hour without booting must not
+// grow this without limit -- older notes fall off, the freshest state wins.
+std::vector<std::string> s_boot_notes;
+constexpr size_t MAX_BOOT_NOTES = 32;
 // Atomic so every Log* can early-out lock-free and stop FORMATTING once capped
 // (Review #1 I5: the byte cap must bound CPU/lock cost, not just disk).
 std::atomic<bool> s_capped{false};
@@ -141,6 +146,12 @@ void OnDeviceCreated()
   WriteLine("note: a per-socket 'role' line prints once under netplay; rd=/wr= in sum lines are "
             "ungated data-command counts",
             true);
+  // Pre-boot context recorded before this file existed (Battle Style picks,
+  // forced flags): flushed here so the log that describes a battle also says
+  // what was configured into it.
+  for (const std::string& note : s_boot_notes)
+    WriteLine(fmt::format("t=boot {}", note), true);
+  s_boot_notes.clear();
   // The path is deliberately not announced on screen. FilePath() is what the UI's share/reveal
   // action uses, and the release notes give the folder per platform -- neither needs a banner
   // across the game at every boot.
@@ -155,6 +166,19 @@ void OnDeviceDestroyed()
     s_file.flush();
     s_file.close();
   }
+}
+
+void NoteBoot(const std::string& line)
+{
+  std::lock_guard lock(s_mutex);
+  if (s_file.is_open())
+  {
+    WriteLine(fmt::format("t=boot {}", line), true);
+    return;
+  }
+  if (s_boot_notes.size() >= MAX_BOOT_NOTES)
+    s_boot_notes.erase(s_boot_notes.begin());
+  s_boot_notes.push_back(line);
 }
 
 void LogPostSession(const std::string& detail)
