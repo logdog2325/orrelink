@@ -14,6 +14,7 @@
 #include "NetPlayUICallbacks.h"
 #include "UICommon/GameFile.h"
 #include "UICommon/UICommon.h"
+#include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 #include "jni/AndroidCommon/AndroidCommon.h"
 #include "jni/AndroidCommon/IDCache.h"
@@ -176,6 +177,16 @@ std::string NetPlayUICallbacks::OnTeamSubmission(const std::string& player,
   // that predates that just sends the bare team (TeamInjector.h documents the
   // grammar and both compatibility directions).
   const XDNetplay::TeamSubmission submission = XDNetplay::ParseTeamSubmissionPayload(text);
+
+  // The submission may also carry the guest's cosmetic "Model:" pick. Stash it
+  // (every submission overwrites the stash; absent or invalid means "no
+  // preference" and the host's Guest-model fallback wins) and rebuild the
+  // "$OrreLink Battle Style" block right away, so a model submitted any time
+  // before Start is already in the file SyncCodes reads. The server rejects
+  // TeamData while a battle runs, so this cannot race a synced set.
+  XDNetplay::BattleCustomizer::SetGuestModel(submission.model);
+  XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
+
   std::string status;
   if (!XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status))
     return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
@@ -189,6 +200,11 @@ void NetPlayUICallbacks::OnRoomClosed()
   // saves). May defer itself until emulation has fully stopped -- the mGBA
   // core rewrites the save at teardown, so anything done sooner is undone.
   XDNetplay::RestoreHostTeam(2);
+  // And retire the session's cosmetic battle-style state: drop the guest's
+  // stashed model, strip the generated "$OrreLink Battle Style" block from the
+  // local GXXE01.ini, and give the cheats flag back if the pre-start hook
+  // forced it on for a cosmetics-only session.
+  XDNetplay::BattleCustomizer::EndSession();
 }
 
 void NetPlayUICallbacks::OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,

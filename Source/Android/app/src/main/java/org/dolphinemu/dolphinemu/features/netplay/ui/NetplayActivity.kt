@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.onEach
 import org.dolphinemu.dolphinemu.activities.EmulationActivity
 import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
 import org.dolphinemu.dolphinemu.features.netplay.model.NetplayViewModel
+import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
 import org.dolphinemu.dolphinemu.ui.main.ThemeProvider
 import org.dolphinemu.dolphinemu.ui.theme.DolphinTheme
 import org.dolphinemu.dolphinemu.utils.NetworkHelper
@@ -44,6 +45,11 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
             .onEach { EmulationActivity.launch(this, it, false) }
             .launchIn(lifecycleScope)
 
+        // Static native table for the joiner's cosmetic model picker in the
+        // Submit Team sheet; fetched once, outside composition. The pick
+        // travels with the team submission, so no extra session state exists.
+        val modelOptions = BattleStyleBridge.modelTable()
+
         setContent {
             DolphinTheme {
                 NetplayScreen(
@@ -55,6 +61,7 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
                     onSendMessage = viewModel::sendMessage,
                     onSubmitTeam = viewModel::submitTeam,
                     defaultTrainerName = viewModel.defaultTrainerName,
+                    modelOptions = modelOptions,
                     game = viewModel.game.collectAsState().value,
                     onStartGame = viewModel::startGame,
                     onGameSelected = viewModel::changeGame,

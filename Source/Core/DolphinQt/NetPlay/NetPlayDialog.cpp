@@ -30,6 +30,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <optional>
 #include <thread>
 #include <utility>
 
@@ -72,6 +73,7 @@
 
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/GameFile.h"
+#include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 #include "UICommon/UICommon.h"
@@ -879,6 +881,16 @@ std::string NetPlayDialog::OnTeamSubmission(const std::string& player, const std
   // that predates that just sends the bare team (TeamInjector.h documents the
   // grammar and both compatibility directions).
   const XDNetplay::TeamSubmission submission = XDNetplay::ParseTeamSubmissionPayload(text);
+
+  // The submission may also carry the guest's cosmetic "Model:" pick. Stash it
+  // (every submission overwrites the stash; absent or invalid means "no
+  // preference" and the host's Guest-model fallback dropdown wins) and rebuild
+  // the "$OrreLink Battle Style" block right away, so a model submitted any
+  // time before Start is already in the file SyncCodes reads. The server
+  // rejects TeamData while a battle runs, so this cannot race a synced set.
+  XDNetplay::BattleCustomizer::SetGuestModel(submission.model);
+  XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
+
   std::string status;
   if (!XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status))
     return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
@@ -892,6 +904,11 @@ void NetPlayDialog::OnRoomClosed()
   // saves). May defer itself until emulation has fully stopped -- the mGBA
   // core rewrites the save at teardown, so anything done sooner is undone.
   XDNetplay::RestoreHostTeam(2);
+  // And retire the session's cosmetic battle-style state: drop the guest's
+  // stashed model, strip the generated "$OrreLink Battle Style" block from the
+  // local GXXE01.ini, and give the cheats flag back if the pre-start hook
+  // forced it on for a cosmetics-only session.
+  XDNetplay::BattleCustomizer::EndSession();
 }
 
 void NetPlayDialog::OnSubmitTeam()
@@ -924,6 +941,35 @@ void NetPlayDialog::OnSubmitTeam()
   name_layout->addWidget(name_edit, 1);
   dialog_layout->addLayout(name_layout);
 
+  // Cosmetic trainer-model pick (battle style feature). It rides the same
+  // payload as the team, as a "Model:" header line, and the HOST validates it
+  // against its own copy of this table before assembling the synced AR block.
+  // "No preference" sends no header at all -- the host's "Guest model"
+  // fallback dropdown then decides. Entries past the separator are valid but
+  // untested in battle, and their labels say so.
+  auto* model_layout = new QHBoxLayout;
+  auto* model_combo = new QComboBox(&dialog);
+  model_combo->addItem(tr("No preference"), 0);
+  {
+    using XDNetplay::BattleCustomizer::Tier;
+    bool past_tested = false;
+    for (const XDNetplay::BattleCustomizer::StyleOption& option :
+         XDNetplay::BattleCustomizer::ModelTable())
+    {
+      if (!past_tested && option.tier == Tier::Experimental)
+      {
+        model_combo->insertSeparator(model_combo->count());
+        past_tested = true;
+      }
+      const QString name = QString::fromUtf8(option.name);
+      model_combo->addItem(
+          option.tier == Tier::Experimental ? tr("%1 (untested)").arg(name) : name, option.id);
+    }
+  }
+  model_layout->addWidget(new QLabel(tr("Trainer model:"), &dialog));
+  model_layout->addWidget(model_combo, 1);
+  dialog_layout->addLayout(model_layout);
+
   auto* team_edit = new QPlainTextEdit(&dialog);
   team_edit->setPlaceholderText(tr("Showdown export or pokepast.es link"));
   dialog_layout->addWidget(team_edit, 1);
@@ -954,13 +1000,22 @@ void NetPlayDialog::OnSubmitTeam()
         tr("That in-game name has no Gen 3 equivalent — sending the team without it."), "");
   }
 
+  // 0 is the "No preference" entry: BuildTeamSubmissionPayload emits no
+  // "Model:" header for nullopt, which is byte-identical to the pre-feature
+  // payload. Snapshot the value now -- the pokepaste path's deferred lambdas
+  // below run after this function (and the stack dialog) are gone, so they
+  // must capture the plain int, never the combo.
+  const int model_id = model_combo->currentData().toInt();
+  const std::optional<int> model =
+      model_id > 0 ? std::optional<int>(model_id) : std::nullopt;
+
   const QRegularExpression pokepaste_re(
       QStringLiteral("^https?://pokepast\\.es/[A-Za-z0-9]+"));
   const QRegularExpressionMatch match = pokepaste_re.match(text);
   if (!match.hasMatch())
   {
     Settings::Instance().GetNetPlayClient()->SendTeamSubmission(
-        XDNetplay::BuildTeamSubmissionPayload(text.toStdString(), trainer_name));
+        XDNetplay::BuildTeamSubmissionPayload(text.toStdString(), trainer_name, model));
     DisplayMessage(tr("Team sent to the host."), "");
     return;
   }
@@ -968,13 +1023,13 @@ void NetPlayDialog::OnSubmitTeam()
   const std::string url = match.captured(0).toStdString() + "/raw";
   DisplayMessage(tr("Fetching %1…").arg(match.captured(0)), "");
   QPointer<NetPlayDialog> self(this);
-  std::thread([self, url, trainer_name] {
+  std::thread([self, url, trainer_name, model] {
     Common::HttpRequest request;
     request.FollowRedirects();
     Common::HttpRequest::Response response = request.Get(url);
     if (!self)
       return;
-    QueueOnObject(self.data(), [self, trainer_name, response = std::move(response)] {
+    QueueOnObject(self.data(), [self, trainer_name, model, response = std::move(response)] {
       if (!self)
         return;
       if (!response)
@@ -985,7 +1040,7 @@ void NetPlayDialog::OnSubmitTeam()
       if (auto client = Settings::Instance().GetNetPlayClient())
       {
         client->SendTeamSubmission(XDNetplay::BuildTeamSubmissionPayload(
-            std::string(response->begin(), response->end()), trainer_name));
+            std::string(response->begin(), response->end()), trainer_name, model));
         self->DisplayMessage(tr("Team sent to the host."), "");
       }
     });
