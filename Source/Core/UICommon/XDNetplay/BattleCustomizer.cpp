@@ -21,6 +21,10 @@
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 
+#ifdef HAS_LIBMGBA
+#include "Core/HW/GBADetectLog.h"
+#endif
+
 namespace XDNetplay::BattleCustomizer
 {
 namespace
@@ -361,6 +365,18 @@ bool s_block_active = false;
 // (in netplay the game stopping does not mean the session is over).
 bool s_netplay_session = false;
 
+// Into the per-session GBA detect log -- the file testers already know how to
+// hand over. GBADetectLog only exists in mGBA builds (same guard TeamInjector's
+// cleanup line uses; an unguarded call here is a link error with USE_MGBA=OFF).
+void LogNote(const std::string& line)
+{
+#ifdef HAS_LIBMGBA
+  GBADetectLog::NoteBoot(line);
+#else
+  (void)line;
+#endif
+}
+
 std::string LocalIniPath()
 {
   return File::GetUserPath(D_GAMESETTINGS_IDX) + std::string(GAME_INI_NAME);
@@ -543,11 +559,16 @@ void BeginSession()
 
 void SetGuestModel(std::optional<int> id)
 {
-  std::lock_guard lock(s_mutex);
-  if (id && IsValidModelId(*id))
-    s_guest_model = *id;
-  else
-    s_guest_model.reset();  // no/invalid preference: the host fallback wins
+  {
+    std::lock_guard lock(s_mutex);
+    if (id && IsValidModelId(*id))
+      s_guest_model = *id;
+    else
+      s_guest_model.reset();  // no/invalid preference: the host fallback wins
+  }
+  LogNote(id && IsValidModelId(*id) ?
+              fmt::format("battlestyle guest submitted model={:#x}", *id) :
+              std::string{"battlestyle guest submitted no model preference"});
 }
 
 bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status)
@@ -572,6 +593,23 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status)
       sel.music > 0 ? std::optional<int>(sel.music) : std::nullopt,
       sel.venue > 0 ? std::optional<int>(sel.venue) : std::nullopt);
   const bool active = !block.empty();
+
+  // One line per regeneration so a tester's log says exactly what was picked
+  // and what it became -- "picked a venue, battle looked stock" is unanswerable
+  // without this. The AR lines themselves follow when a block exists.
+  {
+    const auto id_or = [](std::optional<int> v) { return v ? fmt::format("{:#x}", *v) : std::string{"default"}; };
+    LogNote(fmt::format(
+        "battlestyle sel host_model={} guest_model={}{} music={} venue={} -> block={} ou_disable={}",
+        id_or(sel.host_model > 0 ? std::optional<int>(sel.host_model) : std::nullopt),
+        id_or(guest_model), guest_submitted ? " (guest pick)" : "",
+        sel.music > 0 ? fmt::format("{}", sel.music) : std::string{"default"},
+        sel.venue > 0 ? fmt::format("{}", sel.venue) : std::string{"default"},
+        active ? "active" : "empty", active && !ou_enabled ? 1 : 0));
+    if (active)
+      for (const std::string& op : SplitString(block, '\n'))
+        LogNote(fmt::format("battlestyle ar {}", op));
+  }
 
   const std::string path = LocalIniPath();
   Common::IniFile ini;
@@ -701,7 +739,10 @@ void PrepareForStart()
   // something of ours is actually in it.
   static std::once_flag hook_once;
   std::call_once(hook_once, [] {
-    Core::AddOnStateChangedCallback([](Core::State state) {
+    // The handle is [[nodiscard]] and dropping it unregisters the hook -- a
+    // static keeps it alive for the process, same as TeamInjector's.
+    static Common::EventHook s_state_hook;
+    s_state_hook = Core::AddOnStateChangedCallback([](Core::State state) {
       if (state != Core::State::Uninitialized)
         return;
       {
@@ -736,6 +777,7 @@ void PrepareForStart()
     // RegenerateFromConfig above already saw the pre-force value (OU off) and
     // wrote the "$XD OU Fixes" local disable, so forcing afterwards is safe.
     Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, true);
+    LogNote("battlestyle cheats forced on for this session (OU stays disabled)");
   }
   else if (!active && forced)
   {
@@ -750,6 +792,7 @@ void PrepareForStart()
       s_cheats_forced = false;
     }
     Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, false);
+    LogNote("battlestyle block emptied; forced cheats handed back");
   }
 }
 
@@ -775,5 +818,11 @@ void EndSession()
     Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, false);
     Config::Save();
   }
+#ifdef HAS_LIBMGBA
+  // The session's log is closed by the time cleanup runs; append like the team
+  // purge does, so the same file also records that the block was taken out.
+  GBADetectLog::LogPostSession(
+      fmt::format("battlestyle cleanup done cheats_restored={}", forced ? 1 : 0));
+#endif
 }
 }  // namespace XDNetplay::BattleCustomizer
