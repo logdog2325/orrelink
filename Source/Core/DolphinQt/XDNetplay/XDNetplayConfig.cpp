@@ -29,6 +29,8 @@
 #include "Core/NetPlayProto.h"
 #include "Core/NetPlayServer.h"
 
+#include "UICommon/XDNetplay/BattleCustomizer.h"
+
 namespace XDNetplay
 {
 namespace
@@ -102,6 +104,13 @@ bool EnsureGbaConfig()
   // Cheats (the $XD OU Fixes code) are off by default now and governed by the
   // launcher's "OU rules ($XD OU Fixes)" toggle; don't force them on here.
 
+  // Session-boundary scrub for the cosmetic battle-style feature: remove any
+  // "$OrreLink Battle Style" block a crashed session left orphaned in the
+  // local GXXE01.ini, so stale cosmetics cannot leak into a solo boot or the
+  // next session. EnsureGbaConfig only runs from the launcher (never while a
+  // room is open), which is exactly the boundary BeginSession wants.
+  BattleCustomizer::BeginSession();
+
   // Netplay tuned for the XD link: fixed delay, no UPnP noise.
   //
   // The buffer is only re-seeded while automatic sizing is on, where 5 is just
@@ -151,6 +160,14 @@ void ApplyStartForcing(NetPlay::NetPlayServer* server)
   Config::SetBaseOrCurrent(Config::NETPLAY_SAVEDATA_LOAD, true);
   Config::SetBaseOrCurrent(Config::NETPLAY_HIDE_REMOTE_GBAS, true);
   Config::SetBaseOrCurrent(Config::NETPLAY_SYNC_CODES, true);
+
+  // Rebuild the "$OrreLink Battle Style" cosmetic AR block from the host's
+  // launcher selections plus the guest's submitted model, and force cheats on
+  // when (and only when) the block is non-empty so it actually loads and
+  // ships. Must run before the caller's RequestStartGame: that is what
+  // snapshots MAIN_ENABLE_CHEATS (SetupNetSettings) and re-reads the local
+  // GXXE01.ini off disk (SyncCodes).
+  BattleCustomizer::PrepareForStart();
 
   // SetGBAConfig(update_rom=true) reads MAIN_GBA_ROM_PATHS[1]/[2] to fill each
   // enabled slot's hash/title, which the guest hash-matches against its local

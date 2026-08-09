@@ -235,6 +235,18 @@ extern const Info<bool> MAIN_GBA_FULLBOOT_PRESENCE;
 static constexpr std::size_t GBPLAYER_GBA_INDEX = 4;
 #endif
 
+// Main.XDNetplay
+
+// The XD netplay launcher's cosmetic battle-style selections, assembled into
+// the "$OrreLink Battle Style" AR code by UICommon/XDNetplay/BattleCustomizer.
+// 0 = "Game default" = that selector contributes nothing. The values are the
+// ids of BattleCustomizer's Model/Music/Venue tables; anything not in the
+// tables is treated as default, never clamped.
+extern const Info<int> MAIN_XD_STYLE_HOST_MODEL;
+extern const Info<int> MAIN_XD_STYLE_GUEST_MODEL;  // fallback only; the guest's pick wins
+extern const Info<int> MAIN_XD_STYLE_MUSIC;
+extern const Info<int> MAIN_XD_STYLE_VENUE;
+
 // Main.Network
 
 extern const Info<bool> MAIN_NETWORK_SSL_DUMP_READ;

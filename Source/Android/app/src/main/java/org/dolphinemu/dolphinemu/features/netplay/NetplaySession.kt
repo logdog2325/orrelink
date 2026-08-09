@@ -177,9 +177,13 @@ class NetplaySession(
      * save's existing name alone. It rides along in the same message as the
      * team (see UICommon/XDNetplay/TeamInjector.h) and is clamped to seven
      * Gen 3 characters host-side.
+     *
+     * [modelId] is this player's cosmetic trainer-model pick, riding along as
+     * a "Model:" header in the same message; <= 0 means "no preference" (no
+     * header at all -- the host's fallback dropdown decides).
      */
-    fun submitTeam(showdownText: String, trainerName: String) =
-        nativeSubmitTeam(showdownText, trainerName)
+    fun submitTeam(showdownText: String, trainerName: String, modelId: Int) =
+        nativeSubmitTeam(showdownText, trainerName, modelId)
 
     /** Show a line in this player's own chat log; nothing is sent over the wire. */
     fun showLocalMessage(message: String) {
@@ -279,7 +283,7 @@ class NetplaySession(
 
     private external fun nativeSendMessage(message: String)
 
-    private external fun nativeSubmitTeam(showdownText: String, trainerName: String)
+    private external fun nativeSubmitTeam(showdownText: String, trainerName: String, modelId: Int)
 
     private external fun nativeSetHostInputAuthority(enable: Boolean)
 
