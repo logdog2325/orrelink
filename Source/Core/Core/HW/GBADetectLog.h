@@ -57,6 +57,13 @@ void LogJoybus(int channel, u64 tick, char dir, const u8* bytes, int len, bool s
 void LogSummary(int channel, u64 tick, bool rom, bool gba, bool loc, bool lk, u32 win, u32 rst,
                 u32 prb, bool est, bool lck, u8 cmd, u32 rd, u32 wr);
 
+// One line of pre-boot context (Battle Style selections, forced flags...).
+// These events happen BEFORE emulation starts, when no session file exists
+// yet: the line is queued (bounded) and flushed right under the banner of the
+// NEXT session's log, so the log that describes a battle also says what was
+// configured into it. With a session already open it is written immediately.
+void NoteBoot(const std::string& line);
+
 // Append one line AFTER the session's log has already been closed.
 //
 // OnDeviceDestroyed() closes the file as soon as the last GBA device is torn
