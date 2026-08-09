@@ -71,4 +71,14 @@ object BattleStyleBridge {
     private external fun nativeGetSelection(which: Int): Int
 
     private external fun nativeSetSelection(which: Int, id: Int)
+
+    /**
+     * Writes the Battle Style code block for a SOLO boot. Netplay hosting does
+     * this on its own inside nativeStartGame; the solo path bypasses that, so
+     * the launcher calls this right before launching emulation. With every
+     * selector on "Game default" it is a no-op.
+     */
+    fun prepareForBoot() = nativePrepareForBoot()
+
+    private external fun nativePrepareForBoot()
 }

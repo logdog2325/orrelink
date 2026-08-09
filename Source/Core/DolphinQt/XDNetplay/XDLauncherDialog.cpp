@@ -716,6 +716,10 @@ void XDLauncherDialog::OnBootSolo()
   }
 
   XDNetplay::EnsureGbaConfig();
+  // Battle Style applies to solo boots too -- the generator was originally
+  // wired only into the netplay host path, and the first field test ran solo,
+  // picked a model and a venue, and correctly concluded nothing worked.
+  XDNetplay::BattleCustomizer::PrepareForStart();
   emit BootXD(QString::fromStdString(game->GetFilePath()));
 }
 

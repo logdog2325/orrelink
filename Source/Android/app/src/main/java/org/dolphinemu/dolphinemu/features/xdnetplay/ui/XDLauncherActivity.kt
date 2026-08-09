@@ -290,6 +290,9 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
             statusMessage =
                 "Tip: a GBA links within seconds of entering the connect screen. " +
                 "If ~20s pass with nothing, press B and re-enter - each entry is a fresh try."
+            // Netplay hosting writes the Battle Style block in nativeStartGame;
+            // a solo boot has to do it here or picks silently apply to nothing.
+            BattleStyleBridge.prepareForBoot()
             EmulationActivity.launch(this, xd.getPath(), false)
         } else {
             statusMessage = "Pokémon XD not found — choose the folder with your ISO first."
