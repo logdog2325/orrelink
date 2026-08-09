@@ -31,8 +31,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import org.dolphinemu.dolphinemu.R
+import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
 
 @Composable
 fun XDLauncherScreen(
@@ -51,6 +54,17 @@ fun XDLauncherScreen(
     onBattle: () -> Unit,
     cheatsEnabled: Boolean,
     onCheatsChanged: (Boolean) -> Unit,
+    modelOptions: List<BattleStyleBridge.StyleOption>,
+    musicOptions: List<BattleStyleBridge.StyleOption>,
+    venueOptions: List<BattleStyleBridge.StyleOption>,
+    hostModelId: Int,
+    guestModelId: Int,
+    musicId: Int,
+    venueId: Int,
+    onHostModelChanged: (Int) -> Unit,
+    onGuestModelChanged: (Int) -> Unit,
+    onMusicChanged: (Int) -> Unit,
+    onVenueChanged: (Int) -> Unit,
     onSearchForMatch: () -> Unit,
     searching: Boolean,
     onFindBattles: () -> Unit,
@@ -136,6 +150,26 @@ fun XDLauncherScreen(
                     Switch(checked = cheatsEnabled, onCheckedChange = onCheatsChanged)
                 }
                 Spacer(Modifier.height(12.dp))
+                // Cosmetic battle-style selectors, host-side. The guest picks
+                // its OWN model in the room's Submit Team sheet; the "Guest
+                // model" dropdown here is only the fallback when they never do
+                // (mirroring the socket-3 team fallback). All of it is
+                // assembled into one synced AR code by shared core at Start —
+                // "Game default" means the code is genuinely absent.
+                BattleStyleCard(
+                    modelOptions = modelOptions,
+                    musicOptions = musicOptions,
+                    venueOptions = venueOptions,
+                    hostModelId = hostModelId,
+                    guestModelId = guestModelId,
+                    musicId = musicId,
+                    venueId = venueId,
+                    onHostModelChanged = onHostModelChanged,
+                    onGuestModelChanged = onGuestModelChanged,
+                    onMusicChanged = onMusicChanged,
+                    onVenueChanged = onVenueChanged
+                )
+                Spacer(Modifier.height(12.dp))
                 // The headline action: no codes to trade, no lobby to read.
                 // Joins whoever is already waiting, or becomes the room that
                 // the next person's search finds.
@@ -181,6 +215,72 @@ fun XDLauncherScreen(
                 }
             }
             Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun BattleStyleCard(
+    modelOptions: List<BattleStyleBridge.StyleOption>,
+    musicOptions: List<BattleStyleBridge.StyleOption>,
+    venueOptions: List<BattleStyleBridge.StyleOption>,
+    hostModelId: Int,
+    guestModelId: Int,
+    musicId: Int,
+    venueId: Int,
+    onHostModelChanged: (Int) -> Unit,
+    onGuestModelChanged: (Int) -> Unit,
+    onMusicChanged: (Int) -> Unit,
+    onVenueChanged: (Int) -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.xd_style_section_title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = stringResource(R.string.xd_style_section_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            BattleStyleDropdown(
+                label = stringResource(R.string.xd_style_your_model),
+                options = modelOptions,
+                selectedId = hostModelId,
+                defaultLabel = stringResource(R.string.xd_style_game_default),
+                onSelected = onHostModelChanged,
+                modifier = Modifier.fillMaxWidth()
+            )
+            BattleStyleDropdown(
+                label = stringResource(R.string.xd_style_guest_model),
+                options = modelOptions,
+                selectedId = guestModelId,
+                defaultLabel = stringResource(R.string.xd_style_game_default),
+                onSelected = onGuestModelChanged,
+                modifier = Modifier.fillMaxWidth(),
+                supportingText = stringResource(R.string.xd_style_guest_model_hint)
+            )
+            BattleStyleDropdown(
+                label = stringResource(R.string.xd_style_music),
+                options = musicOptions,
+                selectedId = musicId,
+                defaultLabel = stringResource(R.string.xd_style_game_default),
+                onSelected = onMusicChanged,
+                modifier = Modifier.fillMaxWidth()
+            )
+            BattleStyleDropdown(
+                label = stringResource(R.string.xd_style_venue),
+                options = venueOptions,
+                selectedId = venueId,
+                defaultLabel = stringResource(R.string.xd_style_game_default),
+                onSelected = onVenueChanged,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }

@@ -104,8 +104,10 @@ import org.dolphinemu.dolphinemu.features.netplay.model.NetworkMode
 import org.dolphinemu.dolphinemu.features.netplay.model.Player
 import org.dolphinemu.dolphinemu.features.netplay.model.SaveTransferProgress
 import org.dolphinemu.dolphinemu.features.netplay.model.TraversalState
+import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.EmeraldSave
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Text
+import org.dolphinemu.dolphinemu.features.xdnetplay.ui.BattleStyleDropdown
 import org.dolphinemu.dolphinemu.model.GameFile
 import org.dolphinemu.dolphinemu.ui.theme.DolphinScaffold
 import org.dolphinemu.dolphinemu.ui.theme.DolphinTheme
@@ -146,8 +148,9 @@ fun NetplayScreen(
     saveTransferProgress: SaveTransferProgress?,
     gameDigestProgress: GameDigestProgress?,
     joinAddresses: Map<JoinInfoType, JoinAddress>,
-    onSubmitTeam: (String, String) -> Unit,
+    onSubmitTeam: (String, String, Int) -> Unit,
     defaultTrainerName: String,
+    modelOptions: List<BattleStyleBridge.StyleOption>,
 ) {
     val scrollState = rememberScrollState()
     // XD Netplay: joiner's "Submit Team" paste sheet.
@@ -156,6 +159,10 @@ fun NetplayScreen(
     // In-game name, pre-filled with the netplay nickname (already cut down to
     // what a Gen 3 save can hold) so the common case is zero typing.
     var nameDraft by rememberSaveable { mutableStateOf(defaultTrainerName) }
+    // Cosmetic trainer-model pick, travelling as a "Model:" header in the same
+    // TeamData payload as the team. 0 = "No preference": no header is sent and
+    // the host's Guest-model fallback dropdown decides.
+    var modelDraft by rememberSaveable { mutableIntStateOf(0) }
     if (showSubmitTeam) {
         AlertDialog(
             title = { Text("Submit Team") },
@@ -179,6 +186,16 @@ fun NetplayScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(12.dp))
+                    BattleStyleDropdown(
+                        label = stringResource(R.string.xd_style_submit_model_label),
+                        options = modelOptions,
+                        selectedId = modelDraft,
+                        defaultLabel = stringResource(R.string.xd_style_no_preference),
+                        onSelected = { modelDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        supportingText = stringResource(R.string.xd_style_submit_model_hint)
+                    )
+                    Spacer(Modifier.height(12.dp))
                     OutlinedTextField(
                         value = teamDraft,
                         onValueChange = { teamDraft = it },
@@ -189,7 +206,7 @@ fun NetplayScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        onSubmitTeam(teamDraft.trim(), nameDraft.trim())
+                        onSubmitTeam(teamDraft.trim(), nameDraft.trim(), modelDraft)
                         showSubmitTeam = false
                     },
                     enabled = teamDraft.isNotBlank()
@@ -1480,8 +1497,9 @@ private fun PreviewNetplayScreen() {
             JoinInfoType.EXTERNAL to JoinAddress.Loaded("203.0.113.1:2626"),
             JoinInfoType.LOCAL to JoinAddress.Loaded("192.168.1.5:2626"),
         ),
-        onSubmitTeam = { _, _ -> },
+        onSubmitTeam = { _, _, _ -> },
         defaultTrainerName = "PLAYER",
+        modelOptions = emptyList(),
 //        saveTransferProgress = SaveTransferProgress(
 //            title = "Title",
 //            totalSize = 1024L,

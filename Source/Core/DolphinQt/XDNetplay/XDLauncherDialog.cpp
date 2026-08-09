@@ -7,6 +7,7 @@
 #include <initializer_list>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -15,6 +16,7 @@
 
 #include <QAbstractItemModel>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QFileDialog>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -45,6 +47,7 @@
 
 #include "UICommon/GameFile.h"
 #include "UICommon/NetPlayIndex.h"
+#include "UICommon/XDNetplay/BattleCustomizer.h"
 
 namespace
 {
@@ -212,6 +215,25 @@ std::optional<NetPlaySession> PickMatch(const std::vector<NetPlaySession>& sessi
   }
   return std::nullopt;
 }
+
+// Battlefield indices whose rooms are outdoor / cave / water rather than a
+// colosseum floor. Terrain is the one way the location pick is not purely
+// cosmetic: Nature Power's move, Camouflage's type and Secret Power's side
+// effect all resolve from it (and Secret Power is a common Gen 3 TM). Per the
+// venue research these entries get a suffix in their dropdown label -- no
+// separate warning dialog. Keep in sync with BattleCustomizer's VenueTable.
+constexpr int TERRAIN_VENUES[] = {5,  7,  10, 12, 14, 15, 16, 17, 19, 21, 22, 23, 39,
+                                  42, 44, 45, 49, 50, 53, 54, 55, 56, 57, 58, 59};
+
+bool VenueAltersTerrain(int id)
+{
+  for (const int terrain_id : TERRAIN_VENUES)
+  {
+    if (terrain_id == id)
+      return true;
+  }
+  return false;
+}
 }  // namespace
 
 XDLauncherDialog::XDLauncherDialog(const GameListModel& game_list_model, QWidget* parent)
@@ -285,6 +307,77 @@ void XDLauncherDialog::CreateMainLayout()
   battle_box->setLayout(battle_layout);
   layout->addWidget(battle_box);
 
+  // Battle Style: purely cosmetic picks the HOST makes. BattleCustomizer turns
+  // them into one synced AR code at Start, so both players always see the same
+  // thing; "Game default" genuinely emits nothing and an all-default session
+  // stays byte-for-byte stock. Entries after each list's separator are valid
+  // but untested in battle -- their labels say so; venues whose terrain
+  // changes a few moves carry that in the label too, no extra dialogs.
+  auto* style_box = new QGroupBox(tr("Battle Style"));
+  auto* style_layout = new QGridLayout;
+  int style_row = 0;
+  const auto add_style_combo = [&](const QString& label, const QString& tooltip) {
+    auto* description = new QLabel(label);
+    auto* combo = new QComboBox;
+    if (!tooltip.isEmpty())
+    {
+      description->setToolTip(tooltip);
+      combo->setToolTip(tooltip);
+    }
+    style_layout->addWidget(description, style_row, 0);
+    style_layout->addWidget(combo, style_row, 1);
+    style_row++;
+    return combo;
+  };
+  const auto populate_style_combo =
+      [this](QComboBox* combo, std::span<const XDNetplay::BattleCustomizer::StyleOption> table,
+             bool terrain_suffix) {
+        using XDNetplay::BattleCustomizer::Tier;
+        combo->addItem(tr("Game default"), 0);
+        bool past_tested = false;
+        for (const XDNetplay::BattleCustomizer::StyleOption& option : table)
+        {
+          // The tables list tested-safe entries first; the tier change is
+          // where the "here be dragons" separator goes.
+          if (!past_tested && option.tier == Tier::Experimental)
+          {
+            combo->insertSeparator(combo->count());
+            past_tested = true;
+          }
+          const QString name = QString::fromUtf8(option.name);
+          const bool untested = option.tier == Tier::Experimental;
+          const bool terrain = terrain_suffix && VenueAltersTerrain(option.id);
+          QString item;
+          if (untested && terrain)
+            item = tr("%1 (untested, alters Nature Power etc.)").arg(name);
+          else if (untested)
+            item = tr("%1 (untested)").arg(name);
+          else if (terrain)
+            item = tr("%1 (alters Nature Power etc.)").arg(name);
+          else
+            item = name;
+          combo->addItem(item, option.id);
+        }
+      };
+  m_style_host_model_combo = add_style_combo(
+      tr("Your model:"), tr("The trainer model you appear as. Applies when you host;\n"
+                            "both players see the same battle."));
+  m_style_guest_model_combo = add_style_combo(
+      tr("Guest model (used only if they don't pick):"),
+      tr("Fallback only: a model the guest picks when submitting\n"
+         "their team always wins over this."));
+  m_style_music_combo = add_style_combo(tr("Battle music:"), QString());
+  m_style_venue_combo = add_style_combo(
+      tr("Battle location:"), tr("Locations that alter Nature Power, Camouflage or Secret Power\n"
+                                 "say so in their name -- everything else is purely cosmetic."));
+  populate_style_combo(m_style_host_model_combo, XDNetplay::BattleCustomizer::ModelTable(), false);
+  populate_style_combo(m_style_guest_model_combo, XDNetplay::BattleCustomizer::ModelTable(), false);
+  populate_style_combo(m_style_music_combo, XDNetplay::BattleCustomizer::MusicTable(), false);
+  populate_style_combo(m_style_venue_combo, XDNetplay::BattleCustomizer::VenueTable(), true);
+  style_layout->setColumnStretch(1, 1);
+  style_box->setLayout(style_layout);
+  layout->addWidget(style_box);
+
   m_cheats_check = new QCheckBox(tr("Enable $XD OU Fixes cheat (OU format)"));
   m_cheats_check->setToolTip(
       tr("Off by default. When you HOST, this choice applies to both players.\n"
@@ -333,10 +426,26 @@ void XDLauncherDialog::ConnectWidgets()
     Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, checked);
     Config::Save();
   });
+
   connect(m_practice_dummy_check, &QCheckBox::toggled, this, [](bool checked) {
     Config::SetBaseOrCurrent(Config::MAIN_GBA_PRACTICE_DUMMY, checked);
     Config::Save();
   });
+
+  // Persist a Battle Style pick the moment it is made -- same idiom as the
+  // checkboxes above. Only the config key is written here: the AR block is
+  // assembled from these keys by BattleCustomizer's lifecycle hooks (start
+  // forcing / team submission), never from the launcher directly.
+  const auto connect_style_combo = [this](QComboBox* combo, const Config::Info<int>& setting) {
+    connect(combo, &QComboBox::currentIndexChanged, this, [combo, &setting](int index) {
+      Config::SetBaseOrCurrent(setting, combo->itemData(index).toInt());
+      Config::Save();
+    });
+  };
+  connect_style_combo(m_style_host_model_combo, Config::MAIN_XD_STYLE_HOST_MODEL);
+  connect_style_combo(m_style_guest_model_combo, Config::MAIN_XD_STYLE_GUEST_MODEL);
+  connect_style_combo(m_style_music_combo, Config::MAIN_XD_STYLE_MUSIC);
+  connect_style_combo(m_style_venue_combo, Config::MAIN_XD_STYLE_VENUE);
 
   connect(m_show_on_startup_check, &QCheckBox::toggled, this, [](bool checked) {
     Settings::GetQSettings().setValue(QStringLiteral("xdnetplay/showlauncheronstartup"), checked);
@@ -363,6 +472,19 @@ void XDLauncherDialog::showEvent(QShowEvent* event)
     const QSignalBlocker blocker(m_show_on_startup_check);
     m_show_on_startup_check->setChecked(ShowOnStartup());
   }
+  // Battle Style combos re-read their keys on every show. An id the tables no
+  // longer carry displays as "Game default" -- which is also exactly what
+  // BattleCustomizer will generate for it (invalid ids are treated as absent,
+  // never clamped), so the UI and the code block cannot disagree.
+  const auto refresh_style_combo = [](QComboBox* combo, const Config::Info<int>& setting) {
+    const QSignalBlocker blocker(combo);
+    const int index = combo->findData(Config::Get(setting));
+    combo->setCurrentIndex(index >= 0 ? index : 0);
+  };
+  refresh_style_combo(m_style_host_model_combo, Config::MAIN_XD_STYLE_HOST_MODEL);
+  refresh_style_combo(m_style_guest_model_combo, Config::MAIN_XD_STYLE_GUEST_MODEL);
+  refresh_style_combo(m_style_music_combo, Config::MAIN_XD_STYLE_MUSIC);
+  refresh_style_combo(m_style_venue_combo, Config::MAIN_XD_STYLE_VENUE);
   RefreshChecklist();
 }
 

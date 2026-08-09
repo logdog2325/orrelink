@@ -19,6 +19,8 @@ add_library(uicommon
   ResourcePack/ResourcePack.h
   UICommon.cpp
   UICommon.h
+  XDNetplay/BattleCustomizer.cpp
+  XDNetplay/BattleCustomizer.h
   XDNetplay/Gen3Data.cpp
   XDNetplay/Gen3Data.h
   XDNetplay/Gen3Mon.cpp
