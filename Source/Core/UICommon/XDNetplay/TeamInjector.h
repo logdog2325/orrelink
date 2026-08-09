@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 
 namespace XDNetplay
@@ -11,46 +12,71 @@ namespace XDNetplay
 // MessageID::TeamData payload format
 // ---------------------------------------------------------------------------
 //
-// The payload is still ONE string (no second message type). A submission that
-// carries an in-game trainer name prefixes the Showdown text with a header
-// line and a blank line:
+// The payload is still ONE string (no second message type). A submission may
+// prefix the Showdown text with a HEADER BLOCK: a run of "Key: value" lines
+// followed by one blank line:
 //
 //     Name: Logan\n
+//     Model: 43\n
 //     \n
 //     Blaziken @ Life Orb\n
 //     ...
 //
 // Rules, deliberately narrow so a Showdown export can never be mistaken for a
-// header:
-//  - the header is recognized ONLY at byte 0 of the payload, ONLY as the exact
-//    ASCII prefix "Name:" (case-sensitive), and ONLY when the line that
-//    follows it is blank. A Showdown set's first line is a species/nickname
-//    line and is never followed by a blank line, so a plain export cannot trip
-//    this.
-//  - everything after "Name:" up to the newline is the name (trimmed and
-//    sanitized host-side; see EmeraldSave::SanitizeTrainerName).
+// header block:
+//  - the block is recognized ONLY at byte 0 of the payload. Every line up to
+//    the first blank line must be a header line -- a key of the exact shape
+//    [A-Za-z][A-Za-z0-9_-]* immediately followed by ':' -- and that blank
+//    line must exist. If ANY line breaks the run, or the payload ends before
+//    a blank line, the WHOLE payload is team text (the pre-header behavior).
+//  - why an export cannot trip this: some real set lines do look like headers
+//    ("Type: Null @ Eviolite" -- Type: Null is a species -- and "Ability:"/
+//    "EVs:"/"IVs:" lines), but every playable set breaks the run before its
+//    blank line with a nature line ("Adamant Nature") or a move line
+//    ("- Protect"), neither of which fits the key shape. Only a degenerate
+//    set with no moves and no nature could be eaten, and that is not a
+//    playable set to begin with.
+//  - recognized keys, both case-sensitive:
+//      "Name"  -- in-game trainer name. Everything after the colon up to the
+//                 newline, trimmed and sanitized HOST-side (see
+//                 EmeraldSave::SanitizeTrainerName).
+//      "Model" -- the guest's cosmetic trainer-model pick for the battle
+//                 style feature, an integer in decimal or 0xHH hex. The value
+//                 is untrusted remote text: it is parsed here, but VALIDATED
+//                 by the host against BattleCustomizer's model table. Absent
+//                 or unparseable means "no preference" (the host's fallback
+//                 dropdown wins) and MUST NOT reject the team; an unknown id
+//                 is dropped, never clamped.
+//    Unknown keys are skipped harmlessly. Netplay refuses mismatched builds,
+//    so both ends of a session always speak the same grammar -- the skipping
+//    is robustness, not a compatibility channel.
 //  - anything after the blank line is the Showdown text, byte for byte.
 //
 // Backward compatibility, both directions:
-//  - a payload with no header parses as name = "" and the whole payload as
-//    Showdown text, which is exactly what pre-name clients send;
-//  - a pre-name HOST handed a header payload feeds the two extra lines to
-//    ShowdownParser, which skips them as unrecognized -- the team still lands,
-//    only the rename is lost.
+//  - a payload with no header block parses as name = "", no model, and the
+//    whole payload as Showdown text, which is exactly what pre-header clients
+//    send (the original "Name:"-only single-header grammar is a strict subset
+//    of this one, so those payloads parse identically);
+//  - a pre-header HOST handed a header payload feeds the extra lines to
+//    ShowdownParser, which skips them as unrecognized -- the team still
+//    lands, only the rename/model are lost.
 struct TeamSubmission
 {
-  std::string trainer_name;  // "" when the payload carried no header
+  std::string trainer_name;  // "" when the payload carried no Name header
+  std::optional<int> model;  // "Model:" header; nullopt = no preference
   std::string showdown_text;
 };
 
-// Joiner side: wrap showdown_text with the trainer-name header. An empty (or
-// whitespace-only) name produces a bare payload identical to the old format.
-// Newlines in the name are replaced with spaces so they cannot forge framing.
+// Joiner side: wrap showdown_text with the header block. An empty (or
+// whitespace-only) name and an absent model produce a bare payload identical
+// to the old format. Newlines in the name are replaced with spaces so they
+// cannot forge framing; a model without a value (or <= 0) emits no line.
 std::string BuildTeamSubmissionPayload(const std::string& showdown_text,
-                                       const std::string& trainer_name);
+                                       const std::string& trainer_name,
+                                       std::optional<int> model = std::nullopt);
 
-// Host side: split a received payload. Never fails -- an unparseable header is
-// simply treated as part of the team text.
+// Host side: split a received payload. Never fails -- an unparseable header
+// block is simply treated as part of the team text.
 TeamSubmission ParseTeamSubmissionPayload(const std::string& payload);
 
 // Writes a Showdown-format team into the GBA save the netplay host syncs to

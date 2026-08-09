@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -21,6 +22,7 @@
 #include "Common/FileUtil.h"
 #include "Common/HookableEvent.h"
 #include "Common/IOFile.h"
+#include "Common/StringUtil.h"
 
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
@@ -53,7 +55,59 @@ constexpr const char* BACKUP_SUFFIX = ".bak";
 constexpr const char* TMP_SUFFIX = ".tmp";
 
 // See TeamInjector.h for the payload grammar.
-constexpr std::string_view NAME_HEADER_PREFIX = "Name:";
+constexpr std::string_view NAME_HEADER_KEY = "Name";
+constexpr std::string_view MODEL_HEADER_KEY = "Model";
+// Headers are framing, not a payload channel: both value lines stay bounded.
+constexpr size_t MAX_NAME_LINE = 64;
+constexpr size_t MAX_MODEL_VALUE = 32;
+
+// A line containing only spaces/tabs/CR (or nothing) terminates the header
+// block. Same blank test the original single-header grammar used.
+bool IsBlankLine(std::string_view line)
+{
+  return line.find_first_not_of(" \t\r") == std::string_view::npos;
+}
+
+// Split "Key: value" where the key has the exact shape
+// [A-Za-z][A-Za-z0-9_-]* immediately followed by ':'. Returns false when the
+// line does not fit -- which, per the grammar, aborts the whole header block.
+bool SplitHeaderLine(std::string_view line, std::string_view* key, std::string_view* value)
+{
+  if (line.empty() || !Common::IsAlpha(line[0]))
+    return false;
+  size_t i = 1;
+  while (i < line.size() && (Common::IsAlnum(line[i]) || line[i] == '_' || line[i] == '-'))
+    ++i;
+  if (i >= line.size() || line[i] != ':')
+    return false;
+  *key = line.substr(0, i);
+  *value = line.substr(i + 1);
+  return true;
+}
+
+// "Model:" value: an integer, decimal or 0xHH hex. Untrusted remote text --
+// anything that does not parse cleanly is "no preference", never an error.
+std::optional<int> ParseModelValue(std::string_view value)
+{
+  value = StripWhitespace(value);
+  if (value.empty() || value.size() > MAX_MODEL_VALUE)
+    return std::nullopt;
+
+  int base = 10;
+  if (value.size() > 2 && value[0] == '0' && (value[1] == 'x' || value[1] == 'X'))
+  {
+    base = 16;
+    value.remove_prefix(2);
+  }
+
+  int result = 0;
+  const char* const first = value.data();
+  const char* const last = first + value.size();
+  const auto [ptr, ec] = std::from_chars(first, last, result, base);
+  if (ec != std::errc{} || ptr != last)
+    return std::nullopt;
+  return result;
+}
 
 // The save path netplay will read for this socket, or empty when the setup
 // isn't complete enough to have one.
@@ -240,9 +294,9 @@ bool ReadFileBytes(const std::string& path, std::vector<u8>* out)
 #endif
 
 std::string BuildTeamSubmissionPayload(const std::string& showdown_text,
-                                       const std::string& trainer_name)
+                                       const std::string& trainer_name, std::optional<int> model)
 {
-  // A newline in the name would forge a second header/blank line, so flatten
+  // A newline in the name would forge extra header/blank lines, so flatten
   // any line break to a space before it goes on the wire. The 7-character Gen 3
   // clamp is deliberately NOT applied here: the host sanitizes what it receives
   // and is the only side whose opinion counts.
@@ -251,54 +305,66 @@ std::string BuildTeamSubmissionPayload(const std::string& showdown_text,
   for (const char c : trainer_name)
     one_line.push_back(c == '\n' || c == '\r' ? ' ' : c);
 
-  // Keep the line bounded; the header is framing, not a payload channel.
-  constexpr size_t MAX_NAME_LINE = 64;
   if (one_line.size() > MAX_NAME_LINE)
     one_line.resize(MAX_NAME_LINE);
 
-  if (one_line.find_first_not_of(" \t") == std::string::npos)
+  std::string headers;
+  if (one_line.find_first_not_of(" \t") != std::string::npos)
+    headers += std::string(NAME_HEADER_KEY) + ": " + one_line + "\n";
+  // "Game default" (or anything nonsensical) means no Model line at all; the
+  // host's own fallback dropdown then decides.
+  if (model && *model > 0)
+    headers += std::string(MODEL_HEADER_KEY) + ": " + std::to_string(*model) + "\n";
+
+  if (headers.empty())
     return showdown_text;  // nothing to say -- emit the old bare format
 
-  return std::string(NAME_HEADER_PREFIX) + " " + one_line + "\n\n" + showdown_text;
+  return headers + "\n" + showdown_text;
 }
 
 TeamSubmission ParseTeamSubmissionPayload(const std::string& payload)
 {
   TeamSubmission out;
+  // Until a complete, blank-line-terminated header block proves otherwise,
+  // the whole payload is team text (the pre-header behavior).
+  out.showdown_text = payload;
 
-  // The header only counts at byte 0. Anything else is team text.
-  if (payload.compare(0, NAME_HEADER_PREFIX.size(), NAME_HEADER_PREFIX) != 0)
+  std::string name;
+  std::optional<int> model;
+  bool any_header = false;
+  size_t pos = 0;
+  while (pos < payload.size())
   {
-    out.showdown_text = payload;
-    return out;
-  }
-  const size_t eol = payload.find('\n');
-  if (eol == std::string::npos)
-  {
-    out.showdown_text = payload;
-    return out;
-  }
+    const size_t eol = payload.find('\n', pos);
+    if (eol == std::string::npos)
+      return out;  // payload ended before the blank line: no header block
+    const std::string_view line(payload.data() + pos, eol - pos);
 
-  // The header line must be followed by a blank line. That is what makes a
-  // Showdown export -- whose first line is always followed by more set lines --
-  // impossible to mistake for a header.
-  size_t rest = eol + 1;
-  size_t blank_end = rest;
-  while (blank_end < payload.size() && (payload[blank_end] == ' ' || payload[blank_end] == '\t' ||
-                                        payload[blank_end] == '\r'))
-  {
-    ++blank_end;
-  }
-  if (blank_end >= payload.size() || payload[blank_end] != '\n')
-  {
-    out.showdown_text = payload;
-    return out;
-  }
+    if (IsBlankLine(line))
+    {
+      if (!any_header)
+        return out;  // a blank FIRST line is not a header block
+      out.trainer_name = std::move(name);  // trimmed/sanitized by the caller
+      out.model = model;
+      out.showdown_text = payload.substr(eol + 1);
+      return out;
+    }
 
-  std::string name = payload.substr(NAME_HEADER_PREFIX.size(), eol - NAME_HEADER_PREFIX.size());
-  out.trainer_name = std::move(name);  // trimmed/sanitized by the caller
-  out.showdown_text = payload.substr(blank_end + 1);
-  return out;
+    std::string_view key;
+    std::string_view value;
+    if (!SplitHeaderLine(line, &key, &value))
+      return out;  // the run broke before a blank line: team text after all
+
+    // Recognized keys; unknown ones are skipped harmlessly (TeamInjector.h).
+    if (key == NAME_HEADER_KEY)
+      name = std::string(value);
+    else if (key == MODEL_HEADER_KEY)
+      model = ParseModelValue(value);
+
+    any_header = true;
+    pos = eol + 1;
+  }
+  return out;  // ran off the end without a blank line
 }
 
 bool InjectGuestTeam(const std::string& showdown_text, const std::string& trainer_name, int device,

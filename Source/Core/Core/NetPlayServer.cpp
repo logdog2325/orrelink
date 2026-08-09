@@ -1079,12 +1079,20 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     {
       result = "team rejected (too large)";
     }
-    else if (m_is_running)
+    else if (m_is_running || m_start_pending)
     {
       // Saves were read and synced when this battle started, and the host's
       // save file is now owned by the live mGBA core (which rewrites it from
       // its in-memory copy at shutdown), so a write here would be silently
       // discarded. Reject honestly instead of claiming a queue we don't have.
+      //
+      // m_start_pending closes the launch window too: RequestStartGame has
+      // already read the save AND the enabled-codes INIs (SyncSaveData /
+      // SyncCodes) but the game is not yet marked running while the chunks
+      // upload. A submission landing there would rewrite files the host boots
+      // from AFTER the guest's copies were taken -- the two machines would
+      // hold a different party and a different cosmetic AR block, the one way
+      // this message could ever cause a desync.
       result = "not applied - a battle is already running. Back out, then submit "
                "before the host starts the next one.";
     }
