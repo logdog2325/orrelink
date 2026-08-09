@@ -359,4 +359,15 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativeSetSel
   Config::Save();
 }
 
+JNIEXPORT void JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativePrepareForBoot(JNIEnv*,
+                                                                                         jobject)
+{
+  // Solo boot path: netplay hosting runs this from nativeStartGame, but a solo
+  // boot bypasses that entirely -- without this call a solo session never gets
+  // the Battle Style block at all (the first field test found exactly that).
+  // Cleanup rides the core-state hook PrepareForStart registers.
+  XDNetplay::BattleCustomizer::PrepareForStart();
+}
+
 }  // extern "C"
