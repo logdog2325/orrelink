@@ -19,6 +19,7 @@
 #include "Common/StringUtil.h"
 
 #include "Core/Config/MainSettings.h"
+#include "Core/Core.h"
 
 namespace XDNetplay::BattleCustomizer
 {
@@ -354,6 +355,11 @@ std::optional<int> s_guest_model;
 bool s_cheats_forced = false;
 // Whether the most recent RegenerateIni left a non-empty block in the file.
 bool s_block_active = false;
+// True between BeginSession and EndSession -- i.e. a netplay room owns the
+// lifecycle. A solo boot has no room, so its cleanup rides the emulation
+// state hook instead, and that hook must stand down while a room is open
+// (in netplay the game stopping does not mean the session is over).
+bool s_netplay_session = false;
 
 std::string LocalIniPath()
 {
@@ -529,6 +535,7 @@ void BeginSession()
     s_guest_model.reset();
     s_cheats_forced = false;
     s_block_active = false;
+    s_netplay_session = true;
   }
   // All-default = pure removal of anything a crashed session left behind.
   RegenerateIni(Selection{}, /*ou_enabled=*/true, nullptr);
@@ -685,6 +692,27 @@ bool RegenerateFromConfig(std::string* status)
 
 void PrepareForStart()
 {
+  // Solo boots have no room-closed event, so their cleanup rides the emulation
+  // state instead: when the core reaches Uninitialized outside a netplay
+  // session, the session is over by definition. Registered once, stands down
+  // while a room is open (there, stopping the game does not end the session --
+  // the room-closed path owns cleanup). Same once-flag idiom as TeamInjector's
+  // deferred purge, and EndSession is idempotent and only writes the INI when
+  // something of ours is actually in it.
+  static std::once_flag hook_once;
+  std::call_once(hook_once, [] {
+    Core::AddOnStateChangedCallback([](Core::State state) {
+      if (state != Core::State::Uninitialized)
+        return;
+      {
+        std::lock_guard lock(s_mutex);
+        if (s_netplay_session)
+          return;
+      }
+      EndSession();
+    });
+  });
+
   RegenerateFromConfig(nullptr);
 
   bool active;
@@ -733,6 +761,7 @@ void EndSession()
     s_guest_model.reset();
     forced = s_cheats_forced;
     s_cheats_forced = false;
+    s_netplay_session = false;
   }
   // Pure removal: with the stash cleared and an all-default selection this
   // strips the block, its enabled line and the OU-Fixes disable, leaving the
