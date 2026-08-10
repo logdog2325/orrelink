@@ -11,5 +11,5 @@ namespace XDNetplay
 // fork's release, so it cannot answer "which XD Netplay am I?" -- this constant is the only thing
 // that can. It MUST be bumped in the same patch that a release is tagged from: ship a tag ahead of
 // this string and every user of that release is told they are out of date forever.
-constexpr char VERSION[] = "1.2.1";
+constexpr char VERSION[] = "1.2.2";
 }  // namespace XDNetplay
