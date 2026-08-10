@@ -45,27 +45,59 @@ constexpr std::string_view GAME_INI_NAME = "GXXE01.ini";
 // AR line constants (all NTSC-U GXXE01; MEM1 addresses in the comments)
 // ---------------------------------------------------------------------------
 
-// Trainer model modifier. Source: Ralf's community-circulated XD trainer
-// modifier codes, gc-forever.com thread t=2150 page 3 (post p=55782; AR twin
-// thread t=2069) -- reconstructed from search-engine snippets, consistent
-// across three retrievals; eyeball the thread once before shipping. The model
-// id indexes the 0x44-entry trainer_pkx_data table at 0x8040CE88.
+// Trainer models, GBA-LINK PATH. Field-tested fact: Ralf's community model
+// modifier (li-r3 pins at 0x801FFEF0..0x801FFF00, 0x801FD4FC, 0x802262CC,
+// 0x801FFF84) does NOTHING in link battles -- those sites serve the story
+// (TID 0x1388) and deck-trainer paths. The link flow instead converts each
+// GBA save's game+gender to a virtual trainer id 0x1389..0x138E at handshake
+// (fn 0x80047884) and stores it as a u16 at +0 of fixed .bss per-side structs
+// (accessor 0x80047CEC: base 0x804299F8 + 0x18 + slot*0x1320). The battle
+// scene reads that u16 and maps it to a model through the switch at
+// 0x801FFE74. Derived by disassembly of a clean main.dol in this repo; the
+// runtime address math is calibrated by the venue writes, which target the
+// same battle records and visibly work on device.
 //
-// Player side: two NOPs take the game's own model selection out, then three
-// "li r3, <id>" sites pin the id at every fetch.
-constexpr u32 MODEL_P1_LINES[] = {
-    0x041FFEF4,  // 32-bit write: nop @ 0x801FFEF4
-    0x041FFEFC,  // 32-bit write: nop @ 0x801FFEFC
-    0x041FFF00,  // 32-bit write: li r3, id @ 0x801FFF00
-    0x041FD4FC,  // 32-bit write: li r3, id @ 0x801FD4FC
-    0x042262CC,  // 32-bit write: li r3, id @ 0x802262CC
+// Side mapping (slot0 = host under OrreLink's port order) is the one
+// unverified hop: if a device test shows the two sides swapped, swap the P1/P2
+// constants below -- nothing else changes.
+//
+// Tier 1 (any of the six GBA player models): pin the side's TID u16. 16-bit
+// writes ONLY, upper halfword zero -- it is a repeat count, and a nonzero one
+// would clobber the slot-ordinal u16 at struct+2.
+constexpr u32 MODEL_TID_P1_LINES[] = {
+    0x02429A10,  // 16-bit write: side-0 VS struct TID @ 0x80429A10 (A slot)
+    0x0242E690,  // 16-bit write: side-0 staging block @ 0x8042E690 (B slot, belt-and-braces
+                 // against the same-frame B->A memcpy at battle start, 0x8004D9E8)
 };
-// Opponent side surfaced as a single li site in the thread. If testing shows
-// the opponent model flickering or reverting mid-battle, the thread may hold
-// adjacent opponent-side NOPs the snippets omitted -- check near 0x801FFF84.
-constexpr u32 MODEL_P2_LINE = 0x041FFF84;  // 32-bit write: li r3, id @ 0x801FFF84
-constexpr u32 PPC_NOP = 0x60000000;        // nop
+constexpr u32 MODEL_TID_P2_LINES[] = {
+    0x0242AD30,  // 16-bit write: side-1 VS struct TID @ 0x8042AD30 (A slot)
+    0x0242F9B0,  // 16-bit write: side-1 staging block @ 0x8042F9B0 (B slot)
+};
+// Tier 2 (any model id): route the side through a known switch arm by TID,
+// then patch that arm's li. Original words verified in main.dol:
+// 0x801FFF60 = 38600005 (TID 0x138D -> Brendan Emerald), 0x801FFF68 =
+// 38600004 (TID 0x138E -> May Emerald).
+constexpr u16 TID_ARM_P1 = 0x138D;         // Emerald male arm, patched for host picks
+constexpr u16 TID_ARM_P2 = 0x138E;         // Emerald female arm, patched for guest picks
+constexpr u32 MODEL_ARM_P1_LINE = 0x041FFF60;  // 32-bit write: li r3, id @ 0x801FFF60
+constexpr u32 MODEL_ARM_P2_LINE = 0x041FFF68;  // 32-bit write: li r3, id @ 0x801FFF68
 constexpr u32 PPC_LI_R3 = 0x38600000;      // li r3, 0 -- the id occupies the low byte
+
+// Model id -> the virtual TID whose switch arm yields it natively (the six
+// GBA player models; everything else needs the Tier-2 arm patch).
+constexpr u16 GbaModelTid(int model_id)
+{
+  switch (model_id)
+  {
+  case 0x09: return 0x1389;  // Brendan (Ruby/Sapphire)
+  case 0x08: return 0x138A;  // May (Ruby/Sapphire)
+  case 0x07: return 0x138B;  // Red (FireRed/LeafGreen)
+  case 0x06: return 0x138C;  // Leaf (FireRed/LeafGreen)
+  case 0x05: return 0x138D;  // Brendan (Emerald)
+  case 0x04: return 0x138E;  // May (Emerald)
+  default: return 0;
+  }
+}
 
 // VS-mode battle music: pin the static staBGM_tunaide table in start.dol data
 // (three identical consecutive slots). VERIFIED against a clean GXXE01
@@ -108,71 +140,72 @@ constexpr u32 VENUE_LINES[] = {
 // Trainer models: every valid id in 0x01..0x43 except 0x0A. 0x00 ("none") and
 // 0x0A ("noTrainer") have no model file (expect invisible trainer or hang) and
 // ids >= 0x44 read past the model table -- all excluded by omission.
-// tested-safe = vanilla battling trainer, covered by Ralf's field-used
-// modifier codes; experimental = valid entry but a non-battling NPC (or
-// abnormal scale) in vanilla, battle animation set unverified.
+// tested-safe = the six GBA player models, served natively by the link flow's
+// TID switch (pure data pin); experimental = everything else -- reachable only
+// through the Tier-2 arm patch, and whether the link scene's people archive
+// can load these models at all is not yet device-verified.
 constexpr StyleOption MODELS[] = {
-    {0x01, "Michael (variant 1)", Tier::TestedSafe},
-    {0x02, "Michael (variant 2, Snag Machine)", Tier::TestedSafe},
-    {0x03, "Michael (variant 2)", Tier::TestedSafe},
+    {0x01, "Michael (variant 1)", Tier::Experimental},
+    {0x02, "Michael (variant 2, Snag Machine)", Tier::Experimental},
+    {0x03, "Michael (variant 2)", Tier::Experimental},
     {0x04, "May (Emerald)", Tier::TestedSafe},
     {0x05, "Brendan (Emerald)", Tier::TestedSafe},
     {0x06, "Leaf (FireRed/LeafGreen)", Tier::TestedSafe},
     {0x07, "Red (FireRed/LeafGreen)", Tier::TestedSafe},
     {0x08, "May (Ruby/Sapphire)", Tier::TestedSafe},
     {0x09, "Brendan (Ruby/Sapphire)", Tier::TestedSafe},
-    {0x0B, "Cipher Peon (female)", Tier::TestedSafe},
-    {0x0C, "Cipher Peon (male A)", Tier::TestedSafe},
-    {0x0D, "Cipher Peon (male B)", Tier::TestedSafe},
-    {0x0E, "Cipher Peon (male C)", Tier::TestedSafe},
-    {0x0F, "Resix (Hexagon Bros, red)", Tier::TestedSafe},
-    {0x10, "Blusix (Hexagon Bros, blue)", Tier::TestedSafe},
-    {0x11, "Browsix (Hexagon Bros, brown)", Tier::TestedSafe},
-    {0x12, "Yellosix (Hexagon Bros, yellow)", Tier::TestedSafe},
-    {0x13, "Purpsix (Hexagon Bros, purple)", Tier::TestedSafe},
-    {0x14, "Greesix (Hexagon Bros, green)", Tier::TestedSafe},
-    {0x15, "Cipher Admin Lovrina", Tier::TestedSafe},
-    {0x16, "Sailor", Tier::TestedSafe},
-    {0x17, "Thug Zook", Tier::TestedSafe},
-    {0x18, "Cipher Admin Ardos", Tier::TestedSafe},
-    {0x19, "Matron", Tier::TestedSafe},
-    {0x1A, "Grand Master Greevil", Tier::TestedSafe},
-    {0x1C, "Cipher Admin Eldes", Tier::TestedSafe},
-    {0x1D, "Cipher Admin Gorigan", Tier::TestedSafe},
-    {0x1E, "Snagem Head Gonzap", Tier::TestedSafe},
-    {0x1F, "Super Trainer (female A)", Tier::TestedSafe},
-    {0x20, "Super Trainer (female B)", Tier::TestedSafe},
-    {0x21, "Vander", Tier::TestedSafe},
-    {0x22, "Super Trainer (male B)", Tier::TestedSafe},
-    {0x23, "Super Trainer (male C)", Tier::TestedSafe},
-    {0x24, "Hunter", Tier::TestedSafe},
-    {0x25, "Beauty", Tier::TestedSafe},
-    {0x26, "Casual Dude", Tier::TestedSafe},
-    {0x27, "Fun Old Man", Tier::TestedSafe},
-    {0x28, "Curmudgeon", Tier::TestedSafe},
-    {0x2B, "Miror B.", Tier::TestedSafe},
-    {0x2C, "Bodybuilder (female)", Tier::TestedSafe},
-    {0x2D, "Bodybuilder (male)", Tier::TestedSafe},
-    {0x2E, "Mt. Battle Master Battlus", Tier::TestedSafe},
-    {0x2F, "Casual Guy", Tier::TestedSafe},
-    {0x30, "Researcher", Tier::TestedSafe},
-    {0x31, "Rider", Tier::TestedSafe},
-    {0x32, "Navigator", Tier::TestedSafe},
-    {0x33, "Pre Gym Leader Justy", Tier::TestedSafe},
-    {0x34, "Team Snagem Grunt (A)", Tier::TestedSafe},
-    {0x35, "Team Snagem Grunt (B)", Tier::TestedSafe},
-    {0x36, "Chobin", Tier::TestedSafe},
-    {0x37, "Chaser (female A)", Tier::TestedSafe},
-    {0x38, "Chaser (female B)", Tier::TestedSafe},
-    {0x39, "Chaser (male)", Tier::TestedSafe},
-    {0x3A, "Cail", Tier::TestedSafe},
-    {0x3B, "Cooltrainer (female)", Tier::TestedSafe},
-    {0x3C, "Cooltrainer (male)", Tier::TestedSafe},
-    {0x3D, "Cipher Admin Snattle", Tier::TestedSafe},
-    {0x3E, "Willie", Tier::TestedSafe},
-    {0x3F, "Worker", Tier::TestedSafe},
-    {0x42, "Michael (variant 3, Snag Machine)", Tier::TestedSafe},
-    {0x43, "Michael (variant 3)", Tier::TestedSafe},
+    {0x0B, "Cipher Peon (female)", Tier::Experimental},
+    {0x0C, "Cipher Peon (male A)", Tier::Experimental},
+    {0x0D, "Cipher Peon (male B)", Tier::Experimental},
+    {0x0E, "Cipher Peon (male C)", Tier::Experimental},
+    {0x0F, "Resix (Hexagon Bros, red)", Tier::Experimental},
+    {0x10, "Blusix (Hexagon Bros, blue)", Tier::Experimental},
+    {0x11, "Browsix (Hexagon Bros, brown)", Tier::Experimental},
+    {0x12, "Yellosix (Hexagon Bros, yellow)", Tier::Experimental},
+    {0x13, "Purpsix (Hexagon Bros, purple)", Tier::Experimental},
+    {0x14, "Greesix (Hexagon Bros, green)", Tier::Experimental},
+    {0x15, "Cipher Admin Lovrina", Tier::Experimental},
+    {0x16, "Sailor", Tier::Experimental},
+    {0x17, "Thug Zook", Tier::Experimental},
+    {0x18, "Cipher Admin Ardos", Tier::Experimental},
+    {0x19, "Matron", Tier::Experimental},
+    {0x1A, "Grand Master Greevil", Tier::Experimental},
+    {0x1C, "Cipher Admin Eldes", Tier::Experimental},
+    {0x1D, "Cipher Admin Gorigan", Tier::Experimental},
+    {0x1E, "Snagem Head Gonzap", Tier::Experimental},
+    {0x1F, "Super Trainer (female A)", Tier::Experimental},
+    {0x20, "Super Trainer (female B)", Tier::Experimental},
+    {0x21, "Vander", Tier::Experimental},
+    {0x22, "Super Trainer (male B)", Tier::Experimental},
+    {0x23, "Super Trainer (male C)", Tier::Experimental},
+    {0x24, "Hunter", Tier::Experimental},
+    {0x25, "Beauty", Tier::Experimental},
+    {0x26, "Casual Dude", Tier::Experimental},
+    {0x27, "Fun Old Man", Tier::Experimental},
+    {0x28, "Curmudgeon", Tier::Experimental},
+    {0x2B, "Miror B.", Tier::Experimental},
+    {0x2C, "Bodybuilder (female)", Tier::Experimental},
+    {0x2D, "Bodybuilder (male)", Tier::Experimental},
+    {0x2E, "Mt. Battle Master Battlus", Tier::Experimental},
+    {0x2F, "Casual Guy", Tier::Experimental},
+    {0x30, "Researcher", Tier::Experimental},
+    {0x31, "Rider", Tier::Experimental},
+    {0x32, "Navigator", Tier::Experimental},
+    {0x33, "Pre Gym Leader Justy", Tier::Experimental},
+    {0x34, "Team Snagem Grunt (A)", Tier::Experimental},
+    {0x35, "Team Snagem Grunt (B)", Tier::Experimental},
+    {0x36, "Chobin", Tier::Experimental},
+    {0x37, "Chaser (female A)", Tier::Experimental},
+    {0x38, "Chaser (female B)", Tier::Experimental},
+    {0x39, "Chaser (male)", Tier::Experimental},
+    {0x3A, "Cail", Tier::Experimental},
+    {0x3B, "Cooltrainer (female)", Tier::Experimental},
+    {0x3C, "Cooltrainer (male)", Tier::Experimental},
+    {0x3D, "Cipher Admin Snattle", Tier::Experimental},
+    {0x3E, "Willie", Tier::Experimental},
+    {0x3F, "Worker", Tier::Experimental},
+    {0x42, "Michael (variant 3, Snag Machine)", Tier::Experimental},
+    {0x43, "Michael (variant 3)", Tier::Experimental},
     // Non-battling NPCs in vanilla XD (battle animation set unverified), plus
     // the giant-mech-scale Robo Groudon and the robed Greevil variant.
     {0x1B, "Newscaster", Tier::Experimental},
@@ -502,20 +535,30 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
   // are unconditional 04/02 writes, so nothing here can leak forward either.
   AppendLine(&block, 0x00000000, 0x40000000);
 
-  if (p1)
+  // Each side independently: a GBA player model is a pure TID pin (Tier 1);
+  // any other model routes the side through a fixed Emerald arm and patches
+  // that arm's li (Tier 2). When only ONE side takes the Tier-2 route, the
+  // other side's TID is pinned to its bundled-save natural value too, so a
+  // same-gender custom save cannot wander into the patched arm and wear the
+  // wrong model.
+  const bool p1_arm = p1 && GbaModelTid(*p1_model) == 0;
+  const bool p2_arm = p2 && GbaModelTid(*p2_model) == 0;
+  if (p1 || p2_arm)
   {
-    // nops first, then the pinned "li r3, id" sites (see MODEL_P1_LINES).
-    AppendLine(&block, MODEL_P1_LINES[0], PPC_NOP);
-    AppendLine(&block, MODEL_P1_LINES[1], PPC_NOP);
-    const u32 li = PPC_LI_R3 | (static_cast<u32>(*p1_model) & 0xFF);
-    AppendLine(&block, MODEL_P1_LINES[2], li);
-    AppendLine(&block, MODEL_P1_LINES[3], li);
-    AppendLine(&block, MODEL_P1_LINES[4], li);
+    const u16 tid = p1 ? (p1_arm ? TID_ARM_P1 : GbaModelTid(*p1_model)) : TID_ARM_P1;
+    for (const u32 addr : MODEL_TID_P1_LINES)
+      AppendLine(&block, addr, tid);
   }
-  if (p2)
+  if (p2 || p1_arm)
   {
-    AppendLine(&block, MODEL_P2_LINE, PPC_LI_R3 | (static_cast<u32>(*p2_model) & 0xFF));
+    const u16 tid = p2 ? (p2_arm ? TID_ARM_P2 : GbaModelTid(*p2_model)) : TID_ARM_P2;
+    for (const u32 addr : MODEL_TID_P2_LINES)
+      AppendLine(&block, addr, tid);
   }
+  if (p1_arm)
+    AppendLine(&block, MODEL_ARM_P1_LINE, PPC_LI_R3 | (static_cast<u32>(*p1_model) & 0xFF));
+  if (p2_arm)
+    AppendLine(&block, MODEL_ARM_P2_LINE, PPC_LI_R3 | (static_cast<u32>(*p2_model) & 0xFF));
   if (music)
   {
     // Three identical u32 slots (primary encoding; see MUSIC_LINES).
