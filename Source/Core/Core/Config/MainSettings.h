@@ -247,6 +247,13 @@ extern const Info<int> MAIN_XD_STYLE_GUEST_MODEL;  // fallback only; the guest's
 extern const Info<int> MAIN_XD_STYLE_MUSIC;
 extern const Info<int> MAIN_XD_STYLE_VENUE;
 
+// Display filename of the user save imported over a GBA socket's team save by
+// UICommon/XDNetplay/SaveImport; "" = the bundled team-editor save. Display
+// only: the authoritative "was imported" signal is SaveImport::HasImportBackup
+// (the on-disk .preimport backup), so a hand-deleted file cannot desync the UI.
+extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_2;  // GBA port 2 (device 1)
+extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_3;  // GBA port 3 (device 2)
+
 // Main.Network
 
 extern const Info<bool> MAIN_NETWORK_SSL_DUMP_READ;

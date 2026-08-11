@@ -16,10 +16,12 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.dolphinemu.dolphinemu.R
 import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.EmeraldSave
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Data
+import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Game
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Mon
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Text
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.MonFactory
@@ -99,7 +101,13 @@ class TeamEditorActivity : AppCompatActivity(), ThemeProvider {
             val loaded = repo.load(role)
             TeamEditorState(
                 role = role,
-                ready = true,
+                // An imported FireRed/LeafGreen save is usable for PLAY but not
+                // editable here (FRLG keeps the party at different offsets);
+                // the repo explains that in loaded.messages. Its lock message
+                // is self-contained, so the generic "set your ROM" setup hint
+                // would only mislead.
+                ready = loaded.editable,
+                setupHint = loaded.editable,
                 trainer = loaded.trainerLabel,
                 trainerName = loaded.trainerName,
                 party = loaded.party,
@@ -207,6 +215,12 @@ enum class TeamRole(val deviceNumber: Int, val label: String, val templateAsset:
 data class TeamEditorState(
     val role: TeamRole = TeamRole.HOST,
     val ready: Boolean = false,
+    /**
+     * Whether the not-ready panel should append the generic "set your Emerald
+     * ROM" setup hint. False when [messages] already fully explains the lock
+     * (e.g. an imported FRLG save), where that hint would be misleading.
+     */
+    val setupHint: Boolean = true,
     val trainer: String = "",
     /** Editable in-game trainer name; max [EmeraldSave.TRAINER_NAME_LEN] chars. */
     val trainerName: String = "",
@@ -222,7 +236,14 @@ class TeamRepo(private val context: Context) {
         val trainerLabel: String,
         val trainerName: String,
         val party: List<Gen3Mon>,
-        val messages: List<String>
+        val messages: List<String>,
+        /**
+         * False for an imported FireRed/LeafGreen save: it will be USED for
+         * play exactly as imported, but the editor must not touch it (FRLG
+         * stores the party at different offsets, so an Emerald-offset write
+         * would corrupt it). [messages] then carries the explanation.
+         */
+        val editable: Boolean = true
     )
 
     private val data: Gen3Data by lazy { Gen3Data.load(context) }
@@ -230,6 +251,14 @@ class TeamRepo(private val context: Context) {
 
     private var save: EmeraldSave? = null
     private var savePath: File? = null
+
+    /**
+     * Which Gen 3 game wrote the loaded save (an import can put a
+     * Ruby/Sapphire or FRLG save here). Ruby/Sapphire shares every section-0/1
+     * offset this editor touches, but its section-0 checksum length differs,
+     * so every checksum verify/re-stamp must go through this.
+     */
+    private var game: Gen3Game = Gen3Game.Emerald
     var party: MutableList<Gen3Mon> = mutableListOf()
         private set
 
@@ -263,7 +292,24 @@ class TeamRepo(private val context: Context) {
         }
 
         val parsed = EmeraldSave(bytes)
-        val mismatches = parsed.verifyAllChecksums()
+        game = EmeraldSave.detectGame(parsed)
+        if (game == Gen3Game.FireRedLeafGreen) {
+            // Never read (or later write) FRLG bytes through Emerald party
+            // offsets: drop the handle so saveToDisk/importShowdown fail
+            // closed on "No save loaded" even if the UI gate is bypassed.
+            save = null
+            party = mutableListOf()
+            return Loaded(
+                trainerLabel = "",
+                trainerName = "",
+                party = emptyList(),
+                messages = listOf(context.getString(R.string.xd_editor_frlg_locked)),
+                editable = false
+            )
+        }
+        // Game-aware verify: an imported Ruby/Sapphire save is fully valid
+        // against ITS table and must not show Emerald-table false warnings.
+        val mismatches = parsed.verifyAllChecksums(game)
         if (mismatches.isNotEmpty()) {
             messages += "Warning: ${mismatches.size} section checksum(s) invalid in source save"
         }
@@ -348,11 +394,19 @@ class TeamRepo(private val context: Context) {
         }
         return try {
             s.writeParty(party)
+            // setTrainerName/writeParty stamp sections 0/1 with the Emerald
+            // length table (they are Emerald/RS-only by construction, and RS
+            // section 1 is the same length). RS section 0 is SHORTER, so
+            // re-stamp both with the detected game's table — a no-op for
+            // Emerald, and the difference between a save Ruby/Sapphire accepts
+            // and one it silently rejects.
+            s.updateSectionChecksum(0, game)
+            s.updateSectionChecksum(1, game)
             val out = s.toBytes()
 
             // Independent verification of our own output before it touches disk.
             val reparsed = EmeraldSave(out)
-            val bad = reparsed.verifyAllChecksums()
+            val bad = reparsed.verifyAllChecksums(game)
             check(bad.isEmpty()) { "output failed checksum verification: $bad" }
             check(reparsed.readParty().filter { !it.isEmpty() }.size == party.size) {
                 "output party did not round-trip"

@@ -31,6 +31,8 @@ add_library(uicommon
   XDNetplay/Gen3Text.h
   XDNetplay/MonFactory.cpp
   XDNetplay/MonFactory.h
+  XDNetplay/SaveImport.cpp
+  XDNetplay/SaveImport.h
   XDNetplay/ShowdownParser.cpp
   XDNetplay/ShowdownParser.h
   XDNetplay/TeamInjector.cpp

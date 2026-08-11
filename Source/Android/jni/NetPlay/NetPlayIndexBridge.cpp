@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 // Android bridge for the NetPlay session index ("lobby server", NETPLAY_INDEX_URL,
-// default https://lobby.dolphin-emu.org), plus the two other small xdnetplay-package bridges
+// default https://lobby.dolphin-emu.org), plus the three other small xdnetplay-package bridges
 // that share this file: the XD Netplay release check (second extern "C" group; Kotlin
-// counterpart features/xdnetplay/UpdateCheckBridge) and the cosmetic battle-style selectors
-// (third group; Kotlin counterpart features/xdnetplay/BattleStyleBridge).
+// counterpart features/xdnetplay/UpdateCheckBridge), the cosmetic battle-style selectors
+// (third group; Kotlin counterpart features/xdnetplay/BattleStyleBridge), and the per-port
+// user-save import (fourth group; Kotlin counterpart features/xdnetplay/SaveImportBridge).
 //
 // Listing only. Publishing is deliberately NOT exposed here: Core's NetPlayServer
 // already owns a NetPlayIndex (NetPlayServer::m_index) and publishes automatically
@@ -46,6 +47,7 @@
 #include "Core/Config/MainSettings.h"
 #include "UICommon/NetPlayIndex.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
+#include "UICommon/XDNetplay/SaveImport.h"
 #include "UICommon/XDNetplay/UpdateCheck.h"
 #include "UICommon/XDNetplay/Version.h"
 
@@ -368,6 +370,50 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativePrepar
   // the Battle Style block at all (the first field test found exactly that).
   // Cleanup rides the core-state hook PrepareForStart registers.
   XDNetplay::BattleCustomizer::PrepareForStart();
+}
+
+// ---------------------------------------------------------------------------
+// Save-import bridge (Kotlin counterpart: features/xdnetplay/SaveImportBridge)
+// ---------------------------------------------------------------------------
+//
+// Opt-in import of a user's own Gen 3 save over a GBA socket's bundled
+// team-editor save. ALL of the logic lives in UICommon/XDNetplay/SaveImport,
+// shared verbatim with the desktop launcher: the validation (size, structure,
+// checksums, save-game vs port-ROM match), the refusals while emulation or a
+// hosted room owns the save, the once-only <save>.preimport backup, the
+// tmp/readback/rename write, and the per-port ImportedSave2/3 config
+// bookkeeping. This bridge only ferries a REAL file path in -- the Kotlin
+// side copies the SAF content:// pick to one first, exactly like the ROM
+// picker, because the core reads plain files -- and the user-displayable
+// outcome back.
+//
+// Outcome encoding (String[2], shared with SaveImportBridge.kt):
+//   [0] "1" success / "0" refusal
+//   [1] user-displayable message (import success/refusal text from the core;
+//       empty on a successful restore, where Kotlin shows its own string)
+// device is 1 (GBA port 2, your side) or 2 (GBA port 3, the guest slot),
+// matching TeamRole.deviceNumber and the desktop launcher.
+
+JNIEXPORT jobjectArray JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeImportUserSave(
+    JNIEnv* env, jobject, jstring jsource_path, jint device)
+{
+  std::string status;
+  std::string error;
+  const bool ok =
+      XDNetplay::SaveImport::ImportUserSave(GetJString(env, jsource_path), device, &status, &error);
+  const std::vector<std::string> outcome{ok ? "1" : "0", ok ? status : error};
+  return SpanToJStringArray(env, outcome);
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeRestoreDefaultSave(
+    JNIEnv* env, jobject, jint device)
+{
+  std::string error;
+  const bool ok = XDNetplay::SaveImport::RestoreDefaultSave(device, &error);
+  const std::vector<std::string> outcome{ok ? "1" : "0", ok ? std::string{} : error};
+  return SpanToJStringArray(env, outcome);
 }
 
 }  // extern "C"
