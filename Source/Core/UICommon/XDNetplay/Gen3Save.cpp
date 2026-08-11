@@ -35,6 +35,90 @@ const std::array<u32, EmeraldSave::SECTIONS_PER_BLOCK> EmeraldSave::EMERALD_SECT
     2000,  // 13 PC buffer I
 };
 
+// Ruby/Sapphire and FireRed/LeafGreen checksum the same 14 sections over
+// different lengths. Each length is the sizeof() of that game's own save
+// struct chunk -- transcribed from the decomps' chunk tables
+// (pret/pokeruby src/save.c sSaveBlockChunks, pret/pokefirered src/save.c
+// sSaveSlotLayout: section 0 = SaveBlock2, 1..4 = SaveBlock1 split at 3968,
+// 5..13 = PokemonStorage) with the struct sizes as documented in PKHeX's
+// SAV3 buffers (0x890/0xC40 RS, 0xF24/0xEE8 FRLG, 0x83D0 storage for all).
+// Bytes past a section's length are zeroed by the game's write buffer, which
+// is why Emerald-length tools APPEAR to work on RS/FRLG saves; verifying
+// against the game's own stored checksums still needs the real lengths.
+const std::array<u32, EmeraldSave::SECTIONS_PER_BLOCK> EmeraldSave::RS_SECTION_DATA_LENGTHS = {
+    2192,  // 0  Trainer info (sizeof(SaveBlock2) = 0x890)
+    3968,  // 1  Team / items
+    3968,  // 2  Game state
+    3968,  // 3  Misc data
+    3136,  // 4  Rival info (SaveBlock1 = 0x3AC0 leaves 0xC40)
+    3968,  // 5  PC buffer A
+    3968,  // 6  PC buffer B
+    3968,  // 7  PC buffer C
+    3968,  // 8  PC buffer D
+    3968,  // 9  PC buffer E
+    3968,  // 10 PC buffer F
+    3968,  // 11 PC buffer G
+    3968,  // 12 PC buffer H
+    2000,  // 13 PC buffer I
+};
+
+const std::array<u32, EmeraldSave::SECTIONS_PER_BLOCK> EmeraldSave::FRLG_SECTION_DATA_LENGTHS = {
+    3876,  // 0  Trainer info (sizeof(SaveBlock2) = 0xF24)
+    3968,  // 1  Team / items
+    3968,  // 2  Game state
+    3968,  // 3  Misc data
+    3816,  // 4  Rival info (SaveBlock1 = 0x3D68 leaves 0xEE8)
+    3968,  // 5  PC buffer A
+    3968,  // 6  PC buffer B
+    3968,  // 7  PC buffer C
+    3968,  // 8  PC buffer D
+    3968,  // 9  PC buffer E
+    3968,  // 10 PC buffer F
+    3968,  // 11 PC buffer G
+    3968,  // 12 PC buffer H
+    2000,  // 13 PC buffer I
+};
+
+const std::array<u32, EmeraldSave::SECTIONS_PER_BLOCK>&
+EmeraldSave::SectionDataLengths(Gen3Game game)
+{
+  switch (game)
+  {
+  case Gen3Game::RubySapphire:
+    return RS_SECTION_DATA_LENGTHS;
+  case Gen3Game::FireRedLeafGreen:
+    return FRLG_SECTION_DATA_LENGTHS;
+  case Gen3Game::Emerald:
+  default:
+    return EMERALD_SECTION_DATA_LENGTHS;
+  }
+}
+
+const char* GameDisplayName(Gen3Game game)
+{
+  switch (game)
+  {
+  case Gen3Game::RubySapphire:
+    return "Ruby/Sapphire";
+  case Gen3Game::FireRedLeafGreen:
+    return "FireRed/LeafGreen";
+  case Gen3Game::Emerald:
+  default:
+    return "Emerald";
+  }
+}
+
+Gen3Game EmeraldSave::DetectGame(const EmeraldSave& save)
+{
+  const std::vector<u8> sec0 = save.SectionBytes(0);
+  const u32 code = ReadU32(sec0.data(), GAME_CODE_OFFSET);
+  if (code == 0)
+    return Gen3Game::RubySapphire;
+  if (code == 1)
+    return Gen3Game::FireRedLeafGreen;
+  return Gen3Game::Emerald;
+}
+
 u32 EmeraldSave::SectionChecksum(const u8* buf, size_t base, u32 data_length)
 {
   u32 total = 0;
@@ -133,8 +217,9 @@ std::vector<u8> EmeraldSave::SectionBytes(size_t section_id) const
   return std::vector<u8>(m_raw.begin() + off, m_raw.begin() + off + SECTION_SIZE);
 }
 
-std::vector<ChecksumMismatch> EmeraldSave::VerifyAllChecksums() const
+std::vector<ChecksumMismatch> EmeraldSave::VerifyAllChecksums(Gen3Game game) const
 {
+  const std::array<u32, SECTIONS_PER_BLOCK>& lengths = SectionDataLengths(game);
   std::vector<ChecksumMismatch> bad;
   for (int block = 0; block <= 1; block++)
   {
@@ -145,7 +230,7 @@ std::vector<ChecksumMismatch> EmeraldSave::VerifyAllChecksums() const
       const u32 stored = ReadU16(m_raw.data(), off + SECTION_FOOTER_OFFSET + 2);
       if (sid >= SECTIONS_PER_BLOCK)
         continue;
-      const u32 calc = SectionChecksum(m_raw.data(), off, EMERALD_SECTION_DATA_LENGTHS[sid]);
+      const u32 calc = SectionChecksum(m_raw.data(), off, lengths[sid]);
       if (calc != stored)
       {
         bad.push_back({block, static_cast<int>(slot), static_cast<int>(sid), stored, calc});
@@ -155,10 +240,10 @@ std::vector<ChecksumMismatch> EmeraldSave::VerifyAllChecksums() const
   return bad;
 }
 
-void EmeraldSave::UpdateSectionChecksum(size_t section_id)
+void EmeraldSave::UpdateSectionChecksum(size_t section_id, Gen3Game game)
 {
   const size_t off = m_section_offsets[section_id];
-  const u32 calc = SectionChecksum(m_raw.data(), off, EMERALD_SECTION_DATA_LENGTHS[section_id]);
+  const u32 calc = SectionChecksum(m_raw.data(), off, SectionDataLengths(game)[section_id]);
   WriteU16(m_raw.data(), off + SECTION_FOOTER_OFFSET + 2, calc);
 }
 
