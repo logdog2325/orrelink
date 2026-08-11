@@ -80,6 +80,22 @@ enum class StringSetting(
     MAIN_GBA_ROM_4(Settings.FILE_DOLPHIN, Settings.SECTION_INI_GBA, "Rom4", ""),
     MAIN_GB_PLAYER_ROM(Settings.FILE_DOLPHIN, Settings.SECTION_INI_GBA, "GBPlayerRom", ""),
     MAIN_GBA_SAVES_PATH(Settings.FILE_DOLPHIN, Settings.SECTION_INI_GBA, "SavesPath", ""),
+
+    // Display filename of the user save imported over a GBA socket's team save
+    // (see features/xdnetplay/gen3/SaveImport.kt); "" = the bundled
+    // team-editor save. Same keys as the C++ MAIN_XD_IMPORTED_SAVE_2/3.
+    MAIN_XD_IMPORTED_SAVE_2(
+        Settings.FILE_DOLPHIN,
+        Settings.SECTION_INI_XD_NETPLAY,
+        "ImportedSave2",
+        ""
+    ),
+    MAIN_XD_IMPORTED_SAVE_3(
+        Settings.FILE_DOLPHIN,
+        Settings.SECTION_INI_XD_NETPLAY,
+        "ImportedSave3",
+        ""
+    ),
     MAIN_TRIFORCE_IP_REDIRECTIONS(
         Settings.FILE_DOLPHIN,
         Settings.SECTION_INI_CORE,

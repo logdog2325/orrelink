@@ -60,9 +60,20 @@ private:
     QPushButton* fix_button = nullptr;
   };
 
+  // One GBA socket's row in the "Save Files" box: which save source is active
+  // (bundled team save vs a user import, plus game and trainer read from the
+  // file itself), an import picker and a restore-default action.
+  struct SaveSlotRow
+  {
+    QLabel* state = nullptr;
+    QPushButton* import_button = nullptr;
+    QPushButton* restore_button = nullptr;
+  };
+
   void CreateMainLayout();
   void ConnectWidgets();
   void RefreshChecklist();
+  void RefreshSaveSlots();
   void AutoDiscoverFromGameFolder();
 
   std::shared_ptr<const UICommon::GameFile> FindXdGame() const;
@@ -74,6 +85,11 @@ private:
   void OnFixTeamSaves();
   void OnFixVsSave();
   void OnGbaInputInfo();
+
+  // |device| is the GBA device number: 1 = port 2 (your side), 2 = port 3
+  // (the guest slot).
+  void OnImportSave(int device);
+  void OnRestoreDefaultSave(int device);
 
   void OnBootSolo();
   void OnHost();
@@ -96,6 +112,9 @@ private:
   ChecklistRow m_team_saves_row;
   ChecklistRow m_vs_save_row;
   ChecklistRow m_gba_input_row;
+
+  SaveSlotRow m_save_row_port2;
+  SaveSlotRow m_save_row_port3;
 
   // Battle Style: the host's cosmetic picks (own trainer model, guest-model
   // fallback, music, location), persisted in the MAIN_XD_STYLE_* keys and

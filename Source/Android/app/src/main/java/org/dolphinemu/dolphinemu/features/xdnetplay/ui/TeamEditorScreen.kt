@@ -99,10 +99,15 @@ fun TeamEditorScreen(
             if (!state.ready) {
                 SeaPanel(title = "SETUP NEEDED") {
                     state.messages.forEach { Text(it, color = XDColors.TextPrimary) }
-                    Text(
-                        "Set your Emerald ROM in Settings → GBA, then come back.",
-                        color = XDColors.TextDim
-                    )
+                    // Suppressed when the messages already fully explain the
+                    // lock (imported FRLG save): the ROM is configured fine
+                    // there, so this hint would point at the wrong fix.
+                    if (state.setupHint) {
+                        Text(
+                            "Set your Emerald ROM in Settings → GBA, then come back.",
+                            color = XDColors.TextDim
+                        )
+                    }
                 }
                 return@Column
             }

@@ -151,6 +151,9 @@ void TeamEditorDialog::ReloadForRole()
   m_save_path.clear();
   m_trainer_label->setText(QString());
   m_trainer_name_edit->clear();
+  // A previous load may have locked the controls (FRLG save); every reload
+  // starts from "editable" and re-decides below.
+  SetEditingEnabled(true);
 
   QStringList messages;
 
@@ -238,8 +241,38 @@ void TeamEditorDialog::ReloadForRole()
     RefreshPartyList();
     return;
   }
-  if (!parsed->VerifyAllChecksums().empty())
+
+  // A user-imported save can be any Gen 3 game (the launcher's import
+  // validates game-vs-ROM, not game-vs-editor). Verify with the detected
+  // game's own checksum table -- Ruby/Sapphire sizes some sections
+  // differently, and the Emerald table would cry wolf on a perfectly healthy
+  // RS save.
+  const Gen3Game game = EmeraldSave::DetectGame(*parsed);
+  if (!parsed->VerifyAllChecksums(game).empty())
     messages << tr("Warning: section checksum(s) invalid in the source save");
+
+  if (game == Gen3Game::FireRedLeafGreen)
+  {
+    // FRLG keeps its party at different section offsets, so Emerald-offset
+    // edits would land inside unrelated data and corrupt the save. It stays
+    // fully PLAYABLE (the import path allowed it on an FRLG ROM); it is only
+    // this editor that must keep its hands off. The trainer name lives at the
+    // same offset in every Gen 3 game, so showing it read-only is safe.
+    // m_save stays unset: even if a disabled control fired, every action
+    // bails on "No save loaded."
+    m_trainer_name_edit->setText(QString::fromStdString(parsed->GetTrainerName()));
+    std::string file_name = m_save_path;
+    SplitPath(m_save_path, nullptr, &file_name, nullptr);
+    m_trainer_label->setText(tr("Trainer ID %1  ·  %2.sav  ·  FireRed/LeafGreen")
+                                 .arg(parsed->GetTrainerPublicId())
+                                 .arg(QString::fromStdString(file_name)));
+    SetEditingEnabled(false);
+    SetMessages({tr("This is a FireRed/LeafGreen save. It will be used for play, but the Team "
+                    "Editor only edits Ruby/Sapphire/Emerald saves (FRLG stores the party "
+                    "elsewhere). Restore the default save to edit a team here.")});
+    RefreshPartyList();
+    return;
+  }
 
   auto party = parsed->ReadParty(&error);
   if (!party)
@@ -257,12 +290,22 @@ void TeamEditorDialog::ReloadForRole()
       m_party.push_back(std::move(mon));
   }
 
+  // Ruby/Sapphire stays editable alongside Emerald: the party and trainer
+  // fields this editor touches sit at the same section-0/1 offsets in both,
+  // and RS's section 1 checksums over the same length as Emerald's. (RS sizes
+  // section 0 shorter, but the game zero-fills the tail of every written
+  // sector, so the Emerald-length checksum the name edit writes computes to
+  // the same value -- and the verified-write re-check refuses the save rather
+  // than corrupt it should that assumption ever not hold.)
   std::string file_name = m_save_path;
   SplitPath(m_save_path, nullptr, &file_name, nullptr);
   m_trainer_name_edit->setText(QString::fromStdString(m_save->GetTrainerName()));
-  m_trainer_label->setText(tr("Trainer ID %1  ·  %2.sav")
-                               .arg(m_save->GetTrainerPublicId())
-                               .arg(QString::fromStdString(file_name)));
+  QString trainer_label = tr("Trainer ID %1  ·  %2.sav")
+                              .arg(m_save->GetTrainerPublicId())
+                              .arg(QString::fromStdString(file_name));
+  if (game == Gen3Game::RubySapphire)
+    trainer_label += tr("  ·  Ruby/Sapphire");
+  m_trainer_label->setText(trainer_label);
 #else
   messages << tr("GBA support (libmgba) is not compiled into this build.");
 #endif
@@ -291,6 +334,15 @@ void TeamEditorDialog::RefreshPartyList()
 void TeamEditorDialog::SetMessages(const QStringList& messages)
 {
   m_log_label->setText(messages.join(QStringLiteral("\n")));
+}
+
+void TeamEditorDialog::SetEditingEnabled(bool enabled)
+{
+  m_trainer_name_edit->setEnabled(enabled);
+  m_paste_edit->setEnabled(enabled);
+  m_import_button->setEnabled(enabled);
+  m_remove_button->setEnabled(enabled);
+  m_save_button->setEnabled(enabled);
 }
 
 void TeamEditorDialog::OnImport()
