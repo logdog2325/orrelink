@@ -24,6 +24,21 @@ struct ChecksumMismatch
   u32 calculated = 0;
 };
 
+// Which Gen 3 game wrote a save image. The block/section/footer layout is
+// identical across all five cartridges; what differs is the per-section
+// checksum length table and some section-interior offsets, so game-aware
+// callers pick behavior off this enum. EmeraldSave::DetectGame is the single
+// authoritative detector on every platform (mirrored in Gen3Save.kt).
+enum class Gen3Game
+{
+  RubySapphire,
+  FireRedLeafGreen,
+  Emerald,
+};
+
+// "Ruby/Sapphire" / "FireRed/LeafGreen" / "Emerald", for user-facing messages.
+const char* GameDisplayName(Gen3Game game);
+
 // Pokemon Emerald (Gen 3) save file: 131072 bytes of flash plus any trailing
 // bytes (e.g. the 16-byte mGBA RTC footer), which are preserved verbatim.
 //
@@ -60,11 +75,25 @@ public:
   static constexpr size_t TRAINER_NAME_FIELD_SIZE = TRAINER_NAME_LEN + 1;
   static constexpr size_t TRAINER_GENDER_OFFSET = 0x0008;
   static constexpr size_t TRAINER_ID_OFFSET = 0x000A;  // u32: low public, high secret
+  // u32 read by DetectGame: 0 in Ruby/Sapphire (the field is unused there),
+  // the constant 1 in FireRed/LeafGreen, and Emerald's security key -- an
+  // effectively random nonzero value -- otherwise. Same heuristic every Gen 3
+  // save tool uses; the bundled team saves carry 0xAA2F3199 / 0xCF0579AC.
+  static constexpr size_t GAME_CODE_OFFSET = 0x00AC;
 
   // Per-section valid data length used by the checksum (Emerald). Index =
   // logical section ID. Empirically confirmed: with these exact lengths every
   // section checksum in the test saves matches.
   static const std::array<u32, SECTIONS_PER_BLOCK> EMERALD_SECTION_DATA_LENGTHS;
+  // Ruby/Sapphire and FireRed/LeafGreen counterparts; see the transcription
+  // note in Gen3Save.cpp before trusting either table.
+  static const std::array<u32, SECTIONS_PER_BLOCK> RS_SECTION_DATA_LENGTHS;
+  static const std::array<u32, SECTIONS_PER_BLOCK> FRLG_SECTION_DATA_LENGTHS;
+  static const std::array<u32, SECTIONS_PER_BLOCK>& SectionDataLengths(Gen3Game game);
+
+  // THE authoritative game detector (see Gen3Game). The save must have been
+  // parsed by Create so section 0 is mapped.
+  static Gen3Game DetectGame(const EmeraldSave& save);
 
   // Parse a save image. Returns std::nullopt (with *error set, if given) when
   // the file is too small or no fully valid block exists.
@@ -87,10 +116,12 @@ public:
   std::vector<u8> SectionBytes(size_t section_id) const;
 
   // Check every section footer checksum in BOTH blocks. Returns the list of
-  // mismatches (empty when the file is fully consistent).
-  std::vector<ChecksumMismatch> VerifyAllChecksums() const;
+  // mismatches (empty when the file is fully consistent). Game-aware callers
+  // pass DetectGame's answer; the Emerald default keeps the bundled-save
+  // paths (and every pre-import caller) byte-identical in behavior.
+  std::vector<ChecksumMismatch> VerifyAllChecksums(Gen3Game game = Gen3Game::Emerald) const;
 
-  void UpdateSectionChecksum(size_t section_id);
+  void UpdateSectionChecksum(size_t section_id, Gen3Game game = Gen3Game::Emerald);
 
   // -- trainer info (logical section 0) --------------------------------------
 
