@@ -48,6 +48,8 @@
 #include "UICommon/GameFile.h"
 #include "UICommon/NetPlayIndex.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
+#include "UICommon/XDNetplay/Gen3Save.h"
+#include "UICommon/XDNetplay/SaveImport.h"
 
 namespace
 {
@@ -119,6 +121,22 @@ bool TeamSavesInstalled()
   return false;
 #endif
 }
+
+#ifdef HAS_LIBMGBA
+// The save file GBA socket |device| (1 = port 2, 2 = port 3) boots from, or
+// empty while no ROM is configured. Same ROM fallback as the team editor and
+// TeamInjector: the socket's own ROM, then the other socket's (a
+// launcher-made setup points both ports at one Emerald dump).
+std::string SaveSlotPath(int device)
+{
+  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device]);
+  if (rom.empty() || !File::Exists(rom))
+    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device == 1 ? 2 : 1]);
+  if (rom.empty() || !File::Exists(rom))
+    return {};
+  return HW::GBA::Core::GetSavePath(rom, device);
+}
+#endif
 
 bool VsSaveInstalled()
 {
@@ -272,6 +290,41 @@ void XDLauncherDialog::CreateMainLayout()
   checklist_box->setLayout(checklist_layout);
   layout->addWidget(checklist_box);
 
+  // Save Files: which Gen 3 save each GBA socket boots from. The bundled
+  // team-editor save stays the default; importing your own cartridge save is
+  // opt-in and per port (SaveImport does the validation and the no-destruction
+  // bookkeeping). The caption is a permanent fixture rather than a popup
+  // because it is the one fact every importer must know BEFORE picking a
+  // file: netplay syncs the HOST's saves, so a joiner's import never reaches
+  // the room -- joiners submit their team instead.
+  auto* saves_box = new QGroupBox(tr("Save Files"));
+  auto* saves_layout = new QGridLayout;
+  auto* saves_caption = new QLabel(
+      tr("Netplay rooms always use the HOST's saves. An imported save applies when you play solo "
+         "or host; when you join someone's room, use Submit Team instead."));
+  saves_caption->setWordWrap(true);
+  saves_layout->addWidget(saves_caption, 0, 0, 1, 4);
+  int save_row = 1;
+  const auto add_save_row = [&](SaveSlotRow* target, const QString& label) {
+    target->state = new QLabel;
+    target->state->setWordWrap(true);
+    target->import_button = new NonDefaultQPushButton(tr("Import my save..."));
+    target->restore_button = new NonDefaultQPushButton(tr("Restore default"));
+    target->restore_button->setToolTip(
+        tr("Puts the bundled team-editor save back. The replaced save is kept next to it as a "
+           ".bak file."));
+    saves_layout->addWidget(new QLabel(label), save_row, 0);
+    saves_layout->addWidget(target->state, save_row, 1);
+    saves_layout->addWidget(target->import_button, save_row, 2);
+    saves_layout->addWidget(target->restore_button, save_row, 3);
+    save_row++;
+  };
+  add_save_row(&m_save_row_port2, tr("Your save (GBA port 2):"));
+  add_save_row(&m_save_row_port3, tr("Guest-slot save (GBA port 3):"));
+  saves_layout->setColumnStretch(1, 1);
+  saves_box->setLayout(saves_layout);
+  layout->addWidget(saves_box);
+
   auto* battle_box = new QGroupBox(tr("Battle"));
   auto* battle_layout = new QGridLayout;
   m_boot_button = new NonDefaultQPushButton(tr("Boot Pokémon XD (solo)"));
@@ -415,6 +468,15 @@ void XDLauncherDialog::ConnectWidgets()
   connect(m_gba_input_row.fix_button, &QPushButton::clicked, this,
           &XDLauncherDialog::OnGbaInputInfo);
 
+  connect(m_save_row_port2.import_button, &QPushButton::clicked, this,
+          [this] { OnImportSave(1); });
+  connect(m_save_row_port3.import_button, &QPushButton::clicked, this,
+          [this] { OnImportSave(2); });
+  connect(m_save_row_port2.restore_button, &QPushButton::clicked, this,
+          [this] { OnRestoreDefaultSave(1); });
+  connect(m_save_row_port3.restore_button, &QPushButton::clicked, this,
+          [this] { OnRestoreDefaultSave(2); });
+
   connect(m_boot_button, &QPushButton::clicked, this, &XDLauncherDialog::OnBootSolo);
   connect(m_search_button, &QPushButton::clicked, this, &XDLauncherDialog::OnSearchForMatch);
   connect(m_host_button, &QPushButton::clicked, this, &XDLauncherDialog::OnHost);
@@ -516,6 +578,106 @@ void XDLauncherDialog::RefreshChecklist()
   m_gba_input_row.description->setText(
       input_mapped ? tr("GBA controls mapped (your GBA is \"GBA 1\" in Controllers)") :
                      tr("GBA controls not mapped — your GBA will not respond to input"));
+  RefreshSaveSlots();
+}
+
+void XDLauncherDialog::RefreshSaveSlots()
+{
+  const auto refresh_row = [](SaveSlotRow* row, int device,
+                              const Config::Info<std::string>& imported_key) {
+#ifdef HAS_LIBMGBA
+    // The config key only remembers the picked file's NAME for display; the
+    // authoritative "an import happened" signal is the .preimport backup, so
+    // the restore action also unlocks when the key was lost but the backup
+    // proves an import occurred.
+    const std::string imported_name = Config::Get(imported_key);
+    const std::string save_path = SaveSlotPath(device);
+
+    QString text;
+    if (save_path.empty())
+    {
+      text = tr("No GBA ROM configured yet");
+    }
+    else if (!File::Exists(save_path))
+    {
+      text = tr("Not installed yet — use the checklist's Install button");
+    }
+    else
+    {
+      text = imported_name.empty() ?
+                 tr("Team editor save (default)") :
+                 tr("Imported: %1").arg(QString::fromStdString(imported_name));
+      // Game and trainer come from the save file itself, so the row cannot
+      // disagree with what would actually boot. A parse failure (hand-edited
+      // file, mid-write crash) is worth surfacing here instead of hiding.
+      if (const auto save = XDNetplay::LoadSaveFile(save_path))
+      {
+        text += tr(" — %1, trainer %2")
+                    .arg(QString::fromUtf8(
+                        XDNetplay::GameDisplayName(XDNetplay::EmeraldSave::DetectGame(*save))))
+                    .arg(QString::fromStdString(save->GetTrainerName()));
+      }
+      else
+      {
+        text += tr(" — unreadable save file");
+      }
+    }
+    row->state->setText(text);
+    row->import_button->setEnabled(true);
+    row->restore_button->setEnabled(XDNetplay::SaveImport::HasImportBackup(device) ||
+                                    !imported_name.empty());
+#else
+    static_cast<void>(device);
+    static_cast<void>(imported_key);
+    row->state->setText(tr("GBA support (libmgba) is not compiled into this build"));
+    row->import_button->setEnabled(false);
+    row->restore_button->setEnabled(false);
+#endif
+  };
+  refresh_row(&m_save_row_port2, 1, Config::MAIN_XD_IMPORTED_SAVE_2);
+  refresh_row(&m_save_row_port3, 2, Config::MAIN_XD_IMPORTED_SAVE_3);
+}
+
+void XDLauncherDialog::OnImportSave(int device)
+{
+  const QString path =
+      QFileDialog::getOpenFileName(this, tr("Select a Gen 3 save file"), QString(),
+                                   tr("Gen 3 save files (*.sav *.sa2 *.srm);;All files (*)"));
+  if (path.isEmpty())
+    return;
+
+  // All validation (size, structure, checksums, save-game vs port-ROM match)
+  // and the no-destruction bookkeeping (.preimport backup, tmp/readback/
+  // rename) live in SaveImport; the picked file is only ever read. |error| and
+  // |status| arrive user-displayable, refusal reasons included.
+  std::string status;
+  std::string error;
+  if (!XDNetplay::SaveImport::ImportUserSave(path.toStdString(), device, &status, &error))
+  {
+    ModalMessageBox::warning(this, tr("OrreLink"), QString::fromStdString(error));
+  }
+  else
+  {
+    ModalMessageBox::information(this, tr("OrreLink"), QString::fromStdString(status));
+  }
+  RefreshChecklist();
+}
+
+void XDLauncherDialog::OnRestoreDefaultSave(int device)
+{
+  std::string error;
+  if (!XDNetplay::SaveImport::RestoreDefaultSave(device, &error))
+  {
+    ModalMessageBox::warning(this, tr("OrreLink"), QString::fromStdString(error));
+  }
+  else
+  {
+    ModalMessageBox::information(
+        this, tr("OrreLink"),
+        tr("The bundled team-editor save is back in place. If it replaced another save, that one "
+           "was kept next to it as a .bak file."));
+  }
+  RefreshChecklist();
 }
 
 void XDLauncherDialog::AutoDiscoverFromGameFolder()
