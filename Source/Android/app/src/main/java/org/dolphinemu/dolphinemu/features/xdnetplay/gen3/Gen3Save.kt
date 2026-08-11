@@ -53,6 +53,21 @@ data class ChecksumMismatch(
 )
 
 /**
+ * Which Gen 3 game wrote a save image. The block/section/footer layout is
+ * identical across all five cartridges; what differs is the per-section
+ * checksum length table and some section-interior offsets, so game-aware
+ * callers pick behavior off this enum. [EmeraldSave.detectGame] is the single
+ * authoritative detector on every platform (mirrors Gen3Save.cpp).
+ *
+ * [displayName] mirrors the C++ GameDisplayName(), for user-facing messages.
+ */
+enum class Gen3Game(val displayName: String) {
+    RubySapphire("Ruby/Sapphire"),
+    FireRedLeafGreen("FireRed/LeafGreen"),
+    Emerald("Emerald")
+}
+
+/**
  * Pokemon Emerald (Gen 3) save file: 131072 bytes of flash plus any trailing
  * bytes (e.g. the 16-byte mGBA RTC footer), which are preserved verbatim.
  *
@@ -163,7 +178,12 @@ class EmeraldSave(raw: ByteArray) {
      * Check every section footer checksum in BOTH blocks. Returns the list of
      * mismatches (empty when the file is fully consistent).
      */
-    fun verifyAllChecksums(): List<ChecksumMismatch> {
+    /**
+     * Game-aware callers pass [detectGame]'s answer; the Emerald default keeps
+     * the bundled-save paths (and every pre-import caller) unchanged.
+     */
+    fun verifyAllChecksums(game: Gen3Game = Gen3Game.Emerald): List<ChecksumMismatch> {
+        val lengths = sectionDataLengths(game)
         val bad = ArrayList<ChecksumMismatch>()
         for (block in 0..1) {
             for (slot in 0 until SECTIONS_PER_BLOCK) {
@@ -173,7 +193,7 @@ class EmeraldSave(raw: ByteArray) {
                 if (sid >= SECTIONS_PER_BLOCK) {
                     continue
                 }
-                val calc = sectionChecksum(raw, off, EMERALD_SECTION_DATA_LENGTHS[sid])
+                val calc = sectionChecksum(raw, off, lengths[sid])
                 if (calc != stored) {
                     bad.add(ChecksumMismatch(block, slot, sid, stored, calc))
                 }
@@ -182,9 +202,9 @@ class EmeraldSave(raw: ByteArray) {
         return bad
     }
 
-    fun updateSectionChecksum(sectionId: Int) {
+    fun updateSectionChecksum(sectionId: Int, game: Gen3Game = Gen3Game.Emerald) {
         val off = sectionOffsets[sectionId]
-        val calc = sectionChecksum(raw, off, EMERALD_SECTION_DATA_LENGTHS[sectionId])
+        val calc = sectionChecksum(raw, off, sectionDataLengths(game)[sectionId])
         Gen3Bytes.writeU16(raw, off + SECTION_FOOTER_OFFSET + 2, calc)
     }
 
@@ -305,6 +325,22 @@ class EmeraldSave(raw: ByteArray) {
         const val TRAINER_NAME_FIELD_SIZE = TRAINER_NAME_LEN + 1
         const val TRAINER_GENDER_OFFSET = 0x0008
         const val TRAINER_ID_OFFSET = 0x000A   // u32: low u16 public, high u16 secret
+        // u32 read by [detectGame]: 0 in Ruby/Sapphire (the field is unused
+        // there), the constant 1 in FireRed/LeafGreen, and Emerald's security
+        // key -- an effectively random nonzero value -- otherwise. Same
+        // heuristic every Gen 3 save tool uses; the bundled team saves carry
+        // 0xAA2F3199 / 0xCF0579AC.
+        const val GAME_CODE_OFFSET = 0x00AC
+
+        /** THE authoritative game detector (see [Gen3Game]). */
+        fun detectGame(save: EmeraldSave): Gen3Game {
+            val sec0 = save.sectionBytes(0)
+            return when (Gen3Bytes.readU32(sec0, GAME_CODE_OFFSET)) {
+                0 -> Gen3Game.RubySapphire
+                1 -> Gen3Game.FireRedLeafGreen
+                else -> Gen3Game.Emerald
+            }
+        }
 
         /**
          * Coerce arbitrary (possibly untrusted, possibly over-long) text into
@@ -343,6 +379,59 @@ class EmeraldSave(raw: ByteArray) {
             3968, // 12 PC buffer H
             2000  // 13 PC buffer I
         )
+
+        /**
+         * Ruby/Sapphire and FireRed/LeafGreen checksum the same 14 sections
+         * over different lengths. Each length is the sizeof() of that game's
+         * own save struct chunk -- transcribed from the decomps' chunk tables
+         * (pret/pokeruby src/save.c sSaveBlockChunks, pret/pokefirered
+         * src/save.c sSaveSlotLayout: section 0 = SaveBlock2, 1..4 = SaveBlock1
+         * split at 3968, 5..13 = PokemonStorage) with the struct sizes as
+         * documented in PKHeX's SAV3 buffers (0x890/0xC40 RS, 0xF24/0xEE8
+         * FRLG, 0x83D0 storage for all). Bytes past a section's length are
+         * zeroed by the game's write buffer, which is why Emerald-length tools
+         * APPEAR to work on RS/FRLG saves; verifying against the game's own
+         * stored checksums still needs the real lengths.
+         */
+        val RS_SECTION_DATA_LENGTHS = intArrayOf(
+            2192, // 0  Trainer info (sizeof(SaveBlock2) = 0x890)
+            3968, // 1  Team / items
+            3968, // 2  Game state
+            3968, // 3  Misc data
+            3136, // 4  Rival info (SaveBlock1 = 0x3AC0 leaves 0xC40)
+            3968, // 5  PC buffer A
+            3968, // 6  PC buffer B
+            3968, // 7  PC buffer C
+            3968, // 8  PC buffer D
+            3968, // 9  PC buffer E
+            3968, // 10 PC buffer F
+            3968, // 11 PC buffer G
+            3968, // 12 PC buffer H
+            2000  // 13 PC buffer I
+        )
+
+        val FRLG_SECTION_DATA_LENGTHS = intArrayOf(
+            3876, // 0  Trainer info (sizeof(SaveBlock2) = 0xF24)
+            3968, // 1  Team / items
+            3968, // 2  Game state
+            3968, // 3  Misc data
+            3816, // 4  Rival info (SaveBlock1 = 0x3D68 leaves 0xEE8)
+            3968, // 5  PC buffer A
+            3968, // 6  PC buffer B
+            3968, // 7  PC buffer C
+            3968, // 8  PC buffer D
+            3968, // 9  PC buffer E
+            3968, // 10 PC buffer F
+            3968, // 11 PC buffer G
+            3968, // 12 PC buffer H
+            2000  // 13 PC buffer I
+        )
+
+        fun sectionDataLengths(game: Gen3Game): IntArray = when (game) {
+            Gen3Game.RubySapphire -> RS_SECTION_DATA_LENGTHS
+            Gen3Game.FireRedLeafGreen -> FRLG_SECTION_DATA_LENGTHS
+            Gen3Game.Emerald -> EMERALD_SECTION_DATA_LENGTHS
+        }
 
         /**
          * Sum [dataLength] bytes starting at [base] as little-endian u32s

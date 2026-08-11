@@ -37,6 +37,19 @@ import androidx.compose.ui.unit.dp
 import org.dolphinemu.dolphinemu.R
 import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
 
+/**
+ * What the Save Files card shows for one GBA socket. Assembled by
+ * XDLauncherActivity.describeSaveSlot from the save file itself (game +
+ * trainer are parsed from disk, so the row cannot disagree with what would
+ * actually boot) plus the ImportedSave config key and the .preimport backup.
+ */
+data class SaveSlotUiState(
+    /** e.g. "Team editor save (default) — Emerald, trainer LOGAN". */
+    val stateText: String,
+    /** True once an import happened (backup exists or config key set). */
+    val restoreEnabled: Boolean
+)
+
 @Composable
 fun XDLauncherScreen(
     initialized: Boolean,
@@ -46,6 +59,12 @@ fun XDLauncherScreen(
     controllerMapped: Boolean,
     biosLinkReady: Boolean,
     statusMessage: String?,
+    saveSlotPort2: SaveSlotUiState?,
+    saveSlotPort3: SaveSlotUiState?,
+    saveFilesMessage: String?,
+    saveFilesMessageIsError: Boolean,
+    onImportSave: (Int) -> Unit,
+    onRestoreDefaultSave: (Int) -> Unit,
     onPickXdFolder: () -> Unit,
     onPickGbaBios: () -> Unit,
     onPickEmeraldRom: () -> Unit,
@@ -119,6 +138,15 @@ fun XDLauncherScreen(
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
+                Spacer(Modifier.height(12.dp))
+                SaveFilesCard(
+                    port2 = saveSlotPort2,
+                    port3 = saveSlotPort3,
+                    message = saveFilesMessage,
+                    messageIsError = saveFilesMessageIsError,
+                    onImport = onImportSave,
+                    onRestore = onRestoreDefaultSave
+                )
                 Spacer(Modifier.height(24.dp))
 
                 FilledTonalButton(
@@ -346,6 +374,115 @@ private fun ReadinessCard(
                 fixLabel = "",
                 onFix = null
             )
+        }
+    }
+}
+
+/**
+ * Which Gen 3 save each GBA socket boots from. The bundled team-editor save
+ * stays the default; importing your own cartridge save is opt-in and per port
+ * (the shared SaveImport core does the validation and the no-destruction
+ * bookkeeping — see SaveImportBridge). The caption is a permanent fixture
+ * rather than a popup because it is the one fact every importer must know
+ * BEFORE picking a file: netplay syncs the HOST's saves, so a joiner's import
+ * never reaches the room — joiners submit their team instead. Mirrors the
+ * desktop launcher's "Save Files" box (XDLauncherDialog).
+ */
+@Composable
+private fun SaveFilesCard(
+    port2: SaveSlotUiState?,
+    port3: SaveSlotUiState?,
+    message: String?,
+    messageIsError: Boolean,
+    onImport: (Int) -> Unit,
+    onRestore: (Int) -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.xd_saves_section_title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = stringResource(R.string.xd_saves_host_note),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            SaveSlotRow(
+                label = stringResource(R.string.xd_saves_port2_label),
+                state = port2,
+                deviceNumber = 1,
+                onImport = onImport,
+                onRestore = onRestore
+            )
+            SaveSlotRow(
+                label = stringResource(R.string.xd_saves_port3_label),
+                state = port3,
+                deviceNumber = 2,
+                onImport = onImport,
+                onRestore = onRestore
+            )
+            if (message != null) {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (messageIsError) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One GBA socket in the Save Files card: label, live state line, and the
+ * import/restore actions. [deviceNumber] is 1 (port 2) or 2 (port 3), the
+ * same numbering as TeamRole.deviceNumber and the shared core. Both buttons
+ * stay visible so the restore action is discoverable before any import; it
+ * only enables once an import actually happened.
+ */
+@Composable
+private fun SaveSlotRow(
+    label: String,
+    state: SaveSlotUiState?,
+    deviceNumber: Int,
+    onImport: (Int) -> Unit,
+    onRestore: (Int) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium
+        )
+        Text(
+            text = state?.stateText ?: "",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(
+                onClick = { onImport(deviceNumber) },
+                enabled = state != null,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+            ) {
+                Text(stringResource(R.string.xd_saves_import_button))
+            }
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                onClick = { onRestore(deviceNumber) },
+                enabled = state?.restoreEnabled == true,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+            ) {
+                Text(stringResource(R.string.xd_saves_restore_button))
+            }
         }
     }
 }

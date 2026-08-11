@@ -1127,4 +1127,28 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_style_experimental">Experimental</string>
     <string name="xd_style_submit_model_label">Trainer model</string>
     <string name="xd_style_submit_model_hint">Cosmetic — how you\'ll appear in the battle.</string>
+
+    <!-- XD Netplay launcher: per-GBA-port save import (Save Files card).
+         User-visible wording mirrors the desktop launcher's Save Files box
+         (DolphinQt XDLauncherDialog) verbatim; refusal/success messages come
+         from the shared core (UICommon/XDNetplay/SaveImport) and are not
+         duplicated here. -->
+    <string name="xd_saves_section_title">Save Files</string>
+    <string name="xd_saves_host_note">Netplay rooms always use the HOST\'s saves. An imported save applies when you play solo or host; when you join someone\'s room, use Submit Team instead.</string>
+    <string name="xd_saves_port2_label">Your save (GBA port 2)</string>
+    <string name="xd_saves_port3_label">Guest-slot save (GBA port 3)</string>
+    <string name="xd_saves_import_button">Import my save…</string>
+    <string name="xd_saves_restore_button">Restore default</string>
+    <string name="xd_saves_state_no_rom">No GBA ROM configured yet</string>
+    <string name="xd_saves_state_not_installed">Not installed yet — installs automatically once the Emerald ROM is set</string>
+    <string name="xd_saves_state_default">Team editor save (default)</string>
+    <string name="xd_saves_state_imported">Imported: %1$s</string>
+    <string name="xd_saves_state_game_trainer">" — %1$s, trainer %2$s"</string>
+    <string name="xd_saves_state_unreadable">" — unreadable save file"</string>
+    <string name="xd_saves_read_failed">Could not read the selected file — pick it again.</string>
+    <string name="xd_saves_restore_done">The bundled team-editor save is back in place. If it replaced another save, that one was kept next to it as a .bak file.</string>
+
+    <!-- Team editor gate for imported FireRed/LeafGreen saves: usable for
+         play, not editable (FRLG stores the party at different offsets). -->
+    <string name="xd_editor_frlg_locked">This is a FireRed/LeafGreen save. It will be used for play, but the Team Editor only edits Ruby/Sapphire/Emerald saves (FRLG stores the party elsewhere). Restore the default save to edit a team here.</string>
 </resources>

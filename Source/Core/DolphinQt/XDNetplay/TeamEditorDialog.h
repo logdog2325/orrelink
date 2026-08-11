@@ -49,6 +49,13 @@ private:
   void RefreshPartyList();
   void SetMessages(const QStringList& messages);
 
+  // Enable/disable everything that can modify the loaded save (name field,
+  // paste box, import/remove/save). Role switching and "Show save in folder"
+  // stay live either way. Used to make a FireRed/LeafGreen save -- playable,
+  // but laid out differently where the party lives -- read-only instead of
+  // silently corruptible.
+  void SetEditingEnabled(bool enabled);
+
   void OnImport();
   void ApplyImportText(const std::string& text);
   void OnRemoveSelected();
