@@ -421,13 +421,31 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
 
   // Stash the host's own team once per session, so it can be put back when the
   // room closes. Only the FIRST injection stashes: a second submission must not
-  // overwrite the stash with the first guest's team.
-  if (File::Exists(save_path) && !File::Exists(save_path + HOST_STASH_SUFFIX))
-    File::CopyRegularFile(save_path, save_path + HOST_STASH_SUFFIX);
+  // overwrite the stash with the first guest's team. A failed stash REFUSES the
+  // injection: proceeding would leave the cleanup's no-stash branch to scrub
+  // the host's save afterwards -- with a user-imported save in the slot, that
+  // is real data on the line, not just a template reseed.
+  if (File::Exists(save_path) && !File::Exists(save_path + HOST_STASH_SUFFIX) &&
+      !File::CopyRegularFile(save_path, save_path + HOST_STASH_SUFFIX))
+  {
+    return fail("could not back up the host's own team; submission not applied");
+  }
 
   auto save = EmeraldSave::Create(std::move(bytes), &error);
   if (!save)
     return fail(fmt::format("host save unreadable ({})", error));
+
+  // Team submission writes at Emerald section offsets. Ruby/Sapphire shares
+  // them (verified), FireRed/LeafGreen does NOT -- its party lives elsewhere in
+  // section 1, and because the section checksum lengths coincide, an Emerald-
+  // offset write into an FRLG save PASSES verification and then silently plays
+  // the host's FRLG party instead of the guest's submitted team. Refuse loudly
+  // instead; the status lands in the room chat.
+  if (EmeraldSave::DetectGame(*save) == Gen3Game::FireRedLeafGreen)
+  {
+    return fail("the guest slot holds a FireRed/LeafGreen save, which team submission cannot "
+                "write to -- restore the default team save to host with submissions");
+  }
 
   const std::vector<ShowdownSet> sets = ShowdownParser::ParseTeam(showdown_text);
   if (sets.empty())

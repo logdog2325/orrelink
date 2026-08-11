@@ -22,12 +22,14 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.dolphinemu.dolphinemu.R
 import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplayActivity
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplaySetupActivity
 import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
 import org.dolphinemu.dolphinemu.features.xdnetplay.LobbySession
 import org.dolphinemu.dolphinemu.features.xdnetplay.NetPlayIndexBridge
+import org.dolphinemu.dolphinemu.features.xdnetplay.SaveImportBridge
 import org.dolphinemu.dolphinemu.features.xdnetplay.XdMatchmaker
 import java.io.File
 import java.security.MessageDigest
@@ -35,6 +37,8 @@ import org.dolphinemu.dolphinemu.features.settings.model.BooleanSetting
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
 import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
+import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.EmeraldSave
+import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.SaveImport
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.SaveNaming
 import org.dolphinemu.dolphinemu.features.xdnetplay.input.AutoMapper
 import org.dolphinemu.dolphinemu.features.settings.ui.MenuTag
@@ -46,6 +50,7 @@ import org.dolphinemu.dolphinemu.ui.main.MainActivity
 import org.dolphinemu.dolphinemu.ui.main.ThemeProvider
 import org.dolphinemu.dolphinemu.ui.theme.DolphinTheme
 import org.dolphinemu.dolphinemu.utils.AfterDirectoryInitializationRunner
+import org.dolphinemu.dolphinemu.utils.ContentHandler
 import org.dolphinemu.dolphinemu.utils.DirectoryInitialization
 import org.dolphinemu.dolphinemu.utils.ThemeHelper
 
@@ -75,6 +80,14 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
 
     /** True from the moment "Search for Match" is tapped until it joins, hosts or gives up. */
     private var searching by mutableStateOf(false)
+
+    // Save Files card: which Gen 3 save each GBA socket boots from. State is
+    // re-derived from disk + config on every refreshChecks, mirroring the
+    // desktop launcher's RefreshSaveSlots.
+    private var saveSlotPort2 by mutableStateOf<SaveSlotUiState?>(null)
+    private var saveSlotPort3 by mutableStateOf<SaveSlotUiState?>(null)
+    private var saveFilesMessage by mutableStateOf<String?>(null)
+    private var saveFilesMessageIsError by mutableStateOf(false)
 
     /**
      * Reads a picked file (extracting the first ROM out of a zip if needed),
@@ -169,6 +182,82 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
             }
         }
 
+    // Per-port user-save import (Save Files card). One launcher per socket so
+    // the SAF callback knows which device it serves, copying the
+    // pickGbaBios/pickEmeraldRom idiom.
+    private val pickSaveFilePort2 =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) importUserSave(uri, SaveImportBridge.DEVICE_PORT_2)
+        }
+
+    private val pickSaveFilePort3 =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) importUserSave(uri, SaveImportBridge.DEVICE_PORT_3)
+        }
+
+    /**
+     * Runs the shared core's import for GBA socket [deviceNumber] on the
+     * picked document. The content:// stream is fully drained into memory and
+     * written to a REAL temp file first — the ROM-picker idiom — because the
+     * core reads plain files (content:// fds are not reliably seekable) and
+     * because a SAF stream can silently truncate: the core re-validates the
+     * byte count from the copy before anything touches the save slot. The
+     * temp file keeps the pick's display name, which is what the core records
+     * in the ImportedSave config key for the row's "Imported: X" label. All
+     * validation, refusal and no-destruction bookkeeping live in the core;
+     * every message shown here arrives user-displayable from it.
+     */
+    private fun importUserSave(uri: android.net.Uri, deviceNumber: Int) {
+        lifecycleScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                var temp: File? = null
+                try {
+                    val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: return@withContext SaveImportBridge.Outcome(
+                            false, getString(R.string.xd_saves_read_failed)
+                        )
+                    // Display name, made safe as a single path component.
+                    val name = (ContentHandler.getDisplayName(uri) ?: "imported.sav")
+                        .replace('/', '_').replace('\\', '_')
+                        .let { if (it.isBlank() || it == "." || it == "..") "imported.sav" else it }
+                    val dir = File(cacheDir, "xd_save_import").apply { mkdirs() }
+                    val tempFile = File(dir, name)
+                    temp = tempFile
+                    tempFile.writeBytes(bytes)
+                    SaveImportBridge.importUserSave(tempFile.absolutePath, deviceNumber)
+                } catch (e: Exception) {
+                    SaveImportBridge.Outcome(
+                        false, e.message ?: getString(R.string.xd_saves_read_failed)
+                    )
+                } finally {
+                    temp?.delete()
+                }
+            }
+            saveFilesMessage = outcome.message
+            saveFilesMessageIsError = !outcome.ok
+            refreshChecks()
+        }
+    }
+
+    /**
+     * Puts the bundled team-editor template back into socket [deviceNumber]'s
+     * save (shared core; replaced file kept as .bak, .preimport untouched).
+     */
+    private fun restoreDefaultSave(deviceNumber: Int) {
+        lifecycleScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                SaveImportBridge.restoreDefaultSave(deviceNumber)
+            }
+            saveFilesMessage = if (outcome.ok) {
+                getString(R.string.xd_saves_restore_done)
+            } else {
+                outcome.message
+            }
+            saveFilesMessageIsError = !outcome.ok
+            refreshChecks()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen().setKeepOnScreenCondition {
             !DirectoryInitialization.areDolphinDirectoriesReady()
@@ -198,6 +287,21 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     controllerMapped = controllerMapped,
                     biosLinkReady = biosLinkReady,
                     statusMessage = statusMessage,
+                    saveSlotPort2 = saveSlotPort2,
+                    saveSlotPort3 = saveSlotPort3,
+                    saveFilesMessage = saveFilesMessage,
+                    saveFilesMessageIsError = saveFilesMessageIsError,
+                    onImportSave = { device ->
+                        // The SAF picker has no useful MIME type for .sav files;
+                        // filter nothing and let the core's validation decide,
+                        // like the ROM and BIOS pickers do.
+                        if (device == SaveImportBridge.DEVICE_PORT_2) {
+                            pickSaveFilePort2.launch(arrayOf("*/*"))
+                        } else {
+                            pickSaveFilePort3.launch(arrayOf("*/*"))
+                        }
+                    },
+                    onRestoreDefaultSave = { device -> restoreDefaultSave(device) },
                     onPickXdFolder = { pickXdFolder.launch(null) },
                     onPickGbaBios = { pickGbaBios.launch(arrayOf("*/*")) },
                     onPickEmeraldRom = { pickEmeraldRom.launch(arrayOf("*/*")) },
@@ -451,6 +555,80 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
             false
         }
         biosLinkReady = checkOfficialBios()
+        refreshSaveSlots()
+    }
+
+    /** Mirror of the desktop launcher's RefreshSaveSlots for the Save Files card. */
+    private fun refreshSaveSlots() {
+        saveSlotPort2 = describeSaveSlot(
+            SaveImportBridge.DEVICE_PORT_2, StringSetting.MAIN_XD_IMPORTED_SAVE_2
+        )
+        saveSlotPort3 = describeSaveSlot(
+            SaveImportBridge.DEVICE_PORT_3, StringSetting.MAIN_XD_IMPORTED_SAVE_3
+        )
+    }
+
+    /**
+     * What the Save Files row for GBA socket [deviceNumber] should show. The
+     * ImportedSave config key only remembers the picked file's NAME for
+     * display; the authoritative "an import happened" signal is the .preimport
+     * backup (SaveImport.hasImportBackup), so the restore action also unlocks
+     * when the key was lost but the backup proves an import occurred. Game and
+     * trainer are parsed from the save file itself, so the row cannot disagree
+     * with what would actually boot.
+     */
+    private fun describeSaveSlot(deviceNumber: Int, importedKey: StringSetting): SaveSlotUiState {
+        // Same ROM resolution as the shared core (SaveImport/TeamInjector):
+        // the socket's own ROM, falling back to the other socket's.
+        val preferred = if (deviceNumber == SaveImportBridge.DEVICE_PORT_2) {
+            StringSetting.MAIN_GBA_ROM_2.string
+        } else {
+            StringSetting.MAIN_GBA_ROM_3.string
+        }
+        val fallback = if (deviceNumber == SaveImportBridge.DEVICE_PORT_2) {
+            StringSetting.MAIN_GBA_ROM_3.string
+        } else {
+            StringSetting.MAIN_GBA_ROM_2.string
+        }
+        val rom = listOf(preferred, fallback)
+            .firstOrNull { it.isNotEmpty() && File(it).exists() }
+            ?: return SaveSlotUiState(
+                stateText = getString(R.string.xd_saves_state_no_rom),
+                restoreEnabled = false
+            )
+
+        val savesDir = File(
+            DirectoryInitialization.getUserDirectory(),
+            "GBA" + File.separator + "Saves"
+        )
+        val save = File(SaveNaming.deriveSavePath(savesDir.path, rom, deviceNumber))
+        val importedName = importedKey.string
+        val restoreEnabled = SaveImport.hasImportBackup(save) || importedName.isNotEmpty()
+        if (!save.exists()) {
+            return SaveSlotUiState(
+                stateText = getString(R.string.xd_saves_state_not_installed),
+                restoreEnabled = restoreEnabled
+            )
+        }
+
+        var text = if (importedName.isEmpty()) {
+            getString(R.string.xd_saves_state_default)
+        } else {
+            getString(R.string.xd_saves_state_imported, importedName)
+        }
+        text += try {
+            val parsed = EmeraldSave(save.readBytes())
+            getString(
+                R.string.xd_saves_state_game_trainer,
+                EmeraldSave.detectGame(parsed).displayName,
+                parsed.trainerName
+            )
+        } catch (_: Exception) {
+            // A parse failure (hand-edited file, mid-write crash) is worth
+            // surfacing here instead of hiding.
+            getString(R.string.xd_saves_state_unreadable)
+        }
+        return SaveSlotUiState(stateText = text, restoreEnabled = restoreEnabled)
     }
 
     /**
