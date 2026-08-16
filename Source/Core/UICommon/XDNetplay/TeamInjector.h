@@ -5,6 +5,9 @@
 
 #include <optional>
 #include <string>
+#include <vector>
+
+#include "Common/CommonTypes.h"
 
 namespace XDNetplay
 {
@@ -47,6 +50,20 @@ namespace XDNetplay
 //                 or unparseable means "no preference" (the host's fallback
 //                 dropdown wins) and MUST NOT reject the team; an unknown id
 //                 is dropped, never clamped.
+//      "SaveBundle" -- base64 of a fixed-size party bundle extracted from the
+//                 guest's OWN save (PartyBundle.h documents the byte layout
+//                 and both endpoints). A payload is EITHER a bundle OR
+//                 Showdown text: a bundle payload is the SaveBundle header
+//                 (plus optionally Model), the blank line, and an EMPTY body.
+//                 The Name header is IGNORED for bundles -- the bundle's real
+//                 trainer name wins, because renaming would split the save's
+//                 trainer from the mons' OT copies and make the whole party
+//                 disobedient. Model remains meaningful: it rides as its own
+//                 header exactly as for Showdown submissions. The value is
+//                 untrusted remote text: it must base64-decode cleanly
+//                 (bounded, strict) to populate save_bundle below, and the
+//                 decoded bytes are then validated field-by-field host-side
+//                 (PartyBundle::Validate) before anything touches a save.
 //    Unknown keys are skipped harmlessly. Netplay refuses mismatched builds,
 //    so both ends of a session always speak the same grammar -- the skipping
 //    is robustness, not a compatibility channel.
@@ -65,6 +82,13 @@ struct TeamSubmission
   std::string trainer_name;  // "" when the payload carried no Name header
   std::optional<int> model;  // "Model:" header; nullopt = no preference
   std::string showdown_text;
+  // Decoded "SaveBundle:" bytes; nullopt when the payload carried no such
+  // header or its base64 was malformed. When set, this payload is a bundle
+  // submission: showdown_text is empty by construction and trainer_name is
+  // ignored (the bundle's own trainer identity wins). The bytes are decoded
+  // but NOT yet validated -- hand them to InjectGuestBundle, which runs
+  // PartyBundle::Validate before anything else.
+  std::optional<std::vector<u8>> save_bundle;
 };
 
 // Joiner side: wrap showdown_text with the header block. An empty (or
@@ -74,6 +98,14 @@ struct TeamSubmission
 std::string BuildTeamSubmissionPayload(const std::string& showdown_text,
                                        const std::string& trainer_name,
                                        std::optional<int> model = std::nullopt);
+
+// Joiner side, "Use my save": wrap a party bundle (PartyBundle::Extract's
+// output) as a bundle payload -- the SaveBundle header, an optional Model
+// header, the blank line, an empty body. No Name header is ever emitted: the
+// bundle's own trainer identity is authoritative. Base64 contains no newline,
+// so a bundle cannot forge framing.
+std::string BuildBundleSubmissionPayload(const std::vector<u8>& bundle,
+                                         std::optional<int> model = std::nullopt);
 
 // Host side: split a received payload. Never fails -- an unparseable header
 // block is simply treated as part of the team text.
@@ -105,6 +137,20 @@ TeamSubmission ParseTeamSubmissionPayload(const std::string& payload);
 // written, so both players can see it before the battle.
 bool InjectGuestTeam(const std::string& showdown_text, const std::string& trainer_name, int device,
                      std::string* status);
+
+// Host side, bundle counterpart of InjectGuestTeam: validate an untrusted
+// remote party bundle strictly (PartyBundle::Validate -- exact length, party
+// count 1..6, every mon through the existing checksum-verifying reader, name
+// field normalized), build the disposable save from the bundled EMERALD
+// template with the bundle's party AND trainer identity (PartyBundle::
+// BuildSave; no OT re-stamping -- see PartyBundle.h), and write it through
+// the same verified-write path. The .hostteam stash / .guestteam marker /
+// cleanup lifecycle is IDENTICAL to InjectGuestTeam's: from the lifecycle's
+// point of view the disposable save is just another injected guest team, and
+// RestoreHostTeam takes it back out the same way. Refuses when the guest
+// slot currently holds an FRLG save, for the same reason InjectGuestTeam
+// does: that socket's ROM cannot run the Emerald-template disposable save.
+bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* status);
 
 // End-of-session cleanup: give the host their own team back AND leave no file
 // on this machine holding the opponent's party. Call it whenever a room ends,

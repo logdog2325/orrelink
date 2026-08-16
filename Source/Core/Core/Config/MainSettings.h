@@ -254,6 +254,23 @@ extern const Info<int> MAIN_XD_STYLE_VENUE;
 extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_2;  // GBA port 2 (device 1)
 extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_3;  // GBA port 3 (device 2)
 
+// Guest Submit Team dialog persistence, so a joiner does not retype the team,
+// name and model every session: prefilled into the dialog on open, stored on
+// each successful submit, on both platforms (Android reads the same keys
+// through NativeConfig). The team text is stored as BASE64 of the UTF-8
+// Showdown export (XDNetplay::PartyBundle::Base64Encode/Decode) because the
+// export is multi-line and Dolphin's INI config layer is line-based -- a raw
+// newline in a value would corrupt the file. The other three are plain
+// values. USE_SAVE remembers whether "Use my save" (submit the party from the
+// player's own save as a bundle) was chosen last time; the name field is
+// ignored for bundle submissions (the save's real trainer name wins), and the
+// UI is expected to reflect that. The host-side Battle Style selections
+// persist separately via MAIN_XD_STYLE_* above.
+extern const Info<std::string> MAIN_XD_SUBMIT_TEAM_B64;
+extern const Info<std::string> MAIN_XD_SUBMIT_NAME;
+extern const Info<int> MAIN_XD_SUBMIT_MODEL;  // 0 = no preference
+extern const Info<bool> MAIN_XD_SUBMIT_USE_SAVE;
+
 // Main.Network
 
 extern const Info<bool> MAIN_NETWORK_SSL_DUMP_READ;

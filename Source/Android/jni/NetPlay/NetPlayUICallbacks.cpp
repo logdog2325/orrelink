@@ -187,8 +187,16 @@ std::string NetPlayUICallbacks::OnTeamSubmission(const std::string& player,
   XDNetplay::BattleCustomizer::SetGuestModel(submission.model);
   XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
 
+  // A payload is EITHER a party bundle (the guest's own save's team and
+  // trainer identity, validated strictly before anything is written) OR
+  // Showdown text; the Name header is ignored for bundles -- the bundle's
+  // real trainer name wins (TeamInjector.h).
   std::string status;
-  if (!XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status))
+  const bool applied =
+      submission.save_bundle ?
+          XDNetplay::InjectGuestBundle(*submission.save_bundle, 2, &status) :
+          XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status);
+  if (!applied)
     return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
   return status;
 }
