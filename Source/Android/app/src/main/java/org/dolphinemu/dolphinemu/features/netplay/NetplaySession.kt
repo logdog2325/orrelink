@@ -185,6 +185,23 @@ class NetplaySession(
     fun submitTeam(showdownText: String, trainerName: String, modelId: Int) =
         nativeSubmitTeam(showdownText, trainerName, modelId)
 
+    /**
+     * "Use my save": submit the party from this player's OWN local save (their
+     * imported or team-editor port-2 slot) instead of a Showdown paste. The
+     * native side reads the save, extracts the fixed-size party bundle -- the
+     * real mon bytes plus the save's real trainer identity, which is why no
+     * trainer-name parameter exists here (renaming would make the party
+     * disobedient; see UICommon/XDNetplay/PartyBundle.h) -- and sends it as a
+     * "SaveBundle:" TeamData payload the host validates strictly.
+     *
+     * [modelId] rides along exactly as for [submitTeam]; <= 0 means "no
+     * preference". Reads the save file, so call off the main thread.
+     *
+     * @return "" when the bundle was sent, else a user-displayable reason why
+     * nothing was sent (no save, empty party, FireRed/LeafGreen save, ...).
+     */
+    fun submitSaveBundle(modelId: Int): String = nativeSubmitSaveBundle(modelId)
+
     /** Show a line in this player's own chat log; nothing is sent over the wire. */
     fun showLocalMessage(message: String) {
         _chatMessages.tryEmit(message)
@@ -284,6 +301,8 @@ class NetplaySession(
     private external fun nativeSendMessage(message: String)
 
     private external fun nativeSubmitTeam(showdownText: String, trainerName: String, modelId: Int)
+
+    private external fun nativeSubmitSaveBundle(modelId: Int): String
 
     private external fun nativeSetHostInputAuthority(enable: Boolean)
 

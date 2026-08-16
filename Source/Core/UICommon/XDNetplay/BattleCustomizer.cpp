@@ -301,13 +301,20 @@ constexpr StyleOption MUSICS[] = {
     {1450, "Event Theme 1450", Tier::Experimental},
     {1469, "Event Theme 1469", Tier::Experimental},
     {1470, "Event Theme 1470", Tier::Experimental},
-    // The low-id block (unused/leftover streams).
+    // The low-id block (unused/leftover LOOPING STREAMS -- ids 1-6 are all
+    // classified as streams in the original archive research, re-checked
+    // 2026-08). Id 7 ("Shadow Event") is deliberately ABSENT: the research
+    // classified it as a sequenced-archive CONTAINER, the excluded class
+    // (sequenced/ME/jingle data, not a looping stream), and it slipped into
+    // this tier anyway; a field report confirmed picking it plays no music at
+    // all. Excluded by omission, exactly like the jingles. The re-check found
+    // no other excluded-class entries in the experimental tier: everything
+    // above is a looping stm_* / ev_* stream per the same classification.
     {1, "Snowfreak (unused)", Tier::Experimental},
     {2, "Shinpi (unused)", Tier::Experimental},
     {3, "Tretre (unused)", Tier::Experimental},
     {5, "Latin (unused)", Tier::Experimental},
     {6, "Keio Azuchi (unused)", Tier::Experimental},
-    {7, "Shadow Event (unused)", Tier::Experimental},
 };
 
 // Battle locations (battlefield-table indices). tested-safe = the retail VS
