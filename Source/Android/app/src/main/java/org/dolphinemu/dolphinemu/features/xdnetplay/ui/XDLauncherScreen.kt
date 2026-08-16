@@ -384,9 +384,10 @@ private fun ReadinessCard(
  * (the shared SaveImport core does the validation and the no-destruction
  * bookkeeping — see SaveImportBridge). The caption is a permanent fixture
  * rather than a popup because it is the one fact every importer must know
- * BEFORE picking a file: netplay syncs the HOST's saves, so a joiner's import
- * never reaches the room — joiners submit their team instead. Mirrors the
- * desktop launcher's "Save Files" box (XDLauncherDialog).
+ * BEFORE picking a file: netplay shares only a rebuilt save carrying the
+ * host's party and trainer identity (never the full import), and a joiner's
+ * import never reaches the room at all — joiners submit their team instead.
+ * Mirrors the desktop launcher's "Save Files" box (XDLauncherDialog).
  */
 @Composable
 private fun SaveFilesCard(

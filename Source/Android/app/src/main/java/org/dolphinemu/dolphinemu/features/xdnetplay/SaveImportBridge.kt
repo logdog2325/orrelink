@@ -36,6 +36,11 @@ object SaveImportBridge {
      * held is backed up once to `<save>.preimport`, which no cleanup path ever
      * deletes. On success [Outcome.message] carries the summary (game, trainer,
      * backup name, host-saves note); on refusal it says exactly why.
+     *
+     * Network side (shared core, DisposableSave): hosting a netplay session
+     * never syncs the imported file itself — the session runs on a rebuilt
+     * save carrying only the party and trainer identity, and the import
+     * returns when the room closes. Solo play uses the import as-is.
      */
     fun importUserSave(sourcePath: String, deviceNumber: Int): Outcome =
         parseOutcome(nativeImportUserSave(sourcePath, deviceNumber))

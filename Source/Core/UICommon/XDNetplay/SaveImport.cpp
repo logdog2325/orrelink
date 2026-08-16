@@ -7,6 +7,8 @@
 #include <string_view>
 #include <utility>
 
+#include "UICommon/XDNetplay/DisposableSave.h"
+
 #include <fmt/format.h>
 
 #include "Common/Config/Config.h"
@@ -154,14 +156,30 @@ bool RefuseIfSaveIsLive(int device, const std::string& save_path, std::string* e
     }
     return true;
   }
+  // No port may change hands while a room is open: a hosted room swapped every
+  // imported port to a disposable save at creation (DisposableSave.h), and an
+  // import landing NOW would bypass that swap -- the next Start would sync the
+  // complete file to the guest, the exact leak the disposable exists to close.
+  if (NetPlay::IsNetPlayRunning())
+  {
+    if (error)
+      *error = "A netplay room is open — close it first, then import.";
+    return true;
+  }
   return false;
 }
 
 // Requirement 5, appended to every success status: an import must never leave
-// a joiner believing their file reaches a host's room.
+// a joiner believing their file reaches a host's room -- and, since the
+// disposable-save fix (DisposableSave.h), never leave a HOST believing their
+// full save is shared either. The picked file itself is only ever read; what
+// a hosted session syncs is a rebuilt save carrying only party + trainer
+// identity.
 constexpr const char* HOST_SAVES_NOTE =
-    "Netplay rooms always use the HOST's saves. An imported save applies when you play solo or "
-    "host; when you join someone's room, use Submit Team instead.";
+    "Solo play uses your imported save exactly as it is. Hosting a netplay room does NOT share "
+    "the save file: the session runs on a rebuilt save carrying only your party and trainer "
+    "identity, and your own save returns when the room closes. When you join someone else's "
+    "room, use Submit Team instead.";
 
 constexpr const char* RS_REVISION_NOTE =
     "Note: Ruby/Sapphire revisions (1.0/1.1/1.2) also differ — use a save from your exact ROM "
@@ -285,6 +303,13 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
   if (RefuseIfSaveIsLive(device, save_path, error))
     return false;
 
+  // A crashed netplay session may have left the socket holding its disposable
+  // save with the real import stashed as <save>.netplayorig. Heal BEFORE
+  // writing: importing over the disposable now would otherwise be silently
+  // undone when the stash is restored at the next session boundary. Safe here:
+  // the refusals above guarantee no room is open and emulation is down.
+  DisposableSave::HealLeftoverSession();
+
   // The chosen file is read once, fully, and never opened for writing.
   std::vector<u8> bytes;
   if (!ReadFileBytes(source_path, &bytes))
@@ -371,6 +396,10 @@ bool RestoreDefaultSave(int device, std::string* error)
 
   if (RefuseIfSaveIsLive(device, save_path, error))
     return false;
+
+  // Same crashed-session heal as ImportUserSave, same reasoning: never write
+  // over a disposable that a leftover .netplayorig would later restore over.
+  DisposableSave::HealLeftoverSession();
 
   const std::string template_path =
       File::GetSysDirectory() +
