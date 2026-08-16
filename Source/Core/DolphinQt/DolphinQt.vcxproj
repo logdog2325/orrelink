@@ -16,6 +16,11 @@
     <Import Project="$(VSPropsDir)Base.Dolphin.props" />
     <Import Project="$(VSPropsDir)QtCompile.props" />
   </ImportGroup>
+  <PropertyGroup>
+    <!-- After Base.Dolphin.props, which sets TargetName to $(ProjectName): the
+         shipped executable is OrreLink.exe, not Dolphin.exe. -->
+    <TargetName>OrreLink</TargetName>
+  </PropertyGroup>
   <PropertyGroup Label="UserMacros" />
   <ItemDefinitionGroup>
     <ClCompile>

@@ -203,6 +203,18 @@ void TeamEditorDialog::ReloadForRole()
     RefreshPartyList();
     return;
   }
+  // The host's own slot locks while a room is open too. With an imported save,
+  // the file on disk is the privacy DISPOSABLE for the session's duration; an
+  // editor save here would write the full import back over it, and the next
+  // Start would sync exactly the file the disposable exists to keep off the
+  // wire. (Any edit would also be silently reverted by the room-close restore.)
+  if (Settings::Instance().GetNetPlayServer())
+  {
+    SetMessages({tr("The team editor is locked while a netplay room is open. Close the room to "
+                    "edit teams.")});
+    RefreshPartyList();
+    return;
+  }
 
   std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device]);
   if (rom.empty() || !File::Exists(rom))
@@ -514,10 +526,12 @@ void TeamEditorDialog::OnSave()
   // only reload). Writing the guest slot now would overwrite the opponent's
   // submitted party with whatever was loaded before they sent it -- and leave
   // a .bak of their team behind.
-  if (DeviceNumber() == 2 && Settings::Instance().GetNetPlayServer())
+  if (Settings::Instance().GetNetPlayServer())
   {
-    SetMessages({tr("NOT saved — the guest slot holds your opponent's team while you are "
-                    "hosting.")});
+    // Both ports: the guest slot may hold the opponent's submitted team, and
+    // the host slot holds the session's privacy disposable when the save is an
+    // import -- writing either mid-room is wrong in a different way.
+    SetMessages({tr("NOT saved — the team editor is locked while a netplay room is open.")});
     return;
   }
   // Name before party: WriteParty serializes the mons as they stand, and

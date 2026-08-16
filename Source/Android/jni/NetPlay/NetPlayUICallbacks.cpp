@@ -15,6 +15,7 @@
 #include "UICommon/GameFile.h"
 #include "UICommon/UICommon.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
+#include "UICommon/XDNetplay/DisposableSave.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 #include "jni/AndroidCommon/AndroidCommon.h"
 #include "jni/AndroidCommon/IDCache.h"
@@ -213,6 +214,14 @@ void NetPlayUICallbacks::OnRoomClosed()
   // local GXXE01.ini, and give the cheats flag back if the pre-start hook
   // forced it on for a cosmetics-only session.
   XDNetplay::BattleCustomizer::EndSession();
+  // Finally, give a hosting machine its imported saves back: the session ran
+  // on disposables (party + trainer identity only) that nativeHost swapped in
+  // so the full imports never entered the synced save path. MUST stay after
+  // RestoreHostTeam -- the ordering is what guarantees the outer import
+  // restore runs after the inner .hostteam restore on the same deferred-until-
+  // Uninitialized event (DisposableSave.h). Idempotent and harmless on joiners
+  // and non-imported hosts.
+  XDNetplay::DisposableSave::EndNetplaySession();
 }
 
 void NetPlayUICallbacks::OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,
