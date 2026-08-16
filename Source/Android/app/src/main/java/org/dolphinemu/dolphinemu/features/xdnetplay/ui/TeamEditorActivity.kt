@@ -85,13 +85,17 @@ class TeamEditorActivity : AppCompatActivity(), ThemeProvider {
         // save stays editable, and the end-of-session cleanup puts the host's team back in
         // socket 3, so this unlocks on its own when the room closes. Joiners are unaffected:
         // their local socket-3 save is their own team; netplay runs them from NetPlayTemp copies.
-        if (role == TeamRole.GUEST && NetplayManager.activeSession?.isHosting == true) {
+        if (NetplayManager.activeSession?.isHosting == true) {
+            // Both roles lock while a room is open: the guest slot may hold the opponent's
+            // submitted team, and the host slot holds the session's privacy DISPOSABLE when the
+            // save is an import — an editor save would write the full import back over it and
+            // the next Start would sync exactly the file the disposable keeps off the wire.
             uiState = TeamEditorState(
                 role = role,
                 ready = false,
                 messages = listOf(
-                    "The guest slot is hidden while you are hosting — it holds your opponent's " +
-                        "submitted team. Close the room to see your own team here again."
+                    "The team editor is locked while a netplay room is open. Close the room " +
+                        "to edit teams."
                 )
             )
             return
@@ -154,12 +158,12 @@ class TeamEditorActivity : AppCompatActivity(), ThemeProvider {
     // reload() covers opening it; this covers an editor that was already open on the guest slot
     // when the room started, and is reached again from the back stack.
     private fun guestSlotLocked() =
-        uiState.role == TeamRole.GUEST && NetplayManager.activeSession?.isHosting == true
+        NetplayManager.activeSession?.isHosting == true
 
     private fun saveTeam() {
         if (guestSlotLocked()) {
             uiState = uiState.copy(
-                messages = listOf("Not saved — the guest slot is your opponent's while you host")
+                messages = listOf("Not saved — the team editor is locked while a netplay room is open")
             )
             return
         }
