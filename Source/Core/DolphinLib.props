@@ -597,6 +597,7 @@
     <ClInclude Include="UICommon\ResourcePack\ResourcePack.h" />
     <ClInclude Include="UICommon\UICommon.h" />
     <ClInclude Include="UICommon\XDNetplay\BattleCustomizer.h" />
+    <ClInclude Include="UICommon\XDNetplay\DisposableSave.h" />
     <ClInclude Include="UICommon\XDNetplay\Gen3Data.h" />
     <ClInclude Include="UICommon\XDNetplay\Gen3Mon.h" />
     <ClInclude Include="UICommon\XDNetplay\Gen3Save.h" />
@@ -1312,6 +1313,7 @@
     <ClCompile Include="UICommon\ResourcePack\ResourcePack.cpp" />
     <ClCompile Include="UICommon\UICommon.cpp" />
     <ClCompile Include="UICommon\XDNetplay\BattleCustomizer.cpp" />
+    <ClCompile Include="UICommon\XDNetplay\DisposableSave.cpp" />
     <ClCompile Include="UICommon\XDNetplay\Gen3Data.cpp" />
     <ClCompile Include="UICommon\XDNetplay\Gen3Mon.cpp" />
     <ClCompile Include="UICommon\XDNetplay\Gen3Save.cpp" />

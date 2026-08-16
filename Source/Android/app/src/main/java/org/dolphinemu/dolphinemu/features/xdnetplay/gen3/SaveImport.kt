@@ -55,7 +55,7 @@ object SaveImport {
      * leave a joiner believing their file reaches a host's room.
      */
     private const val HOST_SAVES_NOTE =
-        "Netplay rooms always use the HOST's saves. An imported save applies when you play " +
+        "Solo play uses this save as-is. Hosting a netplay room shares only a rebuilt save carrying its party and trainer identity - never the full file." +
             "solo or host; when you join someone's room, use Submit Team instead."
 
     private const val RS_REVISION_NOTE =

@@ -1133,7 +1133,7 @@ It can efficiently compress both junk data and encrypted Wii data.
          from the shared core and are not duplicated here. -->
     <string name="xd_submit_use_save">Use my save</string>
     <string name="xd_submit_use_save_hint">Submit your save\'s party as-is, under your save\'s own trainer name and ID.</string>
-    <string name="xd_submit_privacy_note">Sending your save\'s party reveals its details — nicknames, OT, IDs — to the host\'s machine. (They battle you and see the party anyway.)</string>
+    <string name="xd_submit_privacy_note">Your save\'s party is sent exactly as it is, and the host\'s machine receives everything in those bytes: exact moves, held items, stats, EVs, IVs, natures, nicknames, met information, ribbons, and your OT name and BOTH trainer IDs, including the secret one. Your opponent would see most of this by battling you — but not the secret ID, so only send your save to hosts you trust.</string>
     <string name="xd_submit_name_ignored">Your save\'s real trainer name is used instead.</string>
 
     <!-- XD Netplay launcher: per-GBA-port save import (Save Files card).
@@ -1142,7 +1142,7 @@ It can efficiently compress both junk data and encrypted Wii data.
          from the shared core (UICommon/XDNetplay/SaveImport) and are not
          duplicated here. -->
     <string name="xd_saves_section_title">Save Files</string>
-    <string name="xd_saves_host_note">Netplay rooms always use the HOST\'s saves. An imported save applies when you play solo or host; when you join someone\'s room, use Submit Team instead.</string>
+    <string name="xd_saves_host_note">Solo play uses an imported save exactly as it is. Hosting a netplay room does NOT share the file: the session runs on a rebuilt save carrying only your party and trainer identity, and your own save returns when the room closes. When you join someone else\'s room, use Submit Team instead.</string>
     <string name="xd_saves_port2_label">Your save (GBA port 2)</string>
     <string name="xd_saves_port3_label">Guest-slot save (GBA port 3)</string>
     <string name="xd_saves_import_button">Import my save…</string>
