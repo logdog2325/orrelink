@@ -188,6 +188,15 @@ enum class IntSetting(
         Settings.SECTION_INI_NETPLAY,
         "BufferSize",
         5
+    ),
+
+    // Guest Submit Team sheet persistence: last cosmetic trainer-model pick
+    // (0 = no preference). Same key as the C++ MAIN_XD_SUBMIT_MODEL.
+    MAIN_XD_SUBMIT_MODEL(
+        Settings.FILE_DOLPHIN,
+        Settings.SECTION_INI_XD_NETPLAY,
+        "SubmitModel",
+        0
     );
 
     override val isOverridden: Boolean
