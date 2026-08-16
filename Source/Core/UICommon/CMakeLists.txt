@@ -21,6 +21,8 @@ add_library(uicommon
   UICommon.h
   XDNetplay/BattleCustomizer.cpp
   XDNetplay/BattleCustomizer.h
+  XDNetplay/DisposableSave.cpp
+  XDNetplay/DisposableSave.h
   XDNetplay/Gen3Data.cpp
   XDNetplay/Gen3Data.h
   XDNetplay/Gen3Mon.cpp

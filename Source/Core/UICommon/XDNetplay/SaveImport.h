@@ -13,7 +13,11 @@
 
 // Opt-in import of a user's own Gen 3 save into a GBA socket, replacing the
 // bundled team-editor save. Guarantees, in order of importance:
-//  - the file the user picked is only ever READ;
+//  - the file the user picked is only ever READ. (That is a statement about
+//    the LOCAL file only. What a hosted netplay session shares is governed by
+//    DisposableSave: the imported socket save itself never enters the synced
+//    save path -- a rebuilt party-and-identity save stands in for it, and the
+//    user-facing wording everywhere says so.);
 //  - whatever occupied the socket is backed up ONCE to <save>.preimport, a
 //    name no cleanup path (TeamInjector's purge included) ever deletes, and a
 //    re-import never overwrites that first backup;
