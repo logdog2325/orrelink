@@ -310,6 +310,19 @@ std::string EmeraldSave::SanitizeTrainerName(const std::string& name)
   return trimmed.substr(lead);
 }
 
+void EmeraldSave::SetTrainerIdentityRaw(const std::array<u8, TRAINER_NAME_FIELD_SIZE>& name_raw,
+                                        u8 gender, u32 trainer_id)
+{
+  const size_t base = m_section_offsets[0];
+  std::memcpy(m_raw.data() + base + TRAINER_NAME_OFFSET, name_raw.data(), name_raw.size());
+  // Byte 7 is the field's hard terminator; the games keep it 0xFF even for a
+  // full-length name (same rule SetTrainerName enforces).
+  m_raw[base + TRAINER_NAME_OFFSET + TRAINER_NAME_LEN] = Gen3Text::TERMINATOR;
+  WriteU8(m_raw.data(), base + TRAINER_GENDER_OFFSET, gender);
+  WriteU32(m_raw.data(), base + TRAINER_ID_OFFSET, trainer_id);
+  UpdateSectionChecksum(0);
+}
+
 u32 EmeraldSave::GetTrainerId() const
 {
   return ReadU32(m_raw.data(), m_section_offsets[0] + TRAINER_ID_OFFSET);

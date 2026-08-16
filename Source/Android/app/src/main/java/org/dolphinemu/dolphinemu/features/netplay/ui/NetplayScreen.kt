@@ -149,29 +149,62 @@ fun NetplayScreen(
     gameDigestProgress: GameDigestProgress?,
     joinAddresses: Map<JoinInfoType, JoinAddress>,
     onSubmitTeam: (String, String, Int) -> Unit,
-    defaultTrainerName: String,
+    onSubmitSaveBundle: (Int) -> Unit,
+    initialTeamText: String,
+    initialTrainerName: String,
+    initialModelId: Int,
+    initialUseMySave: Boolean,
     modelOptions: List<BattleStyleBridge.StyleOption>,
 ) {
     val scrollState = rememberScrollState()
-    // XD Netplay: joiner's "Submit Team" paste sheet.
+    // XD Netplay: joiner's "Submit Team" sheet. Every field opens pre-filled
+    // with the last-submitted values (the initial* parameters, config-backed
+    // via NetplayViewModel.submitPrefill) and is stored back on a successful
+    // submit, so nothing has to be retyped next session.
     var showSubmitTeam by rememberSaveable { mutableStateOf(false) }
-    var teamDraft by rememberSaveable { mutableStateOf("") }
-    // In-game name, pre-filled with the netplay nickname (already cut down to
-    // what a Gen 3 save can hold) so the common case is zero typing.
-    var nameDraft by rememberSaveable { mutableStateOf(defaultTrainerName) }
+    var teamDraft by rememberSaveable { mutableStateOf(initialTeamText) }
+    // In-game name: the stored one, else the netplay nickname (already cut
+    // down to what a Gen 3 save can hold) so the common case is zero typing.
+    var nameDraft by rememberSaveable { mutableStateOf(initialTrainerName) }
     // Cosmetic trainer-model pick, travelling as a "Model:" header in the same
     // TeamData payload as the team. 0 = "No preference": no header is sent and
     // the host's Guest-model fallback dropdown decides.
-    var modelDraft by rememberSaveable { mutableIntStateOf(0) }
+    var modelDraft by rememberSaveable { mutableIntStateOf(initialModelId) }
+    // "Use my save": submit the party straight from this player's own save as
+    // a bundle -- real mon bytes, real trainer identity -- instead of the
+    // Showdown paste. The name and team fields do not apply in that mode (the
+    // save's real trainer name always wins; see NetplaySession), so both grey
+    // out. The model pick stays meaningful either way.
+    var useMySave by rememberSaveable { mutableStateOf(initialUseMySave) }
     if (showSubmitTeam) {
         AlertDialog(
             title = { Text("Submit Team") },
             text = {
-                Column {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text(
                         "Paste a Showdown team export, or a pokepast.es link. " +
                             "The host writes it into the save you'll play with."
                     )
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(R.string.xd_submit_use_save))
+                            Text(
+                                stringResource(R.string.xd_submit_use_save_hint),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = useMySave, onCheckedChange = { useMySave = it })
+                    }
+                    if (useMySave) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            stringResource(R.string.xd_submit_privacy_note),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(
                         value = nameDraft,
@@ -180,9 +213,20 @@ fun NetplayScreen(
                         onValueChange = {
                             nameDraft = Gen3Text.sanitize(it, EmeraldSave.TRAINER_NAME_LEN)
                         },
+                        // A bundle always plays under the save's own trainer
+                        // name (renaming would split the trainer from the
+                        // mons' OT copies and make the party disobedient), so
+                        // the field greys out rather than promising a rename
+                        // that cannot happen.
+                        enabled = !useMySave,
                         singleLine = true,
                         label = { Text("In-game name (max 7)") },
-                        supportingText = { Text("Shown to your opponent in the battle.") },
+                        supportingText = {
+                            Text(
+                                if (useMySave) stringResource(R.string.xd_submit_name_ignored)
+                                else "Shown to your opponent in the battle."
+                            )
+                        },
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(12.dp))
@@ -199,6 +243,8 @@ fun NetplayScreen(
                     OutlinedTextField(
                         value = teamDraft,
                         onValueChange = { teamDraft = it },
+                        // Not part of a bundle submission; the draft is kept.
+                        enabled = !useMySave,
                         modifier = Modifier.fillMaxWidth().height(220.dp)
                     )
                 }
@@ -206,10 +252,14 @@ fun NetplayScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        onSubmitTeam(teamDraft.trim(), nameDraft.trim(), modelDraft)
+                        if (useMySave) {
+                            onSubmitSaveBundle(modelDraft)
+                        } else {
+                            onSubmitTeam(teamDraft.trim(), nameDraft.trim(), modelDraft)
+                        }
                         showSubmitTeam = false
                     },
-                    enabled = teamDraft.isNotBlank()
+                    enabled = useMySave || teamDraft.isNotBlank()
                 ) {
                     Text("Send")
                 }
@@ -1498,7 +1548,11 @@ private fun PreviewNetplayScreen() {
             JoinInfoType.LOCAL to JoinAddress.Loaded("192.168.1.5:2626"),
         ),
         onSubmitTeam = { _, _, _ -> },
-        defaultTrainerName = "PLAYER",
+        onSubmitSaveBundle = {},
+        initialTeamText = "",
+        initialTrainerName = "PLAYER",
+        initialModelId = 0,
+        initialUseMySave = false,
         modelOptions = emptyList(),
 //        saveTransferProgress = SaveTransferProgress(
 //            title = "Title",

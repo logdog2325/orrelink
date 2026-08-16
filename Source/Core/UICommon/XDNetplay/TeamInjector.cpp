@@ -36,6 +36,7 @@
 #include "UICommon/XDNetplay/Gen3Mon.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
 #include "UICommon/XDNetplay/MonFactory.h"
+#include "UICommon/XDNetplay/PartyBundle.h"
 #include "UICommon/XDNetplay/ShowdownParser.h"
 
 namespace XDNetplay
@@ -57,9 +58,13 @@ constexpr const char* TMP_SUFFIX = ".tmp";
 // See TeamInjector.h for the payload grammar.
 constexpr std::string_view NAME_HEADER_KEY = "Name";
 constexpr std::string_view MODEL_HEADER_KEY = "Model";
-// Headers are framing, not a payload channel: both value lines stay bounded.
+constexpr std::string_view SAVE_BUNDLE_HEADER_KEY = "SaveBundle";
+// Headers are framing, not a payload channel: every value line stays bounded.
 constexpr size_t MAX_NAME_LINE = 64;
 constexpr size_t MAX_MODEL_VALUE = 32;
+// base64 of the 617-byte bundle is 824 characters; anything past a round
+// 1024 is not a bundle this build could have produced.
+constexpr size_t MAX_BUNDLE_VALUE = 1024;
 
 // A line containing only spaces/tabs/CR (or nothing) terminates the header
 // block. Same blank test the original single-header grammar used.
@@ -123,6 +128,15 @@ std::string SavePathForDevice(int device)
 #else
   return {};
 #endif
+}
+
+// The bundled template save that seeds a socket with no save of its own and
+// re-seeds it after cleanup. EMERALD-2 is the player's side, EMERALD-3 the
+// guest slot.
+std::string GuestTemplatePath(int device)
+{
+  return File::GetSysDirectory() +
+         (device == 1 ? "XDNetplay/EMERALD-2.sav" : "XDNetplay/EMERALD-3.sav");
 }
 
 // Zero a file's bytes before unlinking it, so an opponent's spread is not left
@@ -225,9 +239,7 @@ void PurgeNow(int device)
       // left where they started instead of one step behind it.
       if (ScrubAndDelete(save_path))
       {
-        const std::string template_path =
-            File::GetSysDirectory() +
-            (device == 1 ? "XDNetplay/EMERALD-2.sav" : "XDNetplay/EMERALD-3.sav");
+        const std::string template_path = GuestTemplatePath(device);
         if (File::Exists(template_path) && File::CopyRegularFile(template_path, save_path))
           notes.emplace_back("reset=template");
         else
@@ -290,6 +302,81 @@ bool ReadFileBytes(const std::string& path, std::vector<u8>* out)
   out->resize(file.GetSize());
   return out->empty() || file.ReadBytes(out->data(), out->size());
 }
+
+// ---------------------------------------------------------------------------
+// Injection lifecycle steps shared by BOTH TeamData payload forms (Showdown
+// text and party bundle). The stash/marker/cleanup flow is one lifecycle: a
+// bundle-built disposable save is just another injected guest team from its
+// point of view, so these run identically for both.
+// ---------------------------------------------------------------------------
+
+// The save path netplay will read for this socket -- the same ROM resolution
+// the team editors use (the socket's own ROM, falling back to the other
+// socket's; a launcher-made setup points both at one dump). Empty (with
+// *error) when no ROM is configured. GetSavePath is exactly what SyncSaveData
+// reads at start, so writing there is guaranteed to be the file the guest
+// receives.
+std::string ResolveGuestSavePath(int device, std::string* error)
+{
+  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device]);
+  if (rom.empty() || !File::Exists(rom))
+    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device == 1 ? 2 : 1]);
+  if (rom.empty() || !File::Exists(rom))
+  {
+    if (error)
+      *error = "no Emerald ROM configured on the host";
+    return {};
+  }
+  return HW::GBA::Core::GetSavePath(rom, device);
+}
+
+// Self-heal: if a previous session was killed before its cleanup ran, the
+// save still holds THAT guest's party and .bak/.guestteam are still lying
+// around. Finish that cleanup now, before this injection stashes anything --
+// otherwise the stale party would be preserved as if it were the host's own.
+// Only safe with emulation fully down, which is the case at injection time:
+// the server refuses team submissions while a battle is running.
+void SelfHealStaleGuestState(const std::string& save_path, int device)
+{
+  if (File::Exists(save_path + GUEST_MARK_SUFFIX) &&
+      Core::IsUninitialized(Core::System::GetInstance()))
+  {
+    std::lock_guard lock(s_purge_mutex);
+    PurgeNow(device);
+  }
+}
+
+// Stash the host's own team once per session, so it can be put back when the
+// room closes. Only the FIRST injection stashes: a second submission must not
+// overwrite the stash with the first guest's team. A failed stash REFUSES the
+// injection (false, with *error): proceeding would leave the cleanup's
+// no-stash branch to scrub the host's save afterwards -- with a user-imported
+// save in the slot, that is real data on the line, not just a template
+// reseed.
+bool StashHostTeamOnce(const std::string& save_path, std::string* error)
+{
+  if (File::Exists(save_path) && !File::Exists(save_path + HOST_STASH_SUFFIX) &&
+      !File::CopyRegularFile(save_path, save_path + HOST_STASH_SUFFIX))
+  {
+    if (error)
+      *error = "could not back up the host's own team; submission not applied";
+    return false;
+  }
+  return true;
+}
+
+// From the moment an injection has been written, this save, its fresh .bak
+// (the pre-injection image) and any stray .tmp are opponent data. Mark them
+// so the end-of-session purge knows to take them, even if this process never
+// gets to run it.
+void WriteGuestMark(const std::string& save_path)
+{
+  if (File::Exists(save_path + GUEST_MARK_SUFFIX))
+    return;
+  File::IOFile mark(save_path + GUEST_MARK_SUFFIX, "wb");
+  if (mark)
+    mark.WriteString("A guest's team is in this socket's save. Removed when the room closes.\n");
+}
 }  // namespace
 #endif
 
@@ -322,6 +409,20 @@ std::string BuildTeamSubmissionPayload(const std::string& showdown_text,
   return headers + "\n" + showdown_text;
 }
 
+std::string BuildBundleSubmissionPayload(const std::vector<u8>& bundle, std::optional<int> model)
+{
+  // A bundle payload is headers plus an EMPTY body: SaveBundle (base64 never
+  // contains a newline, so it cannot forge framing), the optional Model pick
+  // (same line the Showdown path emits), the terminating blank line. No Name
+  // header ever -- the bundle's own trainer identity is authoritative
+  // (TeamInjector.h).
+  std::string headers =
+      std::string(SAVE_BUNDLE_HEADER_KEY) + ": " + PartyBundle::Base64Encode(bundle) + "\n";
+  if (model && *model > 0)
+    headers += std::string(MODEL_HEADER_KEY) + ": " + std::to_string(*model) + "\n";
+  return headers + "\n";
+}
+
 TeamSubmission ParseTeamSubmissionPayload(const std::string& payload)
 {
   TeamSubmission out;
@@ -331,6 +432,7 @@ TeamSubmission ParseTeamSubmissionPayload(const std::string& payload)
 
   std::string name;
   std::optional<int> model;
+  std::optional<std::vector<u8>> bundle;
   bool any_header = false;
   size_t pos = 0;
   while (pos < payload.size())
@@ -346,6 +448,7 @@ TeamSubmission ParseTeamSubmissionPayload(const std::string& payload)
         return out;  // a blank FIRST line is not a header block
       out.trainer_name = std::move(name);  // trimmed/sanitized by the caller
       out.model = model;
+      out.save_bundle = std::move(bundle);
       out.showdown_text = payload.substr(eol + 1);
       return out;
     }
@@ -360,6 +463,16 @@ TeamSubmission ParseTeamSubmissionPayload(const std::string& payload)
       name = std::string(value);
     else if (key == MODEL_HEADER_KEY)
       model = ParseModelValue(value);
+    else if (key == SAVE_BUNDLE_HEADER_KEY)
+    {
+      // Untrusted remote text: bounded, and it must base64-decode cleanly or
+      // save_bundle stays unset (the payload then reads as an empty team and
+      // is refused downstream). The decoded bytes are validated field-by-field
+      // by InjectGuestBundle, which is the only consumer.
+      const std::string_view b64 = StripWhitespace(value);
+      if (!b64.empty() && b64.size() <= MAX_BUNDLE_VALUE)
+        bundle = PartyBundle::Base64Decode(b64);
+    }
 
     any_header = true;
     pos = eol + 1;
@@ -384,52 +497,21 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
   if (!data)
     return fail(fmt::format("game data unavailable ({})", error));
 
-  // Same ROM resolution the team editor uses: the socket's own ROM, falling
-  // back to the other socket's (a launcher-made setup points both at one dump).
-  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device]);
-  if (rom.empty() || !File::Exists(rom))
-    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device == 1 ? 2 : 1]);
-  if (rom.empty() || !File::Exists(rom))
-    return fail("no Emerald ROM configured on the host");
+  const std::string save_path = ResolveGuestSavePath(device, &error);
+  if (save_path.empty())
+    return fail(std::move(error));
 
-  // GetSavePath is exactly what SyncSaveData reads at start, so writing here
-  // is guaranteed to be the file the guest receives.
-  const std::string save_path = HW::GBA::Core::GetSavePath(rom, device);
-
-  // Self-heal: if a previous session was killed before its cleanup ran, the
-  // save still holds THAT guest's party and .bak/.guestteam are still lying
-  // around. Finish that cleanup now, before this injection stashes anything --
-  // otherwise the stale party would be preserved as if it were the host's own.
-  // Only safe with emulation fully down, which is the case here: the server
-  // refuses team submissions while a battle is running.
-  if (File::Exists(save_path + GUEST_MARK_SUFFIX) &&
-      Core::IsUninitialized(Core::System::GetInstance()))
-  {
-    std::lock_guard lock(s_purge_mutex);
-    PurgeNow(device);
-  }
+  SelfHealStaleGuestState(save_path, device);
 
   std::vector<u8> bytes;
   if (!(File::Exists(save_path) && ReadFileBytes(save_path, &bytes)))
   {
-    const std::string template_path =
-        File::GetSysDirectory() +
-        (device == 1 ? "XDNetplay/EMERALD-2.sav" : "XDNetplay/EMERALD-3.sav");
-    if (!ReadFileBytes(template_path, &bytes))
+    if (!ReadFileBytes(GuestTemplatePath(device), &bytes))
       return fail("host has no save for that socket and no bundled template");
   }
 
-  // Stash the host's own team once per session, so it can be put back when the
-  // room closes. Only the FIRST injection stashes: a second submission must not
-  // overwrite the stash with the first guest's team. A failed stash REFUSES the
-  // injection: proceeding would leave the cleanup's no-stash branch to scrub
-  // the host's save afterwards -- with a user-imported save in the slot, that
-  // is real data on the line, not just a template reseed.
-  if (File::Exists(save_path) && !File::Exists(save_path + HOST_STASH_SUFFIX) &&
-      !File::CopyRegularFile(save_path, save_path + HOST_STASH_SUFFIX))
-  {
-    return fail("could not back up the host's own team; submission not applied");
-  }
+  if (!StashHostTeamOnce(save_path, &error))
+    return fail(std::move(error));
 
   auto save = EmeraldSave::Create(std::move(bytes), &error);
   if (!save)
@@ -514,15 +596,7 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
   if (!VerifiedWriteSaveFile(save_path, *save, &error))
     return fail(fmt::format("save NOT written ({})", error));
 
-  // From here on this save, its fresh .bak (the pre-injection image) and any
-  // stray .tmp are opponent data. Mark them so the end-of-session purge knows
-  // to take them, even if this process never gets to run it.
-  if (!File::Exists(save_path + GUEST_MARK_SUFFIX))
-  {
-    File::IOFile mark(save_path + GUEST_MARK_SUFFIX, "wb");
-    if (mark)
-      mark.WriteString("A guest's team is in this socket's save. Removed when the room closes.\n");
-  }
+  WriteGuestMark(save_path);
 
   if (status)
   {
@@ -536,6 +610,89 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
       *status += fmt::format(", playing as {}", applied_name);
     else if (!dropped_name_note.empty())
       *status += fmt::format(" ({})", dropped_name_note);
+  }
+  return true;
+#endif
+}
+
+bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* status)
+{
+  const auto fail = [status](std::string message) {
+    if (status)
+      *status = std::move(message);
+    return false;
+  };
+
+#ifndef HAS_LIBMGBA
+  return fail("this build has no GBA support");
+#else
+  // Strict validation FIRST, before the slot's stash/marker lifecycle is
+  // touched at all: a malformed bundle (wrong length, bad count, a mon that
+  // fails its substructure checksum, junk in a supposedly-empty slot, an
+  // unterminated name, an out-of-range gender) is refused outright and leaves
+  // no trace. The bytes are untrusted remote input; PartyBundle::Validate is
+  // the gate.
+  std::string error;
+  const auto decoded = PartyBundle::Validate(bundle, &error);
+  if (!decoded)
+    return fail(fmt::format("save bundle rejected ({})", error));
+
+  const std::string save_path = ResolveGuestSavePath(device, &error);
+  if (save_path.empty())
+    return fail(std::move(error));
+
+  SelfHealStaleGuestState(save_path, device);
+
+  // Same refusal as the Showdown path, for the mirror-image reason: this
+  // socket's save being FRLG means its ROM is FRLG, and the Emerald-template
+  // disposable save about to replace it could never boot there -- the guest
+  // would silently play nothing. (The GUEST's game was already policed at
+  // extraction: bundles only come from Emerald or Ruby/Sapphire saves.)
+  {
+    std::vector<u8> existing;
+    if (File::Exists(save_path) && ReadFileBytes(save_path, &existing))
+    {
+      const auto existing_save = EmeraldSave::Create(std::move(existing));
+      if (existing_save && EmeraldSave::DetectGame(*existing_save) == Gen3Game::FireRedLeafGreen)
+      {
+        return fail("the guest slot holds a FireRed/LeafGreen save, which team submission cannot "
+                    "write to -- restore the default team save to host with submissions");
+      }
+    }
+  }
+
+  if (!StashHostTeamOnce(save_path, &error))
+    return fail(std::move(error));
+
+  // Unlike the Showdown path, the current socket save's CONTENT is irrelevant
+  // here: the disposable save is always built fresh from the bundled EMERALD
+  // template, with the bundle's party and trainer identity written into both
+  // rotating slots. No OT re-stamping happens anywhere on this path -- the
+  // save's trainer IS the bundle's trainer, so obedience is intrinsically
+  // correct (PartyBundle.h).
+  std::vector<u8> template_bytes;
+  if (!ReadFileBytes(GuestTemplatePath(device), &template_bytes))
+    return fail("bundled template missing on the host");
+
+  const auto save = PartyBundle::BuildSave(std::move(template_bytes), bundle, &error);
+  if (!save)
+    return fail(fmt::format("save bundle rejected ({})", error));
+
+  // The same verified-write path as every other injection; from the
+  // stash/marker lifecycle's point of view this is just another injected
+  // guest team, and RestoreHostTeam takes it back out identically.
+  if (!VerifiedWriteSaveFile(save_path, *save, &error))
+    return fail(fmt::format("save NOT written ({})", error));
+
+  WriteGuestMark(save_path);
+
+  if (status)
+  {
+    // The name reported is the bundle's own -- the guest's real in-game
+    // trainer -- which is what the opponent will see across the link.
+    *status = fmt::format("{} Pokemon from the guest's own save written to the guest slot, "
+                          "playing as {}",
+                          decoded->mons.size(), decoded->trainer_name);
   }
   return true;
 #endif

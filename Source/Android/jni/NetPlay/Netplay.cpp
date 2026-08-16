@@ -10,6 +10,7 @@
 
 #include "Common/CommonTypes.h"
 #include "Common/Config/Config.h"
+#include "Common/FileUtil.h"
 #include "Common/TraversalClient.h"
 #include "Core/Boot/Boot.h"
 #include "Core/Config/MainSettings.h"
@@ -18,8 +19,13 @@
 #include "Core/NetPlayProto.h"
 #include "Core/NetPlayCommon.h"
 #include "Core/NetPlayServer.h"
+#ifdef HAS_LIBMGBA
+#include "Core/HW/GBACore.h"
+#endif
 #include "UICommon/GameFile.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
+#include "UICommon/XDNetplay/Gen3Save.h"
+#include "UICommon/XDNetplay/PartyBundle.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 
 #include "jni/AndroidCommon/AndroidCommon.h"
@@ -42,6 +48,25 @@ static NetPlay::NetPlayServer* GetServerPointer(JNIEnv* env, jobject obj)
 {
   return reinterpret_cast<NetPlay::NetPlayServer*>(
       env->GetLongField(obj, IDCache::GetNetPlayServerPointer()));
+}
+
+// The save file this player's OWN GBA slot (port 2, device 1) will play with:
+// the same ROM resolution as SaveImport/TeamInjector (this socket's ROM,
+// falling back to the other socket's -- a launcher-made setup points both at
+// one dump), then the same GetSavePath netplay's SyncSaveData reads. Empty
+// when the setup is not complete enough to have one.
+static std::string OwnGbaSavePath()
+{
+#ifdef HAS_LIBMGBA
+  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+  if (rom.empty() || !File::Exists(rom))
+    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
+  if (rom.empty() || !File::Exists(rom))
+    return {};
+  return HW::GBA::Core::GetSavePath(rom, 1);
+#else
+  return {};
+#endif
 }
 
 extern "C" {
@@ -76,6 +101,51 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitTeam(
         GetJString(env, jteam), GetJString(env, jname),
         jmodel > 0 ? std::optional<int>(jmodel) : std::nullopt));
   }
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitSaveBundle(
+    JNIEnv* env, jobject obj, jint jmodel)
+{
+  // XD Netplay "Use my save": submit the party FROM THIS PLAYER'S OWN SAVE --
+  // real mon bytes, real trainer identity -- instead of a Showdown paste.
+  // Reads the local port-2 save (their imported or team-editor slot), extracts
+  // the fixed-size party bundle (UICommon/XDNetplay/PartyBundle.h documents
+  // the layout and why the trainer identity must travel with the party), and
+  // sends it as a "SaveBundle:" TeamData payload. No Name header is ever sent
+  // for a bundle -- the save's real trainer name wins (renaming would split
+  // the trainer from the mons' OT copies and make the party disobedient) --
+  // but the cosmetic model pick stays meaningful and rides exactly as for a
+  // Showdown submission (<= 0 means "no preference"). The host validates the
+  // bundle strictly before writing anything.
+  //
+  // Returns "" on success or a user-displayable reason on failure (the Kotlin
+  // side shows it as a local chat line; nothing was sent in that case).
+  auto* client = GetClientPointer(env, obj);
+  if (!client)
+    return ToJString(env, "not connected to a room");
+
+  const std::string save_path = OwnGbaSavePath();
+  if (save_path.empty())
+    return ToJString(env, "no GBA ROM is configured, so there is no save to read");
+  if (!File::Exists(save_path))
+  {
+    return ToJString(env,
+                     "your GBA slot has no save yet -- open the Team Editor or import a save first");
+  }
+
+  std::string error;
+  const auto save = XDNetplay::LoadSaveFile(save_path, &error);
+  if (!save)
+    return ToJString(env, error);
+
+  const auto bundle = XDNetplay::PartyBundle::Extract(*save, &error);
+  if (!bundle)
+    return ToJString(env, error);
+
+  client->SendTeamSubmission(XDNetplay::BuildBundleSubmissionPayload(
+      *bundle, jmodel > 0 ? std::optional<int>(jmodel) : std::nullopt));
+  return ToJString(env, "");
 }
 
 JNIEXPORT void JNICALL
