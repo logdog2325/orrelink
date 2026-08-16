@@ -50,6 +50,11 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
         // travels with the team submission, so no extra session state exists.
         val modelOptions = BattleStyleBridge.modelTable()
 
+        // Last-submitted Submit Team sheet state (config-backed), so the sheet
+        // opens pre-filled instead of empty. Read once: while this activity
+        // lives, the sheet's own drafts already hold anything newer.
+        val submitPrefill = viewModel.submitPrefill()
+
         setContent {
             DolphinTheme {
                 NetplayScreen(
@@ -60,7 +65,11 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
                     messages = viewModel.messages.collectAsState().value,
                     onSendMessage = viewModel::sendMessage,
                     onSubmitTeam = viewModel::submitTeam,
-                    defaultTrainerName = viewModel.defaultTrainerName,
+                    onSubmitSaveBundle = viewModel::submitSaveBundle,
+                    initialTeamText = submitPrefill.teamText,
+                    initialTrainerName = submitPrefill.trainerName,
+                    initialModelId = submitPrefill.modelId,
+                    initialUseMySave = submitPrefill.useMySave,
                     modelOptions = modelOptions,
                     game = viewModel.game.collectAsState().value,
                     onStartGame = viewModel::startGame,
