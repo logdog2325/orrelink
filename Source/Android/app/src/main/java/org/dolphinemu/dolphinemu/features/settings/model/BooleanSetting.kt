@@ -995,6 +995,18 @@ enum class BooleanSetting(
         Settings.SECTION_INI_NETPLAY,
         "AutoBuffer",
         true
+    ),
+
+    /**
+     * Guest Submit Team sheet persistence: whether "Use my save" (submit the
+     * party from the player's own save as a bundle, instead of a Showdown
+     * paste) was chosen last time. Same key as the C++ MAIN_XD_SUBMIT_USE_SAVE.
+     */
+    MAIN_XD_SUBMIT_USE_SAVE(
+        Settings.FILE_DOLPHIN,
+        Settings.SECTION_INI_XD_NETPLAY,
+        "SubmitUseSave",
+        false
     );
 
     override val isOverridden: Boolean

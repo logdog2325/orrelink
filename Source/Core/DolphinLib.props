@@ -602,6 +602,7 @@
     <ClInclude Include="UICommon\XDNetplay\Gen3Save.h" />
     <ClInclude Include="UICommon\XDNetplay\Gen3Text.h" />
     <ClInclude Include="UICommon\XDNetplay\MonFactory.h" />
+    <ClInclude Include="UICommon\XDNetplay\PartyBundle.h" />
     <ClInclude Include="UICommon\XDNetplay\SaveImport.h" />
     <ClInclude Include="UICommon\XDNetplay\ShowdownParser.h" />
     <ClInclude Include="UICommon\XDNetplay\TeamInjector.h" />
@@ -1316,6 +1317,7 @@
     <ClCompile Include="UICommon\XDNetplay\Gen3Save.cpp" />
     <ClCompile Include="UICommon\XDNetplay\Gen3Text.cpp" />
     <ClCompile Include="UICommon\XDNetplay\MonFactory.cpp" />
+    <ClCompile Include="UICommon\XDNetplay\PartyBundle.cpp" />
     <ClCompile Include="UICommon\XDNetplay\SaveImport.cpp" />
     <ClCompile Include="UICommon\XDNetplay\ShowdownParser.cpp" />
     <ClCompile Include="UICommon\XDNetplay\TeamInjector.cpp" />
