@@ -41,12 +41,14 @@
 #endif
 
 #include "Common/Config/Config.h"
+#include "Common/FileUtil.h"
 #include "Common/Logging/Log.h"
 #include "Common/TraversalClient.h"
 #include "Core/NetPlayCommon.h"
 
 #include "Core/Boot/Boot.h"
 #include "Core/Config/GraphicsSettings.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/Config/NetplaySettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
@@ -75,6 +77,7 @@
 #include "UICommon/GameFile.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
+#include "UICommon/XDNetplay/PartyBundle.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 #include "UICommon/UICommon.h"
 
@@ -891,8 +894,16 @@ std::string NetPlayDialog::OnTeamSubmission(const std::string& player, const std
   XDNetplay::BattleCustomizer::SetGuestModel(submission.model);
   XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
 
+  // A payload is EITHER a party bundle (the guest's own save's team and
+  // trainer identity, validated strictly before anything is written) OR
+  // Showdown text; the Name header is ignored for bundles -- the bundle's
+  // real trainer name wins (TeamInjector.h).
   std::string status;
-  if (!XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status))
+  const bool applied =
+      submission.save_bundle ?
+          XDNetplay::InjectGuestBundle(*submission.save_bundle, 2, &status) :
+          XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status);
+  if (!applied)
     return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
   return status;
 }
@@ -970,6 +981,30 @@ void NetPlayDialog::OnSubmitTeam()
   model_layout->addWidget(model_combo, 1);
   dialog_layout->addLayout(model_layout);
 
+  // "Use my save": submit the party from the player's OWN local save (the
+  // port-2 slot the Team Editor's "Host" role edits -- their slot regardless
+  // of which side of a room they join) instead of a Showdown paste. Community
+  // design by the community, adapted. The real mon bytes travel as-is and the save's
+  // trainer identity travels with them; that identity match is what keeps the
+  // party obedient (see PartyBundle.h), so the in-game name field above is
+  // IGNORED in this mode and greyed out below to say so. The model pick stays
+  // meaningful either way: it rides the payload as its own header.
+  auto* use_save_check =
+      new QCheckBox(tr("Use my save (send the party from my own save file)"), &dialog);
+  dialog_layout->addWidget(use_save_check);
+
+  // Shown only while the box is ticked. The host sees the party's details by
+  // battling anyway, but sending a save-extracted bundle makes the disclosure
+  // explicit, so the dialog says it out loud before anything is sent.
+  auto* privacy_note = new QLabel(
+      tr("Your save's party is sent exactly as it is, under the save's own trainer "
+         "name — the in-game name field above is ignored. Note: this reveals the "
+         "party's details (nicknames, OT, IDs) to the host's machine; your opponent "
+         "would also see that party by battling you."),
+      &dialog);
+  privacy_note->setWordWrap(true);
+  dialog_layout->addWidget(privacy_note);
+
   auto* team_edit = new QPlainTextEdit(&dialog);
   team_edit->setPlaceholderText(tr("Showdown export or pokepast.es link"));
   dialog_layout->addWidget(team_edit, 1);
@@ -981,12 +1016,60 @@ void NetPlayDialog::OnSubmitTeam()
   connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
   dialog_layout->addWidget(buttons);
 
-  dialog.resize(500, 440);
+  // Bundle mode repurposes the dialog: the save supplies both party and
+  // identity, so the paste box and the name field would be dead text. Grey
+  // them out rather than let the user type something that will not be sent.
+  const auto apply_bundle_mode = [name_edit, team_edit, privacy_note](bool bundle_mode) {
+    name_edit->setEnabled(!bundle_mode);
+    team_edit->setEnabled(!bundle_mode);
+    privacy_note->setVisible(bundle_mode);
+  };
+  connect(use_save_check, &QCheckBox::toggled, &dialog, apply_bundle_mode);
+
+  // Prefill every field from the previous successful submission (stored on
+  // send, below) so a returning player clicks Send instead of retyping. The
+  // team text is stored base64-encoded -- Dolphin's INI config layer is
+  // line-based and a Showdown export is multi-line -- and the strict decoder
+  // rejects the never-stored "" cleanly, leaving the box empty. A stored name
+  // is re-sanitized on the way in, preserving this dialog's invariant that
+  // the field shows exactly what the opponent will see; when nothing is
+  // stored the netplay-nickname default seeded above stays. A stored model id
+  // the table no longer carries falls back to "No preference", the same idiom
+  // as the launcher's Battle Style combos.
+  if (const auto stored_team = XDNetplay::PartyBundle::Base64Decode(
+          Config::Get(Config::MAIN_XD_SUBMIT_TEAM_B64)))
+  {
+    team_edit->setPlainText(QString::fromUtf8(
+        reinterpret_cast<const char*>(stored_team->data()), static_cast<int>(stored_team->size())));
+  }
+  const std::string stored_name = Config::Get(Config::MAIN_XD_SUBMIT_NAME);
+  if (!stored_name.empty())
+  {
+    name_edit->setText(
+        QString::fromStdString(XDNetplay::EmeraldSave::SanitizeTrainerName(stored_name)));
+  }
+  const int stored_model_index = model_combo->findData(Config::Get(Config::MAIN_XD_SUBMIT_MODEL));
+  model_combo->setCurrentIndex(stored_model_index >= 0 ? stored_model_index : 0);
+  use_save_check->setChecked(Config::Get(Config::MAIN_XD_SUBMIT_USE_SAVE));
+#ifndef HAS_LIBMGBA
+  // Extracting a bundle means reading the local GBA save, and everything that
+  // knows where that lives is compiled out with libmgba. Overrides the stored
+  // preference on purpose: a checked-but-unusable box could not be honored.
+  use_save_check->setChecked(false);
+  use_save_check->setEnabled(false);
+  use_save_check->setToolTip(tr("GBA support (libmgba) is not compiled into this build."));
+#endif
+  // setChecked only signals on a CHANGE, so a false-to-false prefill would
+  // leave the privacy note visible; normalize explicitly once.
+  apply_bundle_mode(use_save_check->isChecked());
+
+  dialog.resize(500, 470);
   if (dialog.exec() != QDialog::Accepted)
     return;
 
+  const bool use_save = use_save_check->isChecked();
   const QString text = team_edit->toPlainText().trimmed();
-  if (text.isEmpty())
+  if (text.isEmpty() && !use_save)
     return;
 
   // Sanitize again on the way out: the field is a QLineEdit, so the user can
@@ -994,7 +1077,9 @@ void NetPlayDialog::OnSubmitTeam()
   // result simply means "no rename" -- the host keeps its own save's name.
   const std::string trainer_name = XDNetplay::EmeraldSave::SanitizeTrainerName(
       name_edit->text().toStdString());
-  if (trainer_name.empty() && !name_edit->text().trimmed().isEmpty())
+  // The warning is meaningless in bundle mode -- the field is ignored there
+  // (and was greyed out saying so), not "sent without".
+  if (!use_save && trainer_name.empty() && !name_edit->text().trimmed().isEmpty())
   {
     DisplayMessage(
         tr("That in-game name has no Gen 3 equivalent — sending the team without it."), "");
@@ -1009,6 +1094,71 @@ void NetPlayDialog::OnSubmitTeam()
   const std::optional<int> model =
       model_id > 0 ? std::optional<int>(model_id) : std::nullopt;
 
+  // Persist what was submitted so the next open prefills (read back above).
+  // Called only once a submission actually goes out -- an empty paste or a
+  // save that would not extract leaves the previous session's values alone.
+  // Everything is captured by value: the pokepaste path calls this after the
+  // dialog's locals would otherwise be gone. Same SetBaseOrCurrent + Save()
+  // idiom as the launcher's Battle Style keys.
+  const std::string team_text = text.toStdString();
+  const auto persist_submission = [team_text, trainer_name, model_id, use_save] {
+    Config::SetBaseOrCurrent(
+        Config::MAIN_XD_SUBMIT_TEAM_B64,
+        XDNetplay::PartyBundle::Base64Encode(std::vector<u8>(team_text.begin(), team_text.end())));
+    Config::SetBaseOrCurrent(Config::MAIN_XD_SUBMIT_NAME, trainer_name);
+    Config::SetBaseOrCurrent(Config::MAIN_XD_SUBMIT_MODEL, model_id);
+    Config::SetBaseOrCurrent(Config::MAIN_XD_SUBMIT_USE_SAVE, use_save);
+    Config::Save();
+  };
+
+  if (use_save)
+  {
+#ifdef HAS_LIBMGBA
+    // Read the same save the Team Editor's "Host — GBA port 2" role edits:
+    // the player's own local slot (imported or editor-built), resolved with
+    // the editor's exact ROM-then-fallback logic. No template fallback here,
+    // unlike the editor: a fresh template holds an empty party, and Extract
+    // would only refuse it with a less helpful message than ours.
+    std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+    if (rom.empty() || !File::Exists(rom))
+      rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
+    if (rom.empty() || !File::Exists(rom))
+    {
+      DisplayMessage(tr("No Emerald ROM configured — run the launcher checklist first."), "");
+      return;
+    }
+    const std::string save_path = HW::GBA::Core::GetSavePath(rom, 1);
+    if (!File::Exists(save_path))
+    {
+      DisplayMessage(tr("No save to send — import one or build a team in the Team Editor first."),
+                     "");
+      return;
+    }
+    std::string error;
+    const std::optional<XDNetplay::EmeraldSave> save = XDNetplay::LoadSaveFile(save_path, &error);
+    if (!save)
+    {
+      DisplayMessage(tr("Could not open your save: %1").arg(QString::fromStdString(error)), "");
+      return;
+    }
+    // Extract refuses FRLG saves and empty parties itself, with reasons meant
+    // for exactly this status line.
+    const std::optional<std::vector<u8>> bundle = XDNetplay::PartyBundle::Extract(*save, &error);
+    if (!bundle)
+    {
+      DisplayMessage(tr("Could not use your save: %1").arg(QString::fromStdString(error)), "");
+      return;
+    }
+    // No Name header rides with a bundle -- the save's own identity wins
+    // (BuildBundleSubmissionPayload never emits one). Model still does.
+    Settings::Instance().GetNetPlayClient()->SendTeamSubmission(
+        XDNetplay::BuildBundleSubmissionPayload(*bundle, model));
+    persist_submission();
+    DisplayMessage(tr("Your save's team was sent to the host."), "");
+#endif
+    return;
+  }
+
   const QRegularExpression pokepaste_re(
       QStringLiteral("^https?://pokepast\\.es/[A-Za-z0-9]+"));
   const QRegularExpressionMatch match = pokepaste_re.match(text);
@@ -1016,12 +1166,18 @@ void NetPlayDialog::OnSubmitTeam()
   {
     Settings::Instance().GetNetPlayClient()->SendTeamSubmission(
         XDNetplay::BuildTeamSubmissionPayload(text.toStdString(), trainer_name, model));
+    persist_submission();
     DisplayMessage(tr("Team sent to the host."), "");
     return;
   }
 
   const std::string url = match.captured(0).toStdString() + "/raw";
   DisplayMessage(tr("Fetching %1…").arg(match.captured(0)), "");
+  // The fetch is asynchronous and the submission is committed from the user's
+  // point of view, so persist NOW rather than in the deferred lambda: if a
+  // flaky network fails the fetch, the link prefilling on the next open is
+  // exactly what the retry wants.
+  persist_submission();
   QPointer<NetPlayDialog> self(this);
   std::thread([self, url, trainer_name, model] {
     Common::HttpRequest request;

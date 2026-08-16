@@ -146,6 +146,16 @@ public:
   // "reject the request".
   static std::string SanitizeTrainerName(const std::string& name);
 
+  // Overwrite the whole trainer identity -- name (RAW Gen 3 bytes), gender and
+  // TID+SID -- in one call and fix section 0's checksum. For the party-bundle
+  // path (PartyBundle.h), where the name must land byte-identical to the OT
+  // name copies inside the mons that rode along with it: a UTF-8 round trip
+  // through SetTrainerName could alter bytes ('?' fallbacks) and turn the
+  // whole party into disobedient outsiders. The terminator byte at
+  // name_raw[7] is forced to 0xFF regardless of input, matching the games.
+  void SetTrainerIdentityRaw(const std::array<u8, TRAINER_NAME_FIELD_SIZE>& name_raw, u8 gender,
+                             u32 trainer_id);
+
   // Raw u32: low u16 = public (visible) trainer ID, high u16 = secret ID.
   u32 GetTrainerId() const;
   u32 GetTrainerPublicId() const { return GetTrainerId() & 0xFFFF; }

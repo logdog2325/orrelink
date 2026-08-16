@@ -2,6 +2,7 @@
 
 package org.dolphinemu.dolphinemu.features.netplay.model
 
+import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.asFlow
@@ -144,6 +145,34 @@ class NetplayViewModel(
     val defaultTrainerName: String
         get() = EmeraldSave.sanitizeTrainerName(netplaySession.nickName)
 
+    /** What the Submit Team sheet opens pre-filled with. */
+    data class SubmitPrefill(
+        val teamText: String,
+        val trainerName: String,
+        val modelId: Int,
+        val useMySave: Boolean,
+    )
+
+    /**
+     * The last-submitted Submit Team sheet state, from the MAIN_XD_SUBMIT_*
+     * config keys (stored by [submitTeam]/[submitSaveBundle] on each
+     * successful submit), so a joiner does not retype team, name and model
+     * every session. The team text round-trips through base64 because a
+     * Showdown export is multi-line and Dolphin's INI config layer is
+     * line-based; the same encoding is read/written by the desktop dialog.
+     * A never-stored (or unsanitizable) name falls back to the netplay
+     * nickname, exactly what the sheet always pre-filled.
+     */
+    fun submitPrefill(): SubmitPrefill {
+        val storedName = EmeraldSave.sanitizeTrainerName(StringSetting.MAIN_XD_SUBMIT_NAME.string)
+        return SubmitPrefill(
+            teamText = decodeStoredTeamText(StringSetting.MAIN_XD_SUBMIT_TEAM_B64.string),
+            trainerName = storedName.ifEmpty { defaultTrainerName },
+            modelId = IntSetting.MAIN_XD_SUBMIT_MODEL.int,
+            useMySave = BooleanSetting.MAIN_XD_SUBMIT_USE_SAVE.boolean,
+        )
+    }
+
     /**
      * XD Netplay: hand this player's own team to the host, which writes it into
      * the GBA save it syncs when the battle starts. A pokepast.es link is
@@ -174,6 +203,7 @@ class NetplayViewModel(
         }
         val pokepaste = Regex("^https?://pokepast\\.es/[A-Za-z0-9]+").find(trimmed)?.value
         if (pokepaste == null) {
+            storeSubmitDrafts(trimmed, name, modelId, useMySave = false)
             netplaySession.submitTeam(trimmed, name, modelId)
             return
         }
@@ -189,11 +219,74 @@ class NetplayViewModel(
                         "Could not fetch that paste (network error)."
                     )
                 } else {
+                    // Store what the user typed (the link, not the fetched
+                    // body) so next session's sheet prefills the same way.
+                    storeSubmitDrafts(trimmed, name, modelId, useMySave = false)
                     netplaySession.submitTeam(body, name, modelId)
                 }
             }
         }
     }
+
+    /**
+     * XD Netplay "Use my save": submit the party from this player's OWN local
+     * save -- real mon bytes, real trainer identity -- instead of a Showdown
+     * paste. The extraction and refusals (FireRed/LeafGreen save, empty
+     * party, no save at all) live native-side; a refusal surfaces as a local
+     * chat line and nothing is sent. The in-game-name field does not apply
+     * here (the save's real trainer name always wins; see NetplaySession), so
+     * only [modelId] rides along.
+     */
+    fun submitSaveBundle(modelId: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val error = netplaySession.submitSaveBundle(modelId)
+            withContext(Dispatchers.Main) {
+                if (error.isEmpty()) {
+                    // The team/name drafts were not part of this submission;
+                    // leave their stored values alone.
+                    storeSubmitDrafts(null, null, modelId, useMySave = true)
+                } else {
+                    netplaySession.showLocalMessage(
+                        "Could not submit the team from your save — $error."
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Persist the Submit Team sheet's state on a successful submit, so the
+     * sheet opens pre-filled next session ([submitPrefill]). A null
+     * [teamText]/[trainerName] leaves that stored value untouched (the bundle
+     * path, which uses neither).
+     */
+    private fun storeSubmitDrafts(
+        teamText: String?,
+        trainerName: String?,
+        modelId: Int,
+        useMySave: Boolean,
+    ) {
+        if (teamText != null) {
+            StringSetting.MAIN_XD_SUBMIT_TEAM_B64.setString(
+                NativeConfig.LAYER_BASE,
+                Base64.encodeToString(teamText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            )
+        }
+        if (trainerName != null) {
+            StringSetting.MAIN_XD_SUBMIT_NAME.setString(NativeConfig.LAYER_BASE, trainerName)
+        }
+        IntSetting.MAIN_XD_SUBMIT_MODEL.setInt(NativeConfig.LAYER_BASE, modelId)
+        BooleanSetting.MAIN_XD_SUBMIT_USE_SAVE.setBoolean(NativeConfig.LAYER_BASE, useMySave)
+        NativeConfig.save(NativeConfig.LAYER_BASE)
+    }
+
+    /** Base64 -> Showdown text; "" on a corrupt stored value (prefill is best-effort). */
+    private fun decodeStoredTeamText(b64: String): String =
+        try {
+            String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8)
+        } catch (e: IllegalArgumentException) {
+            ""
+        }
 
     fun sendMessage(message: String) {
         val trimmedMessage = message.trim()

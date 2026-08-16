@@ -96,6 +96,25 @@ enum class StringSetting(
         "ImportedSave3",
         ""
     ),
+
+    // Guest Submit Team sheet persistence: last-submitted Showdown text and
+    // in-game trainer name, so a joiner does not retype them every session.
+    // Same keys as the C++ MAIN_XD_SUBMIT_TEAM_B64/_NAME (MainSettings.h has
+    // the full story). The team text is stored BASE64-encoded because a
+    // Showdown export is multi-line and Dolphin's INI config layer is
+    // line-based -- NetplayViewModel does the encode/decode.
+    MAIN_XD_SUBMIT_TEAM_B64(
+        Settings.FILE_DOLPHIN,
+        Settings.SECTION_INI_XD_NETPLAY,
+        "SubmitTeamB64",
+        ""
+    ),
+    MAIN_XD_SUBMIT_NAME(
+        Settings.FILE_DOLPHIN,
+        Settings.SECTION_INI_XD_NETPLAY,
+        "SubmitName",
+        ""
+    ),
     MAIN_TRIFORCE_IP_REDIRECTIONS(
         Settings.FILE_DOLPHIN,
         Settings.SECTION_INI_CORE,
