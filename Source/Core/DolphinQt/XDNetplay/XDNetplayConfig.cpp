@@ -30,6 +30,7 @@
 #include "Core/NetPlayServer.h"
 
 #include "UICommon/XDNetplay/BattleCustomizer.h"
+#include "UICommon/XDNetplay/DisposableSave.h"
 
 namespace XDNetplay
 {
@@ -110,6 +111,12 @@ bool EnsureGbaConfig()
   // next session. EnsureGbaConfig only runs from the launcher (never while a
   // room is open), which is exactly the boundary BeginSession wants.
   BattleCustomizer::BeginSession();
+
+  // Same boundary, same reason, for the disposable netplay saves: if a crashed
+  // hosted session left a <save>.netplayorig stash behind, the socket save
+  // still holds the session's disposable -- put the real import back so a solo
+  // boot plays the user's own save again (DisposableSave.h).
+  DisposableSave::HealLeftoverSession();
 
   // Netplay tuned for the XD link: fixed delay, no UPnP noise.
   //

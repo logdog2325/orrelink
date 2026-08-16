@@ -24,6 +24,7 @@
 #endif
 #include "UICommon/GameFile.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
+#include "UICommon/XDNetplay/DisposableSave.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
 #include "UICommon/XDNetplay/PartyBundle.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
@@ -255,6 +256,23 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeHost(JNIEnv
 
   const u16 host_port = is_traversal ? Config::Get(Config::NETPLAY_LISTEN_PORT) :
                                        Config::Get(Config::NETPLAY_HOST_PORT);
+
+  // Disposable host saves (mirrors the desktop MainWindow::NetPlayHost hook):
+  // if a GBA port holds a user-imported save, swap in a rebuilt save carrying
+  // only its party and trainer identity BEFORE the server exists -- netplay
+  // syncs the host's GBA socket saves to every client, and a guest can join
+  // (and submit a team into port 3) the moment the room is up, so this must
+  // precede both. The original returns when the room closes
+  // (NetPlayUICallbacks::OnRoomClosed). Refusal -- e.g. a FireRed/LeafGreen
+  // import no disposable can be built from -- aborts hosting loudly through
+  // the existing connection-error surface rather than silently syncing the
+  // complete save file.
+  if (std::string swap_error; !XDNetplay::DisposableSave::PrepareForHosting(&swap_error))
+  {
+    if (ui)
+      ui->OnConnectionError("Cannot host: " + swap_error);
+    return 0;
+  }
 
   auto server = std::make_unique<NetPlay::NetPlayServer>(
       host_port, use_upnp, ui,

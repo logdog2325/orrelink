@@ -33,7 +33,11 @@
     <key>NSInputMonitoringUsageDescription</key>
     <string>Dolphin reads the keyboard directly so it can be used as a game controller. Without this permission keyboard controls do nothing.</string>
     <key>CFBundleExecutable</key>
-    <string>DolphinQt</string>
+    <string>OrreLink</string>
+    <key>CFBundleName</key>
+    <string>OrreLink</string>
+    <key>CFBundleDisplayName</key>
+    <string>OrreLink</string>
     <key>CFBundleIconFile</key>
     <string>Dolphin.icns</string>
     <key>CFBundleIdentifier</key>
