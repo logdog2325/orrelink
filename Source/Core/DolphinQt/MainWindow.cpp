@@ -132,6 +132,8 @@
 
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/GameFile.h"
+#include "UICommon/XDNetplay/Version.h"
+#include "UICommon/XDNetplay/DisposableSave.h"
 #include "UICommon/ResourcePack/Manager.h"
 #include "UICommon/ResourcePack/ResourcePack.h"
 
@@ -221,7 +223,7 @@ MainWindow::MainWindow(Core::System& system, std::unique_ptr<BootParameters> boo
                        const std::string& movie_path)
     : QMainWindow(nullptr), m_system(system)
 {
-  setWindowTitle(QString::fromStdString(Common::GetScmRevStr()));
+  setWindowTitle(QStringLiteral("OrreLink %1").arg(QString::fromUtf8(XDNetplay::VERSION)));
   setWindowIcon(Resources::GetAppIcon());
   setUnifiedTitleAndToolBarOnMac(true);
   setAcceptDrops(true);
@@ -1322,7 +1324,7 @@ void MainWindow::HideRenderWidget(bool reinit, bool is_exit)
     m_rendering_to_main = false;
     m_stack->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     disconnect(Host::GetInstance(), &Host::RequestTitle, this, &MainWindow::setWindowTitle);
-    setWindowTitle(QString::fromStdString(Common::GetScmRevStr()));
+    setWindowTitle(QStringLiteral("OrreLink %1").arg(QString::fromUtf8(XDNetplay::VERSION)));
   }
 
   // The following code works around a driver bug that would lead to Dolphin crashing when changing
@@ -1808,6 +1810,22 @@ bool MainWindow::NetPlayHost(const UICommon::GameFile& game)
 
   if (is_traversal)
     host_port = Config::Get(Config::NETPLAY_LISTEN_PORT);
+
+  // Disposable host saves: if a GBA port holds a user-imported save, swap in a
+  // rebuilt save carrying only its party and trainer identity BEFORE the
+  // server exists -- netplay syncs the host's GBA socket saves to every
+  // client, and a guest can join (and submit a team into port 3) the moment
+  // the room is up, so this must precede both. The original returns when the
+  // room closes (NetPlayDialog::OnRoomClosed). Refusal -- e.g. a FireRed/
+  // LeafGreen import no disposable can be built from -- aborts hosting loudly
+  // rather than silently syncing the complete save file.
+  if (std::string swap_error; !XDNetplay::DisposableSave::PrepareForHosting(&swap_error))
+  {
+    ModalMessageBox::critical(
+        nullptr, tr("OrreLink"),
+        tr("Cannot host: %1").arg(QString::fromStdString(swap_error)));
+    return false;
+  }
 
   // Create Server
   Settings::Instance().ResetNetPlayServer(

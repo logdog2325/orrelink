@@ -47,6 +47,7 @@
 #include "Core/Config/MainSettings.h"
 #include "UICommon/NetPlayIndex.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
+#include "UICommon/XDNetplay/DisposableSave.h"
 #include "UICommon/XDNetplay/SaveImport.h"
 #include "UICommon/XDNetplay/UpdateCheck.h"
 #include "UICommon/XDNetplay/Version.h"
@@ -370,6 +371,13 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativePrepar
   // the Battle Style block at all (the first field test found exactly that).
   // Cleanup rides the core-state hook PrepareForStart registers.
   XDNetplay::BattleCustomizer::PrepareForStart();
+
+  // Crash self-heal for the disposable netplay saves (mirrors the desktop
+  // EnsureGbaConfig hook): if a crashed hosted session left a
+  // <save>.netplayorig stash behind, the socket save still holds the session's
+  // disposable -- put the real import back so this solo boot plays the user's
+  // own save again (DisposableSave.h). No-op while a room is open.
+  XDNetplay::DisposableSave::HealLeftoverSession();
 }
 
 // ---------------------------------------------------------------------------

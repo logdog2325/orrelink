@@ -76,6 +76,7 @@
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/GameFile.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
+#include "UICommon/XDNetplay/DisposableSave.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
 #include "UICommon/XDNetplay/PartyBundle.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
@@ -920,6 +921,14 @@ void NetPlayDialog::OnRoomClosed()
   // local GXXE01.ini, and give the cheats flag back if the pre-start hook
   // forced it on for a cosmetics-only session.
   XDNetplay::BattleCustomizer::EndSession();
+  // Finally, give a hosting machine its imported saves back: the session ran
+  // on disposables (party + trainer identity only) that MainWindow::
+  // NetPlayHost swapped in so the full imports never entered the synced save
+  // path. MUST stay after RestoreHostTeam -- the ordering is what guarantees
+  // the outer import restore runs after the inner .hostteam restore on the
+  // same deferred-until-Uninitialized event (DisposableSave.h). Idempotent
+  // and harmless on joiners and non-imported hosts.
+  XDNetplay::DisposableSave::EndNetplaySession();
 }
 
 void NetPlayDialog::OnSubmitTeam()
@@ -993,14 +1002,19 @@ void NetPlayDialog::OnSubmitTeam()
       new QCheckBox(tr("Use my save (send the party from my own save file)"), &dialog);
   dialog_layout->addWidget(use_save_check);
 
-  // Shown only while the box is ticked. The host sees the party's details by
-  // battling anyway, but sending a save-extracted bundle makes the disclosure
-  // explicit, so the dialog says it out loud before anything is sent.
+  // Shown only while the box is ticked. The disclosure list is deliberately
+  // exhaustive (community review): the bundle carries the real party bytes and
+  // the save's trainer identity, so everything in them lands on the host's
+  // machine -- including the secret trainer ID, which nothing in a battle ever
+  // shows. Saying "nicknames, OT, IDs" and stopping there would undersell it.
   auto* privacy_note = new QLabel(
       tr("Your save's party is sent exactly as it is, under the save's own trainer "
-         "name — the in-game name field above is ignored. Note: this reveals the "
-         "party's details (nicknames, OT, IDs) to the host's machine; your opponent "
-         "would also see that party by battling you."),
+         "identity — the in-game name field above is ignored. The host's machine "
+         "receives everything in those party bytes: exact moves, held items, stats, "
+         "EVs, IVs, natures, nicknames, met information, ribbons, and your OT name "
+         "and BOTH trainer IDs, including the secret one. Your opponent would see "
+         "most of this by battling you — but not the secret ID, so only send your "
+         "save to hosts you trust."),
       &dialog);
   privacy_note->setWordWrap(true);
   dialog_layout->addWidget(privacy_note);
@@ -1063,7 +1077,10 @@ void NetPlayDialog::OnSubmitTeam()
   // leave the privacy note visible; normalize explicitly once.
   apply_bundle_mode(use_save_check->isChecked());
 
-  dialog.resize(500, 470);
+  // Sized for the (longer, deliberately exhaustive) privacy note when bundle
+  // mode is on; the note is hidden otherwise and the paste box absorbs the
+  // extra height.
+  dialog.resize(500, 520);
   if (dialog.exec() != QDialog::Accepted)
     return;
 

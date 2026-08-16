@@ -294,14 +294,18 @@ void XDLauncherDialog::CreateMainLayout()
   // team-editor save stays the default; importing your own cartridge save is
   // opt-in and per port (SaveImport does the validation and the no-destruction
   // bookkeeping). The caption is a permanent fixture rather than a popup
-  // because it is the one fact every importer must know BEFORE picking a
-  // file: netplay syncs the HOST's saves, so a joiner's import never reaches
-  // the room -- joiners submit their team instead.
+  // because it is the two facts every importer must know BEFORE picking a
+  // file: netplay syncs the HOST's saves (so a joiner's import never reaches
+  // the room -- joiners submit their team instead), and a hosting session
+  // never syncs the import itself, only the rebuilt party-and-identity save
+  // DisposableSave swaps in for the room's duration.
   auto* saves_box = new QGroupBox(tr("Save Files"));
   auto* saves_layout = new QGridLayout;
   auto* saves_caption = new QLabel(
-      tr("Netplay rooms always use the HOST's saves. An imported save applies when you play solo "
-         "or host; when you join someone's room, use Submit Team instead."));
+      tr("Solo play uses an imported save exactly as it is. Hosting a netplay room does NOT "
+         "share the file: the session runs on a rebuilt save carrying only your party and "
+         "trainer identity, and your own save returns when the room closes. When you join "
+         "someone else's room, use Submit Team instead."));
   saves_caption->setWordWrap(true);
   saves_layout->addWidget(saves_caption, 0, 0, 1, 4);
   int save_row = 1;
