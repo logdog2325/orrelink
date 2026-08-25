@@ -22,8 +22,13 @@
 #include "Core/Core.h"
 
 #ifdef HAS_LIBMGBA
+#include "Core/HW/GBACore.h"
 #include "Core/HW/GBADetectLog.h"
 #endif
+
+#include "Common/IOFile.h"
+
+#include "UICommon/XDNetplay/Gen3Save.h"
 
 namespace XDNetplay::BattleCustomizer
 {
@@ -95,6 +100,38 @@ constexpr u16 GbaModelTid(int model_id)
   case 0x06: return 0x138C;  // Leaf (FireRed/LeafGreen)
   case 0x05: return 0x138D;  // Brendan (Emerald)
   case 0x04: return 0x138E;  // May (Emerald)
+  default: return 0;
+  }
+}
+
+// Pre-battle bust remap (the connection-screen close-up). The bust never
+// consults the TID->model switch: a save-class mapper (fn 0x80085BB0; game u32
+// at staging+4, gender byte in the save mirror) indexes two 7-entry u32
+// widget-id tables in DOL .data, and the chosen widget carries the model the
+// menu close-up renders. Remapping the entry for a side's SAVE class to the
+// PICKED model's class makes the bust match the battle. Verified by
+// disassembly with an exhaustive reach audit: the tables are read only by the
+// ten class-indexed connection-menu sites and written by nothing, so the remap
+// is cosmetic-only and nothing fights it. Vanilla words, clean main.dol at
+// file 0x2E8684/0x2E86A0: A = {208,209,20A,210,211,212,213}, B = {201..207}.
+constexpr u32 BUST_TABLE_A = 0x042EB684;  // 32-bit writes into 0x802EB684[class]
+constexpr u32 BUST_TABLE_B = 0x042EB6A0;  // 32-bit writes into 0x802EB6A0[class]
+constexpr u32 BUST_A_BY_CLASS[7] = {0, 0x209, 0x20A, 0x210, 0x211, 0x212, 0x213};
+constexpr u32 BUST_B_BY_CLASS[7] = {0, 0x202, 0x203, 0x204, 0x205, 0x206, 0x207};
+
+// Model id -> bust class (1 FRLG-m, 2 FRLG-f, 3 RS-m, 4 RS-f, 5 E-m, 6 E-f).
+// Only the six GBA player models have bust widgets in the connection menu;
+// anything else returns 0 = no bust remap (battle model still changes).
+constexpr int ModelBustClass(int model_id)
+{
+  switch (model_id)
+  {
+  case 0x07: return 1;  // Red (FireRed/LeafGreen)
+  case 0x06: return 2;  // Leaf (FireRed/LeafGreen)
+  case 0x09: return 3;  // Brendan (Ruby/Sapphire)
+  case 0x08: return 4;  // May (Ruby/Sapphire)
+  case 0x05: return 5;  // Brendan (Emerald)
+  case 0x04: return 6;  // May (Emerald)
   default: return 0;
   }
 }
@@ -519,7 +556,8 @@ bool IsValidVenueId(int id)
 }
 
 std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2_model,
-                              std::optional<int> bgm, std::optional<int> venue)
+                              std::optional<int> bgm, std::optional<int> venue, int p1_class,
+                              int p2_class)
 {
   // Each field independently: an id that fails validation is treated as absent
   // (fall back, never clamp -- an out-of-table model id dereferences garbage
@@ -566,6 +604,27 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
     AppendLine(&block, MODEL_ARM_P1_LINE, PPC_LI_R3 | (static_cast<u32>(*p1_model) & 0xFF));
   if (p2_arm)
     AppendLine(&block, MODEL_ARM_P2_LINE, PPC_LI_R3 | (static_cast<u32>(*p2_model) & 0xFF));
+
+  // Bust remap, per side: only for the six GBA player models, only when the
+  // side's save class is known, differs from the picked class, and does not
+  // collide with the other side's table slot (same class on both saves would
+  // make the two sides' writes fight over one entry -- skip both, bust stays
+  // vanilla, and the log's ar dump shows the absence).
+  {
+    const int w1 = p1 ? ModelBustClass(*p1_model) : 0;
+    const int w2 = p2 ? ModelBustClass(*p2_model) : 0;
+    const bool classes_collide = p1_class != 0 && p1_class == p2_class;
+    if (w1 != 0 && p1_class >= 1 && p1_class <= 6 && w1 != p1_class && !classes_collide)
+    {
+      AppendLine(&block, BUST_TABLE_A + 4 * static_cast<u32>(p1_class), BUST_A_BY_CLASS[w1]);
+      AppendLine(&block, BUST_TABLE_B + 4 * static_cast<u32>(p1_class), BUST_B_BY_CLASS[w1]);
+    }
+    if (w2 != 0 && p2_class >= 1 && p2_class <= 6 && w2 != p2_class && !classes_collide)
+    {
+      AppendLine(&block, BUST_TABLE_A + 4 * static_cast<u32>(p2_class), BUST_A_BY_CLASS[w2]);
+      AppendLine(&block, BUST_TABLE_B + 4 * static_cast<u32>(p2_class), BUST_B_BY_CLASS[w2]);
+    }
+  }
   if (music)
   {
     // Three identical u32 slots (primary encoding; see MUSIC_LINES).
@@ -621,6 +680,48 @@ void SetGuestModel(std::optional<int> id)
               std::string{"battlestyle guest submitted no model preference"});
 }
 
+// The bust class (1..6) of the save that will occupy GBA port |device|+1, or
+// 0 when it cannot be determined (no ROM, unreadable save, FRLG-refused build,
+// non-mgba build). Same ROM fallback as TeamInjector: the socket's own ROM,
+// then the other socket's.
+static int SaveBustClass(int device)
+{
+#ifdef HAS_LIBMGBA
+  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device]);
+  if (rom.empty() || !File::Exists(rom))
+    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device == 1 ? 2 : 1]);
+  if (rom.empty() || !File::Exists(rom))
+    return 0;
+  const std::string path = HW::GBA::Core::GetSavePath(rom, device);
+  File::IOFile file(path, "rb");
+  if (!file)
+    return 0;
+  std::vector<u8> bytes(file.GetSize());
+  if (!file.ReadBytes(bytes.data(), bytes.size()))
+    return 0;
+  std::string error;
+  const auto save = EmeraldSave::Create(std::move(bytes), &error);
+  if (!save)
+    return 0;
+  const u32 gender = save->GetTrainerGender();
+  if (gender > 1)
+    return 0;
+  switch (EmeraldSave::DetectGame(*save))
+  {
+  case Gen3Game::FireRedLeafGreen:
+    return 1 + static_cast<int>(gender);
+  case Gen3Game::RubySapphire:
+    return 3 + static_cast<int>(gender);
+  case Gen3Game::Emerald:
+    return 5 + static_cast<int>(gender);
+  }
+  return 0;
+#else
+  (void)device;
+  return 0;
+#endif
+}
+
 bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status)
 {
   // Guest stash (already validated) wins over the host's fallback dropdown --
@@ -641,7 +742,8 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status)
   const std::string block = GenerateCodeBlock(
       sel.host_model > 0 ? std::optional<int>(sel.host_model) : std::nullopt, guest_model,
       sel.music > 0 ? std::optional<int>(sel.music) : std::nullopt,
-      sel.venue > 0 ? std::optional<int>(sel.venue) : std::nullopt);
+      sel.venue > 0 ? std::optional<int>(sel.venue) : std::nullopt,
+      SaveBustClass(1), SaveBustClass(2));
   const bool active = !block.empty();
 
   // One line per regeneration so a tester's log says exactly what was picked
