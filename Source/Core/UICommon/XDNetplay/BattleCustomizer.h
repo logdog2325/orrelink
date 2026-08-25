@@ -114,8 +114,16 @@ bool IsValidVenueId(int id);
 // GBA-vs-GBA mode is still unverified -- if an emulator test shows it
 // reversed, swap the two arguments AT THE CALL SITE (RegenerateIni); the code
 // lines themselves do not change.
+// p1_class/p2_class: each side's SAVE class (1 FRLG-m .. 6 E-f, 0 unknown),
+// derived from the save that will occupy the port; used to remap the
+// pre-battle bust widget tables so the connection-screen close-up matches the
+// picked model. Bust remap is limited to the six GBA player models (the menu
+// binds only those six bust widgets) and needs the two sides' classes to
+// differ; outside those bounds the bust stays vanilla while the battle model
+// still changes.
 std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2_model,
-                              std::optional<int> bgm, std::optional<int> venue);
+                              std::optional<int> bgm, std::optional<int> venue,
+                              int p1_class = 0, int p2_class = 0);
 
 // The host's four launcher selections. 0 (the config default) = game default.
 struct Selection
