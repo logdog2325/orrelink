@@ -26,6 +26,7 @@
 #include "Core/HW/SystemTimers.h"
 #include "Core/Host.h"
 #include "Core/NetPlayProto.h"
+#include "Core/PowerPC/MMU.h"
 #include "Core/System.h"
 
 namespace SerialInterface
@@ -220,8 +221,36 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     // the link and kills the fight with no message, so that has to be
     // impossible rather than merely unlikely, and a party is hundreds of
     // commands where a failed probe is a handful.
-    if (m_data_cmd_count >= DATA_CMDS_FOR_BATTLE)
+    if (m_data_cmd_count >= DATA_CMDS_FOR_BATTLE && !m_battle_locked)
+    {
       m_battle_locked = true;
+      // One shot at first lock: which battle FORMAT did the game actually
+      // choose? The doubles-targeting field investigation died on exactly this
+      // being unrecoverable after the fact. The mode word at VS-ctx+8 selects
+      // the link record (0=single/rec5, 1=double/rec7, 2=tag/rec8), and the
+      // record's own leading bytes (type, trainers-per-side, style, party) are
+      // the layout the GBAs get told -- an absent fourth participant in tag
+      // mode reads back from here. Try-reads: a non-XD game on the link (or
+      // pre-boot state) must log zeros, never raise an alert. Observational
+      // only; log is local, so netplay determinism is untouched.
+      if (Core::IsCPUThread())
+      {
+        const Core::CPUThreadGuard guard(m_system);
+        const auto rd = [&guard](u32 addr) {
+          const auto v = PowerPC::MMU::HostTryRead<u32>(guard, addr);
+          return v ? v->value : 0u;
+        };
+        std::string recs;
+        for (int i = 5; i <= 8; i++)
+        {
+          const u32 base = 0x80B1CDE0 + static_cast<u32>(i) * 0x3C;
+          recs += fmt::format(" rec{}={:08x}+{:04x}", i, rd(base), rd(base + 4) >> 16);
+        }
+        GBADetectLog::LogEvent(m_device_number, m_system.GetCoreTiming().GetTicks(), "vsformat",
+                               fmt::format("mode={:08x} quick={:08x}{}", rd(0x80429A00),
+                                           rd(0x804299FC), recs));
+      }
+    }
 
     // Rematch: release the session latches ONLY on a real back-out to XD's
     // connection screen, so a second battle re-links without a fresh netplay
