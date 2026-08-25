@@ -106,8 +106,15 @@ object MonFactory {
         val mon = Gen3Mon()
         mon.pid = pid
         mon.otId = trainerId
+        // Sanitize drops what Gen 3 cannot encode, so a nickname written entirely in another
+        // script collapses to NOTHING — and an empty nickname field is illegal in Gen 3 (the
+        // games always fill it, species name by default). The doubles battle engine refuses to
+        // offer such a mon as a target; found in the field by exactly that symptom. The fallback
+        // is the vanilla rule: no usable nickname means the species name.
         mon.nicknameRaw = Gen3Text.encode(
-            sanitizeText(set.nickname ?: set.species.uppercase()), 10
+            sanitizeText(set.nickname ?: set.species.uppercase())
+                .ifEmpty { sanitizeText(set.species.uppercase()) },
+            10
         )
         mon.language = LANGUAGE_ENGLISH
         mon.otNameRaw = Gen3Text.encode(sanitizeText(trainerName), 7)

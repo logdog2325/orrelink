@@ -653,8 +653,15 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status)
         "battlestyle sel host_model={} guest_model={}{} music={} venue={} -> block={} ou_disable={}",
         id_or(sel.host_model > 0 ? std::optional<int>(sel.host_model) : std::nullopt),
         id_or(guest_model), guest_submitted ? " (guest pick)" : "",
-        sel.music > 0 ? fmt::format("{}", sel.music) : std::string{"default"},
-        sel.venue > 0 ? fmt::format("{}", sel.venue) : std::string{"default"},
+        // Validity, not just non-zero: a stored pick that left the catalog
+        // (curated-out music, say) generates NO lines, and the log claiming it
+        // was live sent a whole debugging session sideways once.
+        IsValidMusicId(sel.music) ? fmt::format("{}", sel.music) :
+        sel.music > 0             ? fmt::format("default (stored {} not offered)", sel.music) :
+                                    std::string{"default"},
+        IsValidVenueId(sel.venue) ? fmt::format("{}", sel.venue) :
+        sel.venue > 0             ? fmt::format("default (stored {} not offered)", sel.venue) :
+                                    std::string{"default"},
         active ? "active" : "empty", active && !ou_enabled ? 1 : 0));
     if (active)
       for (const std::string& op : SplitString(block, '\n'))
