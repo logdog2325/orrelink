@@ -121,6 +121,11 @@ private:
   // assembled into the synced "$OrreLink Battle Style" AR block by
   // BattleCustomizer when a session starts. Every combo's first entry is
   // "Game default", which genuinely emits nothing.
+  //
+  // m_format_combo is the one non-cosmetic pick in that group: the battle
+  // FORMAT (Free / Orre Colosseum), persisted in MAIN_XD_FORMAT and enforced
+  // by FormatRules' gates -- see the tooltip built in CreateMainLayout.
+  QComboBox* m_format_combo;
   QComboBox* m_style_host_model_combo;
   QComboBox* m_style_guest_model_combo;
   QComboBox* m_style_music_combo;

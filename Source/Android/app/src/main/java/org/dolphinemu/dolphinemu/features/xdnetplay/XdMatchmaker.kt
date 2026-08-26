@@ -28,15 +28,21 @@ object XdMatchmaker {
      * Dolphin's public session index:
      *
      *     XD [OC] <nickname>            ("OC" = Open Challenge)
+     *     [Orre] XD [OC] <nickname>     when the host's Format pick is
+     *                                   Orre Colosseum
      *
      * The IDENTICAL format lives in XDNetplayConfig.cpp::MakeOpenSessionName on
      * desktop. Keep the two in sync — it is the only thing that lets a human
      * scanning the lobby and the auto-matcher agree on what an XD room is.
      *
-     * Matching itself never keys off the name (see [pickMatch]); the tag is for
-     * people, so a differently named open room is still joinable.
+     * Matching itself never keys off the name (see [pickMatch]); the tags are
+     * for people, so a differently named open room is still joinable. The
+     * "[Orre] " prefix in particular is a human-readable label only — this
+     * patch adds no matchmaking filter for it, and a Free room's name is
+     * byte-identical to before the Format feature existed.
      */
     const val SESSION_NAME_PREFIX = "XD [OC] "
+    const val ORRE_TAG = "[Orre] "
 
     const val FILE = Settings.FILE_DOLPHIN
     const val SECTION = Settings.SECTION_INI_NETPLAY
@@ -48,8 +54,19 @@ object XdMatchmaker {
     /** Default publish region. Only ever a browser filter — [pickMatch] ignores it. */
     const val DEFAULT_REGION = "NA"
 
-    fun sessionName(nickname: String): String =
-        SESSION_NAME_PREFIX + nickname.ifEmpty { "Player" }
+    /**
+     * The name a room this device hosts should publish under. [orreFormat]
+     * defaults to the device's own Format pick — the caller IS the host on
+     * every publish path — and is overridable so [FindBattlesActivity] can
+     * recognize both auto-name shapes regardless of the current pick.
+     */
+    fun sessionName(
+        nickname: String,
+        orreFormat: Boolean = FormatBridge.isOrreColosseum(IntSetting.MAIN_XD_FORMAT.int)
+    ): String {
+        val base = SESSION_NAME_PREFIX + nickname.ifEmpty { "Player" }
+        return if (orreFormat) ORRE_TAG + base else base
+    }
 
     /**
      * Picks the room "Search for Match" should join, or null to host instead.
