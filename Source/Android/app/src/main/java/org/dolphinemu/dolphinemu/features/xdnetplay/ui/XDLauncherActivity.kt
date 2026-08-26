@@ -27,6 +27,7 @@ import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplayActivity
 import org.dolphinemu.dolphinemu.features.netplay.ui.NetplaySetupActivity
 import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
+import org.dolphinemu.dolphinemu.features.xdnetplay.FormatBridge
 import org.dolphinemu.dolphinemu.features.xdnetplay.LobbySession
 import org.dolphinemu.dolphinemu.features.xdnetplay.NetPlayIndexBridge
 import org.dolphinemu.dolphinemu.features.xdnetplay.SaveImportBridge
@@ -77,6 +78,13 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var guestModelId by mutableStateOf(0)
     private var musicId by mutableStateOf(0)
     private var venueId by mutableStateOf(0)
+
+    // The one-tap battle FORMAT pick (Free / Orre Colosseum), persisted in the
+    // native Main/XDNetplay/Format key via the settings model, exactly like
+    // the Battle Style picks above. The key's value is what the enforcing
+    // gates in shared core read when this device hosts; a pick here is
+    // already "applied".
+    private var formatId by mutableStateOf(FormatBridge.FORMAT_FREE)
 
     /** True from the moment "Search for Match" is tapped until it joins, hosts or gives up. */
     private var searching by mutableStateOf(false)
@@ -338,6 +346,12 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                         venueId = id
                         BattleStyleBridge.setSelection(BattleStyleBridge.SELECTION_VENUE, id)
                     },
+                    formatId = formatId,
+                    onFormatChanged = { id ->
+                        formatId = id
+                        IntSetting.MAIN_XD_FORMAT.setInt(NativeConfig.LAYER_BASE, id)
+                        NativeConfig.save(NativeConfig.LAYER_BASE)
+                    },
                     onBattle = { NetplaySetupActivity.launch(this) },
                     onSearchForMatch = { searchForMatch() },
                     searching = searching,
@@ -545,6 +559,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
             BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_GUEST_MODEL_FALLBACK)
         musicId = BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_MUSIC)
         venueId = BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_VENUE)
+        formatId = IntSetting.MAIN_XD_FORMAT.int
         migrateContentPaths()
         emeraldRomSet = ensureGbaConfig()
         xdGameFound = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID) != null

@@ -31,6 +31,9 @@ bool IsXdGameId(const std::string& game_id);
 // public session index:
 //
 //     XD [OC] <nickname>            ("OC" = Open Challenge)
+//     [Orre] XD [OC] <nickname>     when the host's Format pick is Orre
+//                                   Colosseum (orre_format = the caller's read
+//                                   of Config::MAIN_XD_FORMAT)
 //
 // The IDENTICAL format lives on the Android side in XdMatchmaker.kt
 // (SESSION_NAME_PREFIX). Keep the two in sync -- it is the only thing that
@@ -39,8 +42,11 @@ bool IsXdGameId(const std::string& game_id);
 //
 // Matching itself never keys off the name: it keys off player_count /
 // in_game / has_password, so a room named anything else is still joinable.
-// The tag exists purely so the lobby reads sensibly to people.
-std::string MakeOpenSessionName(const std::string& nickname);
+// The tag exists purely so the lobby reads sensibly to people -- including the
+// "[Orre] " prefix, which is a human-readable label only; this patch adds no
+// matchmaking filter for it, and a Free room's name is byte-identical to
+// before the Format feature existed.
+std::string MakeOpenSessionName(const std::string& nickname, bool orre_format);
 
 // True when an index entry's published "game" string looks like Pokemon XD.
 //

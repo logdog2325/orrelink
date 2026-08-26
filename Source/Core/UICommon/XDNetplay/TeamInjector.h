@@ -152,6 +152,27 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
 // does: that socket's ROM cannot run the Emerald-template disposable save.
 bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* status);
 
+// HOST gate for the one-tap FORMAT feature (FormatRules.h): when the host's
+// MAIN_XD_FORMAT key is Orre Colosseum, validate the parties the HOST brings
+// to the room -- the port-2 save (the host's own team) AND the port-3 save
+// (the guest-slot fallback, played whenever the guest never submits) -- since
+// both will be played under the room's rules. Returns true when hosting may
+// proceed; false with *reason set to a user-displayable sentence naming the
+// offending mon or item AND which slot it sits in. Callers block hosting on
+// false (desktop: ModalMessageBox in MainWindow::NetPlayHost; Android: the
+// connection-error surface in nativeHost -- the same place the FRLG/
+// disposable-save hosting refusals ship), strictly BEFORE the disposable-save
+// swap and the server, so a refusal leaves no swapped state behind.
+//
+// With format=Free this returns true after one int compare -- no file is read,
+// no validation runs, hosting is byte-identical to a build without formats.
+// Deliberately lenient about anything that is not a rules violation: a port
+// with no save, an unreadable/FRLG save (whose party the Emerald-offset
+// readers cannot decode) or an empty party is SKIPPED, not refused -- those
+// conditions exist in Free too and have their own handling; this gate only
+// answers "is a readable party Orre-legal".
+bool ValidateHostPartiesForFormat(std::string* reason);
+
 // End-of-session cleanup: give the host their own team back AND leave no file
 // on this machine holding the opponent's party. Call it whenever a room ends,
 // from either side of the connection -- it works out for itself what is there.

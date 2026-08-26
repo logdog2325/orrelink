@@ -203,15 +203,27 @@ class FindBattlesActivity : AppCompatActivity(), ThemeProvider {
 
     private fun loadPublishPrefs() {
         // Same "XD [OC] <nickname>" shape the auto-matcher publishes, so a
-        // hand-published room reads identically in the lobby.
-        val defaultName = XdMatchmaker.sessionName(StringSetting.NETPLAY_NICKNAME.string)
+        // hand-published room reads identically in the lobby. sessionName()
+        // reads the Format pick, so the prefill carries the "[Orre] " tag
+        // exactly when a room hosted right now would.
+        val nickname = StringSetting.NETPLAY_NICKNAME.string
+        val defaultName = XdMatchmaker.sessionName(nickname)
+        // A stored name matching EITHER auto-shape is an auto-name from an
+        // earlier publish, not something the user typed — recompute it, so a
+        // "[Orre] " tag stuck in config from a previous pick can never
+        // mislabel a Free room (or vice versa). Hand-typed names pass through
+        // untouched.
+        val autoNames = setOf(
+            XdMatchmaker.sessionName(nickname, orreFormat = false),
+            XdMatchmaker.sessionName(nickname, orreFormat = true)
+        )
         uiState = uiState.copy(
             publishEnabled = NativeConfig.getBoolean(
                 NativeConfig.LAYER_ACTIVE, FILE, SECTION, KEY_USE_INDEX, false
             ),
             publishName = NativeConfig.getString(
                 NativeConfig.LAYER_ACTIVE, FILE, SECTION, KEY_INDEX_NAME, ""
-            ).ifEmpty { defaultName },
+            ).let { if (it.isEmpty() || it in autoNames) defaultName else it },
             publishRegion = NativeConfig.getString(
                 NativeConfig.LAYER_ACTIVE, FILE, SECTION, KEY_INDEX_REGION, ""
             ).ifEmpty { "NA" },

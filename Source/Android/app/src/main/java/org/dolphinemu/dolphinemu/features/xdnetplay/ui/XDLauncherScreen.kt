@@ -36,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.dolphinemu.dolphinemu.R
 import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
+import org.dolphinemu.dolphinemu.features.xdnetplay.FormatBridge
 
 /**
  * What the Save Files card shows for one GBA socket. Assembled by
@@ -84,6 +85,8 @@ fun XDLauncherScreen(
     onGuestModelChanged: (Int) -> Unit,
     onMusicChanged: (Int) -> Unit,
     onVenueChanged: (Int) -> Unit,
+    formatId: Int,
+    onFormatChanged: (Int) -> Unit,
     onSearchForMatch: () -> Unit,
     searching: Boolean,
     onFindBattles: () -> Unit,
@@ -178,12 +181,14 @@ fun XDLauncherScreen(
                     Switch(checked = cheatsEnabled, onCheckedChange = onCheatsChanged)
                 }
                 Spacer(Modifier.height(12.dp))
-                // Cosmetic battle-style selectors, host-side. The guest picks
-                // its OWN model in the room's Submit Team sheet; the "Guest
-                // model" dropdown here is only the fallback when they never do
-                // (mirroring the socket-3 team fallback). All of it is
-                // assembled into one synced AR code by shared core at Start —
-                // "Game default" means the code is genuinely absent.
+                // The battle Format pick plus the cosmetic battle-style
+                // selectors, host-side. The guest picks its OWN model in the
+                // room's Submit Team sheet; the "Guest model" dropdown here is
+                // only the fallback when they never do (mirroring the socket-3
+                // team fallback). The cosmetics are assembled into one synced
+                // AR code by shared core at Start — "Game default" means the
+                // code is genuinely absent — while the Format key is read by
+                // the enforcing gates when this device hosts.
                 BattleStyleCard(
                     modelOptions = modelOptions,
                     musicOptions = musicOptions,
@@ -195,7 +200,9 @@ fun XDLauncherScreen(
                     onHostModelChanged = onHostModelChanged,
                     onGuestModelChanged = onGuestModelChanged,
                     onMusicChanged = onMusicChanged,
-                    onVenueChanged = onVenueChanged
+                    onVenueChanged = onVenueChanged,
+                    formatId = formatId,
+                    onFormatChanged = onFormatChanged
                 )
                 Spacer(Modifier.height(12.dp))
                 // The headline action: no codes to trade, no lobby to read.
@@ -259,7 +266,9 @@ private fun BattleStyleCard(
     onHostModelChanged: (Int) -> Unit,
     onGuestModelChanged: (Int) -> Unit,
     onMusicChanged: (Int) -> Unit,
-    onVenueChanged: (Int) -> Unit
+    onVenueChanged: (Int) -> Unit,
+    formatId: Int,
+    onFormatChanged: (Int) -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -270,6 +279,36 @@ private fun BattleStyleCard(
                 text = stringResource(R.string.xd_style_section_title),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
+            )
+            // The one-tap battle FORMAT pick. Unlike everything below it is
+            // NOT cosmetic — with Orre Colosseum picked, hosting validates
+            // both host-side parties, and guest submissions are gated (shared
+            // core's FormatRules; the honor clauses in the hint stay
+            // unenforced by design). It therefore sits above the
+            // "Cosmetic only" hint, which introduces the style dropdowns.
+            // The dropdown reuses BattleStyleDropdown: the default entry
+            // (id 0) is Free, so an unknown key value renders as Free —
+            // matching how the core treats it (no enforcement, no clamp).
+            BattleStyleDropdown(
+                label = stringResource(R.string.xd_format_label),
+                options = listOf(
+                    BattleStyleBridge.StyleOption(
+                        id = FormatBridge.FORMAT_ORRE_COLOSSEUM,
+                        name = stringResource(R.string.xd_format_orre),
+                        experimental = false
+                    )
+                ),
+                selectedId = formatId,
+                defaultLabel = stringResource(R.string.xd_format_free),
+                onSelected = onFormatChanged,
+                modifier = Modifier.fillMaxWidth(),
+                supportingText = stringResource(
+                    if (formatId == FormatBridge.FORMAT_ORRE_COLOSSEUM) {
+                        R.string.xd_format_hint_orre
+                    } else {
+                        R.string.xd_format_hint_free
+                    }
+                )
             )
             Text(
                 text = stringResource(R.string.xd_style_section_hint),

@@ -257,6 +257,23 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeHost(JNIEnv
   const u16 host_port = is_traversal ? Config::Get(Config::NETPLAY_LISTEN_PORT) :
                                        Config::Get(Config::NETPLAY_HOST_PORT);
 
+  // FORMAT host gate (mirrors the desktop MainWindow::NetPlayHost hook): with
+  // the Format pick on Orre Colosseum, the host's port-2 party and port-3
+  // guest-fallback party must both be legal before a room can open. Runs
+  // BEFORE the disposable-save swap so a refusal leaves nothing swapped, and
+  // ships its reason through the same connection-error surface the FRLG/
+  // disposable hosting refusal uses. Format = Free: one int compare, hosting
+  // untouched.
+  if (std::string format_reason; !XDNetplay::ValidateHostPartiesForFormat(&format_reason))
+  {
+    if (ui)
+    {
+      ui->OnConnectionError("Cannot host an Orre Colosseum room: " + format_reason +
+                            " - fix the team, or switch the Format back to Free");
+    }
+    return 0;
+  }
+
   // Disposable host saves (mirrors the desktop MainWindow::NetPlayHost hook):
   // if a GBA port holds a user-imported save, swap in a rebuilt save carrying
   // only its party and trainer identity BEFORE the server exists -- netplay
