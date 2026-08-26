@@ -60,10 +60,14 @@ bool IsXdGameId(const std::string& game_id)
   return game_id.rfind(XD_GAME_ID, 0) == 0;
 }
 
-std::string MakeOpenSessionName(const std::string& nickname)
+std::string MakeOpenSessionName(const std::string& nickname, bool orre_format)
 {
-  // Mirrors XdMatchmaker.sessionName() on Android, byte for byte.
-  return "XD [OC] " + (nickname.empty() ? std::string("Player") : nickname);
+  // Mirrors XdMatchmaker.sessionName() on Android, byte for byte. The
+  // "[Orre] " room tag is a purely human-readable label (no matchmaking
+  // filter keys off it in this patch); with the Format pick on Free the name
+  // is byte-identical to the pre-Format builds.
+  const std::string base = "XD [OC] " + (nickname.empty() ? std::string("Player") : nickname);
+  return orre_format ? "[Orre] " + base : base;
 }
 
 bool LooksLikeXdSession(const std::string& published_game_name)

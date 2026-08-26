@@ -23,6 +23,8 @@ add_library(uicommon
   XDNetplay/BattleCustomizer.h
   XDNetplay/DisposableSave.cpp
   XDNetplay/DisposableSave.h
+  XDNetplay/FormatRules.cpp
+  XDNetplay/FormatRules.h
   XDNetplay/Gen3Data.cpp
   XDNetplay/Gen3Data.h
   XDNetplay/Gen3Mon.cpp
