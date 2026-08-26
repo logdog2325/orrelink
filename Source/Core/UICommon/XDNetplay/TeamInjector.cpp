@@ -32,6 +32,7 @@
 #include "Core/HW/GBACore.h"
 #endif
 
+#include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Data.h"
 #include "UICommon/XDNetplay/Gen3Mon.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
@@ -497,6 +498,24 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
   if (!data)
     return fail(fmt::format("game data unavailable ({})", error));
 
+  // FORMAT gate (guest submission, Showdown form): with the HOST's format key
+  // set to Orre Colosseum, the submitted party must be legal BEFORE any
+  // lifecycle side effect runs (the self-heal and the .hostteam stash below
+  // are the first ones) -- a refused submission leaves no trace. The refusal
+  // reason rides the normal status -> room-chat path, prefixed so the guest
+  // knows which ruleset spoke. The guest's own format key is irrelevant here:
+  // this code runs on the host, and the host's key governs the room. With
+  // format=Free this block is a single int compare -- no validation runs and
+  // behavior stays byte-identical. (Parsing twice under Orre is deliberate:
+  // the pristine Free path below keeps its original shape.)
+  if (FormatRules::IsOrreColosseum(Config::Get(Config::MAIN_XD_FORMAT)))
+  {
+    const FormatRules::Verdict verdict =
+        FormatRules::ValidateSets(ShowdownParser::ParseTeam(showdown_text), *data);
+    if (!verdict.ok)
+      return fail("Orre Colosseum: " + verdict.reason);
+  }
+
   const std::string save_path = ResolveGuestSavePath(device, &error);
   if (save_path.empty())
     return fail(std::move(error));
@@ -637,6 +656,29 @@ bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* s
   if (!decoded)
     return fail(fmt::format("save bundle rejected ({})", error));
 
+  // FORMAT gate (guest submission, bundle form): same contract as the Showdown
+  // gate in InjectGuestTeam -- the HOST's format key governs, the check runs
+  // BEFORE any lifecycle side effect (self-heal/stash), and a refusal goes out
+  // through the status -> room-chat path prefixed "Orre Colosseum: ". The
+  // decoded mons carry INTERNAL species ids; ValidateParty maps them to
+  // National dex numbers through Gen3Data before the ban list applies. With
+  // format=Free this is a single int compare and nothing else runs. Unlike the
+  // Showdown path, Orre cannot proceed when gen3data.json is unreadable --
+  // waving an unvalidatable party through would silently break the room's
+  // ruleset, so the submission is refused just as loudly.
+  if (FormatRules::IsOrreColosseum(Config::Get(Config::MAIN_XD_FORMAT)))
+  {
+    std::string data_error;
+    const auto data = Gen3Data::LoadBundled(&data_error);
+    if (!data)
+      return fail(fmt::format("Orre Colosseum: cannot validate the party (game data "
+                              "unavailable: {})",
+                              data_error));
+    const FormatRules::Verdict verdict = FormatRules::ValidateParty(decoded->mons, *data);
+    if (!verdict.ok)
+      return fail("Orre Colosseum: " + verdict.reason);
+  }
+
   const std::string save_path = ResolveGuestSavePath(device, &error);
   if (save_path.empty())
     return fail(std::move(error));
@@ -693,6 +735,69 @@ bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* s
     *status = fmt::format("{} Pokemon from the guest's own save written to the guest slot, "
                           "playing as {}",
                           decoded->mons.size(), decoded->trainer_name);
+  }
+  return true;
+#endif
+}
+
+bool ValidateHostPartiesForFormat(std::string* reason)
+{
+  // Free (or any unknown key value): one int compare, nothing else -- no file
+  // reads, no validation, hosting proceeds exactly as before this feature.
+  if (!FormatRules::IsOrreColosseum(Config::Get(Config::MAIN_XD_FORMAT)))
+    return true;
+
+#ifndef HAS_LIBMGBA
+  // No GBA support means no socket saves to validate (and no session that
+  // could play them).
+  return true;
+#else
+  std::string data_error;
+  const auto data = Gen3Data::LoadBundled(&data_error);
+  if (!data)
+  {
+    // Without gen3data.json nothing anywhere can validate (the guest gates
+    // refuse submissions outright in this state); don't invent a hosting
+    // blocker for a broken install on top of that.
+    return true;
+  }
+
+  // Both of the host's parties will be played under the room's rules: port 2
+  // is the host's own team, port 3 is the fallback the guest plays whenever
+  // they never submit one. Validate the saves the session will actually read
+  // -- SavePathForDevice is the exact resolution SyncSaveData uses.
+  for (const int device : {1, 2})
+  {
+    const std::string save_path = SavePathForDevice(device);
+    if (save_path.empty() || !File::Exists(save_path))
+      continue;  // not a rules question; the setup checklist owns missing saves
+
+    std::vector<u8> bytes;
+    if (!ReadFileBytes(save_path, &bytes))
+      continue;
+    const auto save = EmeraldSave::Create(std::move(bytes));
+    if (!save)
+      continue;  // unreadable save: surfaced elsewhere, not a format violation
+    // FRLG keeps its party at different section-1 offsets, so the shared
+    // Emerald-offset reader below would decode garbage -- skip rather than
+    // refuse on noise (FRLG hosting limits have their own loud refusals).
+    if (EmeraldSave::DetectGame(*save) == Gen3Game::FireRedLeafGreen)
+      continue;
+    const auto party = save->ReadParty();
+    if (!party || party->empty())
+      continue;
+
+    const FormatRules::Verdict verdict = FormatRules::ValidateParty(*party, *data);
+    if (!verdict.ok)
+    {
+      if (reason)
+      {
+        *reason = fmt::format("{} (GBA port {}) is not Orre Colosseum legal - {}",
+                              device == 1 ? "your team" : "the guest-slot fallback team",
+                              device + 1, verdict.reason);
+      }
+      return false;
+    }
   }
   return true;
 #endif

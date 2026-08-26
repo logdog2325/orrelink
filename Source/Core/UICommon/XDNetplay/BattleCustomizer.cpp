@@ -28,6 +28,7 @@
 
 #include "Common/IOFile.h"
 
+#include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
 
 namespace XDNetplay::BattleCustomizer
@@ -643,6 +644,52 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
   return block;
 }
 
+// The Orre Colosseum in-game ruleset, pinned into Custom 1. Design: instead of
+// pinning individual clause bytes -- several of whose meanings are unverified
+// -- the WHOLE 144-byte slot is written with the game's own stock LV100
+// tournament preset (main.dol file 0x2E7C08 + 3*0x90; min 1 / max 100 / total
+// 600 / species-clause encoding 00,06 / tournament marker at +0x08, all-zero
+// tail), with exactly one change: the u16 at +0x1A (entries) set to 4 for
+// bring-6-pick-4. Every byte is the game's own tournament value, so no
+// unverified meaning is ever guessed at. The rules screen's menu globals are
+// pinned alongside so the selection is Double / Custom 1 and enforcement
+// (GameCube-side entry validator, lha ruleset+0/+2) routes through the pinned
+// slot. Do-not-pin findings from the field map are respected: never the
+// getter's working buffer (rebuilt in-call), never ctx+0x10 (races the random
+// venue roll); the venue stays on the field-proven record +0x06 pin.
+constexpr u32 ORRE_MENU_GLOBAL_LINES[][2] = {
+    {0x044349EC, 0x00000000},  // player layout = 2P (layout >= 2 would force tag mode)
+    {0x044349F0, 0x00000001},  // battle type = Double -> ctx+8 = 1 -> record 7
+    {0x044349FC, 0x00000003},  // rules choice = Custom 1 (save-backed slot the getter
+                               // returns DIRECTLY for selections 3..5 -- the pin holds)
+};
+constexpr u32 ORRE_RULESET_BASE = 0x044334C0;  // Custom 1: 0x80433310 + 3*144
+constexpr u32 ORRE_RULESET_WORDS[36] = {
+    0x00010064, 0x02580006, 0x00000002, 0x00000000, 0x01010001, 0xFFC4FFEC,
+    0x01010004, 0x00010000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+};
+
+std::string FormatRuleLines()
+{
+  // Sleep/Freeze/Self-KO clauses stay honor rules and are never emitted here;
+  // species/item/ban clauses are enforced app-side by FormatRules. This pins
+  // only what the in-game rules screen controls: Double, level 100, bring 6
+  // pick 4, via the game's own tournament preset (see above).
+  if (Config::Get(Config::MAIN_XD_FORMAT) != FormatRules::FORMAT_ORRE_COLOSSEUM)
+    return {};
+
+  std::string lines;
+  for (const auto& line : ORRE_MENU_GLOBAL_LINES)
+    AppendLine(&lines, line[0], line[1]);
+  for (size_t i = 0; i < 36; i++)
+    AppendLine(&lines, ORRE_RULESET_BASE + static_cast<u32>(4 * i), ORRE_RULESET_WORDS[i]);
+  return lines;
+}
+
 Selection ConfigSelection()
 {
   Selection sel;
@@ -739,11 +786,21 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status)
   // Side mapping (host -> "Player" block, guest -> "Opponent" line) is the
   // expected orientation; if the one-time emulator test shows it reversed,
   // swap the first two arguments HERE only.
-  const std::string block = GenerateCodeBlock(
+  std::string block = GenerateCodeBlock(
       sel.host_model > 0 ? std::optional<int>(sel.host_model) : std::nullopt, guest_model,
       sel.music > 0 ? std::optional<int>(sel.music) : std::nullopt,
       sel.venue > 0 ? std::optional<int>(sel.venue) : std::nullopt,
       SaveBustClass(1), SaveBustClass(2));
+  // FORMAT seam: the future rules-pin patch contributes its in-game rule pins
+  // through FormatRuleLines() (see BattleCustomizer.h). Today the helper
+  // returns "" for every format, so this append never changes the block and
+  // an all-default session stays byte-for-byte stock in both formats.
+  if (const std::string format_lines = FormatRuleLines(); !format_lines.empty())
+  {
+    if (!block.empty())
+      block.push_back('\n');
+    block += format_lines;
+  }
   const bool active = !block.empty();
 
   // One line per regeneration so a tester's log says exactly what was picked
