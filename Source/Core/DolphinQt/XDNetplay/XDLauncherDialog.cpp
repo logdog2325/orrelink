@@ -48,6 +48,7 @@
 #include "UICommon/GameFile.h"
 #include "UICommon/NetPlayIndex.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
+#include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
 #include "UICommon/XDNetplay/SaveImport.h"
 
@@ -193,8 +194,14 @@ void PrepareNetplayConfig()
 void PreparePublishConfig(bool open_challenge)
 {
   Config::SetBaseOrCurrent(Config::NETPLAY_USE_INDEX, true);
-  Config::SetBaseOrCurrent(Config::NETPLAY_INDEX_NAME,
-                           XDNetplay::MakeOpenSessionName(Config::Get(Config::NETPLAY_NICKNAME)));
+  // The "[Orre] " room tag rides the published name when the host's Format
+  // pick is Orre Colosseum -- label only, no matchmaking filter change; with
+  // Format = Free the name is byte-identical to before the feature.
+  Config::SetBaseOrCurrent(
+      Config::NETPLAY_INDEX_NAME,
+      XDNetplay::MakeOpenSessionName(
+          Config::Get(Config::NETPLAY_NICKNAME),
+          XDNetplay::FormatRules::IsOrreColosseum(Config::Get(Config::MAIN_XD_FORMAT))));
   if (Config::Get(Config::NETPLAY_INDEX_REGION).empty())
     Config::SetBaseOrCurrent(Config::NETPLAY_INDEX_REGION, "NA");
   if (open_challenge)
@@ -364,12 +371,18 @@ void XDLauncherDialog::CreateMainLayout()
   battle_box->setLayout(battle_layout);
   layout->addWidget(battle_box);
 
-  // Battle Style: purely cosmetic picks the HOST makes. BattleCustomizer turns
-  // them into one synced AR code at Start, so both players always see the same
-  // thing; "Game default" genuinely emits nothing and an all-default session
-  // stays byte-for-byte stock. Entries after each list's separator are valid
-  // but untested in battle -- their labels say so; venues whose terrain
-  // changes a few moves carry that in the label too, no extra dialogs.
+  // Battle Style: picks the HOST makes. All but the first are purely cosmetic:
+  // BattleCustomizer turns them into one synced AR code at Start, so both
+  // players always see the same thing; "Game default" genuinely emits nothing
+  // and an all-default session stays byte-for-byte stock. Entries after each
+  // list's separator are valid but untested in battle -- their labels say so;
+  // venues whose terrain changes a few moves carry that in the label too, no
+  // extra dialogs.
+  //
+  // The first row is the battle FORMAT (v1.4.0) -- the one pick that is not
+  // cosmetic. It is persisted in MAIN_XD_FORMAT exactly like the style keys;
+  // FormatRules' gates (host-party check before a room opens, guest-submission
+  // check on arrival) do the enforcing, never this dropdown.
   auto* style_box = new QGroupBox(tr("Battle Style"));
   auto* style_layout = new QGridLayout;
   int style_row = 0;
@@ -386,6 +399,33 @@ void XDLauncherDialog::CreateMainLayout()
     style_row++;
     return combo;
   };
+  m_format_combo = add_style_combo(
+      tr("Format:"),
+      tr("Applies when you host: your room plays under this ruleset.\n\n"
+         "Orre Colosseum — the canon in-game ruleset. Enforced before a room\n"
+         "opens (your team and the port-3 fallback team) and on every guest\n"
+         "submission:\n"
+         "  • Gen 1–3 species, except Mewtwo, Mew, Lugia, Ho-Oh, Celebi,\n"
+         "    Kyogre, Groudon, Rayquaza, Jirachi and Deoxys\n"
+         "  • Species Clause — no duplicate species on a team\n"
+         "  • Item Clause — no duplicate held items on a team\n"
+         "  • Soul Dew is banned\n"
+         "Sleep, Freeze and Self-KO clauses are honor rules: please follow\n"
+         "them yourselves — OrreLink never enforces them.\n\n"
+         "Free — no restrictions; sessions are exactly as before this option\n"
+         "existed. When you JOIN a room, the host's Format applies, not yours;\n"
+         "your own pick still gives you legality notes in the Team Editor and\n"
+         "the Submit Team dialog."));
+  // The entry labels come from FormatRules so the dropdown, the refusal
+  // dialogs and the room-chat messages all name the formats identically.
+  m_format_combo->addItem(
+      QString::fromUtf8(
+          XDNetplay::FormatRules::FormatDisplayName(XDNetplay::FormatRules::FORMAT_FREE)),
+      XDNetplay::FormatRules::FORMAT_FREE);
+  m_format_combo->addItem(
+      QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(
+          XDNetplay::FormatRules::FORMAT_ORRE_COLOSSEUM)),
+      XDNetplay::FormatRules::FORMAT_ORRE_COLOSSEUM);
   const auto populate_style_combo =
       [this](QComboBox* combo, std::span<const XDNetplay::BattleCustomizer::StyleOption> table,
              bool terrain_suffix) {
@@ -508,6 +548,11 @@ void XDLauncherDialog::ConnectWidgets()
       Config::Save();
     });
   };
+  // The Format pick persists through the identical idiom: only the config key
+  // is written here. Everything that enforces a format (the host gate, the
+  // guest-submission gates, the "[Orre] " session tag) reads MAIN_XD_FORMAT
+  // for itself at its own moment -- the dropdown never enforces anything.
+  connect_style_combo(m_format_combo, Config::MAIN_XD_FORMAT);
   connect_style_combo(m_style_host_model_combo, Config::MAIN_XD_STYLE_HOST_MODEL);
   connect_style_combo(m_style_guest_model_combo, Config::MAIN_XD_STYLE_GUEST_MODEL);
   connect_style_combo(m_style_music_combo, Config::MAIN_XD_STYLE_MUSIC);
@@ -547,6 +592,11 @@ void XDLauncherDialog::showEvent(QShowEvent* event)
     const int index = combo->findData(Config::Get(setting));
     combo->setCurrentIndex(index >= 0 ? index : 0);
   };
+  // Same story for the Format pick: findData on a value the dropdown does not
+  // carry lands on index 0 -- Free -- which is precisely how FormatRules::
+  // IsOrreColosseum treats an unknown key value (no enforcement, never a
+  // surprise lockout), so here too the UI and the code cannot disagree.
+  refresh_style_combo(m_format_combo, Config::MAIN_XD_FORMAT);
   refresh_style_combo(m_style_host_model_combo, Config::MAIN_XD_STYLE_HOST_MODEL);
   refresh_style_combo(m_style_guest_model_combo, Config::MAIN_XD_STYLE_GUEST_MODEL);
   refresh_style_combo(m_style_music_combo, Config::MAIN_XD_STYLE_MUSIC);
