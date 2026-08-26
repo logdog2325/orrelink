@@ -85,6 +85,9 @@ public:
   std::optional<int> ExpForLevel(const std::string& exp_group, int level) const;
 
   const std::map<std::string, Species>& GetSpecies() const { return m_species; }
+  // Normalized item name -> id, exposed for reverse lookups (FormatRules names
+  // a held item in its refusal reasons from this map).
+  const std::map<std::string, int>& GetItems() const { return m_items; }
   const std::map<int, std::string>& GetTypeNames() const { return m_type_names; }
 
 private:

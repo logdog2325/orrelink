@@ -125,6 +125,20 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
                               std::optional<int> bgm, std::optional<int> venue,
                               int p1_class = 0, int p2_class = 0);
 
+// ---- FORMAT seam (v1.4.0) --------------------------------------------------
+// The IN-GAME rules layer of the Orre Colosseum format -- doubles, level 100,
+// bring-6-pick-4, team preview -- is pinned by AR writes that ship in a
+// SEPARATE rules-pin patch once its field map completes. THIS is the seam that
+// patch lands in: RegenerateIni appends whatever this helper returns to the
+// assembled "$OrreLink Battle Style" block, and the helper consults the format
+// key (Config::MAIN_XD_FORMAT, values in FormatRules.h) to decide what to
+// emit. TODAY it returns "" for every format, so format=Free and format=Orre
+// generate byte-identical blocks and sessions. Party legality (species/item
+// bans and clauses) is NOT this seam's business -- FormatRules validates that
+// at the submission/host gates. Sleep/Freeze/Self-KO clauses are honor rules:
+// documented in UI copy, never emitted here.
+std::string FormatRuleLines();
+
 // The host's four launcher selections. 0 (the config default) = game default.
 struct Selection
 {
