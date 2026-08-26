@@ -197,6 +197,18 @@ enum class IntSetting(
         Settings.SECTION_INI_XD_NETPLAY,
         "SubmitModel",
         0
+    ),
+
+    // The one-tap battle FORMAT pick, persisted like the Battle Style keys.
+    // Same key as the C++ MAIN_XD_FORMAT; values are FormatBridge.FORMAT_*:
+    // 0 = Free (default — no validation runs anywhere), 1 = Orre Colosseum.
+    // The HOST's value governs a room; a joiner's own value only drives local
+    // paste-time notes. Unknown values behave as Free, never clamped.
+    MAIN_XD_FORMAT(
+        Settings.FILE_DOLPHIN,
+        Settings.SECTION_INI_XD_NETPLAY,
+        "Format",
+        0
     );
 
     override val isOverridden: Boolean

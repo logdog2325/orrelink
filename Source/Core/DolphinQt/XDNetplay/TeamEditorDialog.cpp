@@ -36,6 +36,7 @@
 #include "DolphinQt/QtUtils/QueueOnObject.h"
 #include "DolphinQt/Settings.h"
 
+#include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Text.h"
 #include "UICommon/XDNetplay/MonFactory.h"
 #include "UICommon/XDNetplay/ShowdownParser.h"
@@ -409,6 +410,22 @@ void TeamEditorDialog::OnImport()
   }).detach();
 }
 
+QString TeamEditorDialog::FormatComplianceNote() const
+{
+  // Free (or an unknown key value): one int compare, no validation observable.
+  if (!FormatRules::IsOrreColosseum(Config::Get(Config::MAIN_XD_FORMAT)))
+    return {};
+  // Without game data the editor could not have built a party to check anyway
+  // (and the note is a courtesy, never a judge -- when in doubt, stay quiet).
+  if (!m_data)
+    return {};
+  const FormatRules::Verdict verdict = FormatRules::ValidateParty(m_party, *m_data);
+  if (verdict.ok)
+    return {};
+  return tr("note: this team is not Orre Colosseum legal - %1")
+      .arg(QString::fromStdString(verdict.reason));
+}
+
 bool TeamEditorDialog::ApplyTrainerName(std::string* error)
 {
   if (!m_save)
@@ -500,6 +517,10 @@ void TeamEditorDialog::ApplyImportText(const std::string& text)
     m_party = std::move(built);
     messages.prepend(
         tr("Imported %1 Pokémon (replaced party)").arg(static_cast<int>(m_party.size())));
+    // Paste-time FORMAT feedback: a heads-up, never a refusal -- the import
+    // above went through regardless of what the note says.
+    if (const QString note = FormatComplianceNote(); !note.isEmpty())
+      messages << note;
   }
   SetMessages(messages);
   RefreshPartyList();
@@ -552,10 +573,16 @@ void TeamEditorDialog::OnSave()
     SetMessages({tr("NOT saved — %1").arg(QString::fromStdString(error))});
     return;
   }
-  SetMessages({tr("Saved %1 Pokémon as %2 to %3 (verified; previous save backed up as .bak)")
-                   .arg(static_cast<int>(m_party.size()))
-                   .arg(QString::fromStdString(m_save->GetTrainerName()))
-                   .arg(QString::fromStdString(m_save_path))});
+  QStringList messages{
+      tr("Saved %1 Pokémon as %2 to %3 (verified; previous save backed up as .bak)")
+          .arg(static_cast<int>(m_party.size()))
+          .arg(QString::fromStdString(m_save->GetTrainerName()))
+          .arg(QString::fromStdString(m_save_path))};
+  // Paste-time FORMAT feedback: the save above went through regardless -- only
+  // the hosting/submission gates ever refuse an illegal team.
+  if (const QString note = FormatComplianceNote(); !note.isEmpty())
+    messages << note;
+  SetMessages(messages);
 }
 
 void TeamEditorDialog::OnShowInFolder()

@@ -1128,6 +1128,18 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_style_submit_model_label">Trainer model</string>
     <string name="xd_style_submit_model_hint">Cosmetic — how you\'ll appear in the battle.</string>
 
+    <!-- One-tap battle Format pick (Free / Orre Colosseum). The option names
+         match FormatRules::FormatDisplayName in shared core so dropdowns and
+         refusal messages agree across platforms. -->
+    <string name="xd_format_label">Format</string>
+    <string name="xd_format_free">Free</string>
+    <string name="xd_format_orre">Orre Colosseum</string>
+    <string name="xd_format_hint_free">No team rules — anything a Gen 3 save can hold.</string>
+    <string name="xd_format_hint_orre">Applies to rooms you host (listed with an [Orre] tag): no Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys; no duplicate species; no duplicate held items; Soul Dew banned. Sleep, Freeze, and Self-KO clauses are honor rules — not enforced.</string>
+    <!-- Non-blocking paste-time note; %1$s is a reason from shared core,
+         e.g. "banned species: Kyogre". -->
+    <string name="xd_format_note">note: this team is not Orre Colosseum legal - %1$s</string>
+
     <!-- XD Netplay: joiner's Submit Team sheet, "Use my save" (party-bundle)
          mode. Refusal messages (FireRed/LeafGreen save, empty party, ...) come
          from the shared core and are not duplicated here. -->

@@ -67,6 +67,15 @@ private:
   // as Gen 3 text; nothing is modified in that case.
   bool ApplyTrainerName(std::string* error);
 
+  // Paste-time FORMAT feedback (FormatRules.h): when the local Format pick is
+  // Orre Colosseum and the current party breaks its rules, the non-blocking
+  // "note: this team is not Orre Colosseum legal - ..." line to append to the
+  // log; empty otherwise. NEVER blocks anything -- importing and saving an
+  // illegal team stays allowed (only the hosting/submission gates refuse), the
+  // note just says it here first. With the pick on Free this is one int
+  // compare: no validation runs at all.
+  QString FormatComplianceNote() const;
+
   std::optional<XDNetplay::Gen3Data> m_data;
   std::optional<XDNetplay::EmeraldSave> m_save;
   std::vector<XDNetplay::Gen3Mon> m_party;

@@ -247,6 +247,16 @@ extern const Info<int> MAIN_XD_STYLE_GUEST_MODEL;  // fallback only; the guest's
 extern const Info<int> MAIN_XD_STYLE_MUSIC;
 extern const Info<int> MAIN_XD_STYLE_VENUE;
 
+// The one-tap battle FORMAT pick, persisted like the Battle Style keys and
+// offered by the same launcher area on both platforms. Values are
+// XDNetplay::FormatRules::FORMAT_*: 0 = Free (default -- no validation runs
+// anywhere, sessions stay byte-identical to a build without the feature),
+// 1 = Orre Colosseum (species ban list, Species Clause, Item Clause, Soul Dew
+// ban; see UICommon/XDNetplay/FormatRules.h). The HOST's value governs a room;
+// a joiner's own value is irrelevant while joining. Unknown values behave as
+// Free, never clamped.
+extern const Info<int> MAIN_XD_FORMAT;
+
 // Display filename of the user save imported over a GBA socket's team save by
 // UICommon/XDNetplay/SaveImport; "" = the bundled team-editor save. Display
 // only: the authoritative "was imported" signal is SaveImport::HasImportBackup

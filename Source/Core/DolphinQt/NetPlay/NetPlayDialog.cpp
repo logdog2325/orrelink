@@ -30,6 +30,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <memory>
 #include <optional>
 #include <thread>
 #include <utility>
@@ -77,8 +78,11 @@
 #include "UICommon/GameFile.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/DisposableSave.h"
+#include "UICommon/XDNetplay/FormatRules.h"
+#include "UICommon/XDNetplay/Gen3Data.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
 #include "UICommon/XDNetplay/PartyBundle.h"
+#include "UICommon/XDNetplay/ShowdownParser.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 #include "UICommon/UICommon.h"
 
@@ -1022,6 +1026,89 @@ void NetPlayDialog::OnSubmitTeam()
   auto* team_edit = new QPlainTextEdit(&dialog);
   team_edit->setPlaceholderText(tr("Showdown export or pokepast.es link"));
   dialog_layout->addWidget(team_edit, 1);
+
+  // Paste-time FORMAT feedback (FormatRules.h): with the LOCAL Format pick on
+  // Orre Colosseum, a live note under the paste box says when the team about
+  // to be sent breaks that ruleset -- the same wording the Team Editor uses --
+  // so a violation is learned here, not from the host's refusal arriving in
+  // room chat. NEVER blocking: Send stays enabled whatever the note says,
+  // because only the HOST's format governs a room and this host may well be
+  // running Free. Nothing here can check what the host runs; the note is
+  // keyed off the local pick as agreed feedback, not enforcement. A
+  // pokepast.es link parses to no sets, so it draws no note (checking it
+  // would mean fetching it -- the send path resolves links later anyway).
+  // With the local pick on Free none of this exists: no label in the layout,
+  // no parse, no validation call, ever.
+  if (XDNetplay::FormatRules::IsOrreColosseum(Config::Get(Config::MAIN_XD_FORMAT)))
+  {
+    // Game data loads once per dialog open; on failure (broken install) the
+    // note simply never appears -- feedback is a courtesy, never a judge.
+    std::shared_ptr<const XDNetplay::Gen3Data> format_data;
+    if (auto loaded = XDNetplay::Gen3Data::LoadBundled())
+      format_data = std::make_shared<const XDNetplay::Gen3Data>(std::move(*loaded));
+    if (format_data)
+    {
+      auto* format_note = new QLabel(&dialog);
+      format_note->setWordWrap(true);
+      format_note->hide();
+      dialog_layout->addWidget(format_note);
+
+      // Everything is captured by value (widget pointers parented to the
+      // stack dialog, plus the shared_ptr); the connections die with the
+      // dialog, so nothing here outlives what it touches.
+      const auto update_format_note = [format_note, team_edit, use_save_check, format_data] {
+        QString reason;
+        if (use_save_check->isChecked())
+        {
+#ifdef HAS_LIBMGBA
+          // Bundle mode sends the port-2 save's party: validate those actual
+          // bytes, resolved exactly as the send path below resolves them.
+          // Any read problem stays silent here -- the send path owns those
+          // errors and words them better.
+          std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+          if (rom.empty() || !File::Exists(rom))
+            rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
+          if (!rom.empty() && File::Exists(rom))
+          {
+            const std::string save_path = HW::GBA::Core::GetSavePath(rom, 1);
+            if (File::Exists(save_path))
+            {
+              if (const auto save = XDNetplay::LoadSaveFile(save_path))
+              {
+                if (const auto party = save->ReadParty())
+                {
+                  const XDNetplay::FormatRules::Verdict verdict =
+                      XDNetplay::FormatRules::ValidateParty(*party, *format_data);
+                  if (!verdict.ok)
+                    reason = QString::fromStdString(verdict.reason);
+                }
+              }
+            }
+          }
+#endif
+        }
+        else
+        {
+          const XDNetplay::FormatRules::Verdict verdict = XDNetplay::FormatRules::ValidateSets(
+              XDNetplay::ShowdownParser::ParseTeam(team_edit->toPlainText().toStdString()),
+              *format_data);
+          if (!verdict.ok)
+            reason = QString::fromStdString(verdict.reason);
+        }
+        if (!reason.isEmpty())
+        {
+          format_note->setText(tr("note: this team is not Orre Colosseum legal - %1").arg(reason));
+        }
+        format_note->setVisible(!reason.isEmpty());
+      };
+      // No initial call needed: right now the box is empty and unchecked (the
+      // no-note state), and the prefill below fires these same signals for
+      // anything it restores -- textChanged on the stored paste, toggled on a
+      // stored bundle preference.
+      connect(team_edit, &QPlainTextEdit::textChanged, &dialog, update_format_note);
+      connect(use_save_check, &QCheckBox::toggled, &dialog, update_format_note);
+    }
+  }
 
   auto* buttons =
       new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);

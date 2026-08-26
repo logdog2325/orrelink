@@ -18,7 +18,9 @@ import kotlinx.coroutines.flow.onEach
 import org.dolphinemu.dolphinemu.activities.EmulationActivity
 import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
 import org.dolphinemu.dolphinemu.features.netplay.model.NetplayViewModel
+import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
 import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
+import org.dolphinemu.dolphinemu.features.xdnetplay.FormatBridge
 import org.dolphinemu.dolphinemu.ui.main.ThemeProvider
 import org.dolphinemu.dolphinemu.ui.theme.DolphinTheme
 import org.dolphinemu.dolphinemu.utils.NetworkHelper
@@ -55,6 +57,12 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
         // lives, the sheet's own drafts already hold anything newer.
         val submitPrefill = viewModel.submitPrefill()
 
+        // THIS device's Format pick, read once for the sheet's non-blocking
+        // paste-time note. Only advisory here: the room is governed by the
+        // HOST's key, enforced host-side in shared core (TeamInjector).
+        val orreFormatLocal =
+            FormatBridge.isOrreColosseum(IntSetting.MAIN_XD_FORMAT.int)
+
         setContent {
             DolphinTheme {
                 NetplayScreen(
@@ -71,6 +79,8 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
                     initialModelId = submitPrefill.modelId,
                     initialUseMySave = submitPrefill.useMySave,
                     modelOptions = modelOptions,
+                    orreFormatLocal = orreFormatLocal,
+                    validateTeamForFormat = FormatBridge::validateShowdown,
                     game = viewModel.game.collectAsState().value,
                     onStartGame = viewModel::startGame,
                     onGameSelected = viewModel::changeGame,

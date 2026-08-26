@@ -18,7 +18,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.dolphinemu.dolphinemu.R
 import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
+import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
+import org.dolphinemu.dolphinemu.features.xdnetplay.FormatBridge
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.EmeraldSave
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Data
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Game
@@ -378,7 +380,25 @@ class TeamRepo(private val context: Context) {
             party = built
             messages.add(0, "Imported ${built.size} Pokémon (replaced party)")
         }
+        orreFormatNote()?.let { messages += it }
         return messages
+    }
+
+    /**
+     * Non-blocking Orre Colosseum note for the CURRENT party, or null when
+     * there is nothing to say — including whenever this device's Format pick
+     * is Free, where no validation call is made at all. Shown after imports
+     * and saves so a later refusal from a host's gate is no surprise; the
+     * ruleset itself lives only in shared core (FormatRules, via
+     * [FormatBridge]), so this note and that refusal can never disagree.
+     * Importing and saving are deliberately never blocked by it: the pick may
+     * be for a room someone else will host, and Free rooms take any team.
+     */
+    private fun orreFormatNote(): String? {
+        if (!FormatBridge.isOrreColosseum(IntSetting.MAIN_XD_FORMAT.int)) return null
+        val reason = FormatBridge.validateParty(party)
+        if (reason.isEmpty()) return null
+        return context.getString(R.string.xd_format_note, reason)
     }
 
     fun removeAt(index: Int) {
@@ -424,6 +444,8 @@ class TeamRepo(private val context: Context) {
             tmp.writeBytes(out)
             check(tmp.renameTo(path)) { "could not replace ${path.name}" }
             messages.add(0, "Saved ${party.size} Pokémon as ${s.trainerName} to ${path.name} ✓ verified")
+            // The save went through regardless — the format note never blocks.
+            orreFormatNote()?.let { messages += it }
             messages
         } catch (e: Exception) {
             listOf("NOT saved — ${e.message ?: "verification failed"}")

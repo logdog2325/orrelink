@@ -1,0 +1,100 @@
+// Copyright 2026 Dolphin Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#pragma once
+
+#include <span>
+#include <string>
+#include <vector>
+
+#include "UICommon/XDNetplay/Gen3Data.h"
+#include "UICommon/XDNetplay/Gen3Mon.h"
+#include "UICommon/XDNetplay/ShowdownParser.h"
+
+// ---------------------------------------------------------------------------
+// Battle formats ("$OrreLink FORMAT")
+// ---------------------------------------------------------------------------
+//
+// PURE party validation for the one-tap FORMAT feature: no UI, no file IO, no
+// config reads. Callers hand in the format key's value plus (species, item)
+// data and get back either "ok" or one specific, human-readable reason.
+//
+// The format is the HOST's choice, persisted in the MAIN_XD_FORMAT config key
+// exactly like the Battle Style picks:
+//
+//     0 = Free           the default; changes NOTHING. No validation ever
+//                        runs, sessions stay byte-identical to a build
+//                        without this feature.
+//     1 = Orre Colosseum the canon in-game ruleset of XD's Orre Colosseum.
+//
+// What "Orre Colosseum" enforces HERE (the party-legality layer):
+//   * Species ban list: Gen 1-3 species EXCEPT the restricted legendaries and
+//     mythicals -- Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon,
+//     Rayquaza, Jirachi, Deoxys (BANNED_SPECIES in the .cpp, by National dex).
+//   * Species Clause: no duplicate species among the party.
+//   * Item Clause: no duplicate held items among the party. Itemless mons
+//     NEVER count as duplicates of each other -- "no item" is not an item.
+//   * Soul Dew is banned outright (item id 191; see the .cpp).
+//
+// What it deliberately does NOT enforce:
+//   * Doubles / level-100 / bring-6-pick-4 / team preview are the IN-GAME
+//     rules layer, which ships in a separate rules-pin patch once its field
+//     map completes. BattleCustomizer::FormatRuleLines() is the seam it lands
+//     in; today that helper returns nothing.
+//   * Sleep Clause, Freeze Clause and the Self-KO Clause are HONOR rules --
+//     they are documented in UI copy and never enforced by code, matching how
+//     the real Orre Colosseum leaves them to the players.
+//
+// Enforcement sites (the callers):
+//   * guest submission gate -- InjectGuestTeam / InjectGuestBundle validate
+//     before any lifecycle side effect; the refusal reason rides the existing
+//     status -> room-chat path prefixed "Orre Colosseum: ".
+//   * host gate -- ValidateHostPartiesForFormat (TeamInjector.h) checks the
+//     host's port-2 party and port-3 fallback party before hosting begins.
+//   * paste-time feedback -- team editors and the Submit dialog show a
+//     non-blocking note; only the two gates above ever block.
+namespace XDNetplay::FormatRules
+{
+// Values of the MAIN_XD_FORMAT config key. An int (not an enum class) because
+// it travels through config/JNI as a plain integer, like the style picks.
+constexpr int FORMAT_FREE = 0;
+constexpr int FORMAT_ORRE_COLOSSEUM = 1;
+
+// True only for the exact Orre Colosseum value: an unknown/garbage key value
+// behaves as Free (no enforcement), never as a surprise lockout.
+bool IsOrreColosseum(int format_key_value);
+
+// Short display name for a format key value ("Free" / "Orre Colosseum"),
+// shared by both platforms' UI so the dropdowns and messages agree.
+const char* FormatDisplayName(int format_key_value);
+
+// Validation outcome. When !ok, reason is one specific human sentence naming
+// the offending mon or item, e.g.:
+//     "banned species: Kyogre"
+//     "banned item: Soul Dew"
+//     "duplicate species: Snorlax"
+//     "duplicate item: Leftovers (x2)"
+struct Verdict
+{
+  bool ok = true;
+  std::string reason;
+};
+
+// Entry point (a): parsed Showdown sets, PRE-build -- names are resolved
+// through Gen3Data with its own normalization (lowercase, alphanumerics only),
+// so "KYOGRE", "Mr. Mime" and "Nidoran-F" all resolve exactly as MonFactory
+// will resolve them. A set whose species or item name does not resolve is
+// SKIPPED here, because MonFactory::Build will refuse that whole set and the
+// mon can never land in the save -- validating it would risk refusing a paste
+// whose offending entry was never going to play. Validates ALL resolvable
+// sets, whatever the party size (1..6; a paste is capped downstream).
+Verdict ValidateSets(const std::vector<ShowdownSet>& sets, const Gen3Data& data);
+
+// Entry point (b): built Gen3Mon spans -- the party-bundle path and save
+// reading. mon.species is the INTERNAL (Hoenn) species id; it is mapped to the
+// National dex number through Gen3Data before the ban list / Species Clause
+// apply (the two id spaces diverge from Hoenn onward: Kyogre is internal 404,
+// National 382). held_item == 0 means "no item" and never counts toward the
+// Item Clause. Validates every non-empty mon in the span (party size 1..6).
+Verdict ValidateParty(std::span<const Gen3Mon> party, const Gen3Data& data);
+}  // namespace XDNetplay::FormatRules

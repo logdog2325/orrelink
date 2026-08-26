@@ -155,6 +155,18 @@ fun NetplayScreen(
     initialModelId: Int,
     initialUseMySave: Boolean,
     modelOptions: List<BattleStyleBridge.StyleOption>,
+    /**
+     * True when THIS device's Format pick is Orre Colosseum. Drives only the
+     * non-blocking paste-time note in the Submit Team sheet — the room is
+     * governed by the HOST's key, enforced host-side in shared core.
+     */
+    orreFormatLocal: Boolean,
+    /**
+     * Shared core's Orre Colosseum check of a Showdown draft
+     * (FormatBridge.validateShowdown): "" = no complaint, else one reason.
+     * Injected so previews need no native library.
+     */
+    validateTeamForFormat: (String) -> String,
 ) {
     val scrollState = rememberScrollState()
     // XD Netplay: joiner's "Submit Team" sheet. Every field opens pre-filled
@@ -247,6 +259,26 @@ fun NetplayScreen(
                         enabled = !useMySave,
                         modifier = Modifier.fillMaxWidth().height(220.dp)
                     )
+                    // Paste-time Orre Colosseum note, shown immediately while
+                    // the local Format pick is Orre. NEVER blocking: Send
+                    // stays enabled — the note exists so a refusal from the
+                    // host's gate is no surprise. (A pokepast.es link parses
+                    // to nothing and gets no note; the host still enforces on
+                    // the fetched text. The bundle path has no draft to check
+                    // here — the host's gate judges the sent party.)
+                    if (orreFormatLocal && !useMySave) {
+                        val formatReason = remember(teamDraft) {
+                            validateTeamForFormat(teamDraft)
+                        }
+                        if (formatReason.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                stringResource(R.string.xd_format_note, formatReason),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -1554,6 +1586,8 @@ private fun PreviewNetplayScreen() {
         initialModelId = 0,
         initialUseMySave = false,
         modelOptions = emptyList(),
+        orreFormatLocal = false,
+        validateTeamForFormat = { "" },
 //        saveTransferProgress = SaveTransferProgress(
 //            title = "Title",
 //            totalSize = 1024L,
