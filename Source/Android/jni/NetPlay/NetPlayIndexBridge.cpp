@@ -79,14 +79,18 @@ std::string GetLastError()
 }
 
 // Battle-style helper: flatten a BattleCustomizer option table for the Kotlin
-// side as [id, name, tier, ...] triples (id decimal, tier "safe"/
-// "experimental"). Tables are ordered tested-safe first, so a dropdown can
-// insert its "Experimental" divider at the first tier change.
+// side as [id, name, tier, portrait, ...] quads (id decimal, tier "safe"/
+// "experimental", portrait "1"/"0" for model tables -- ModelHasPortrait -- and
+// "-" for music/venue, where the notion does not apply). Music/venue tables
+// are ordered tested-safe first, so a dropdown can insert its "Experimental"
+// divider at the first tier change; model dropdowns present the portrait flag
+// instead of the tier (the models are field-proven).
 jobjectArray StyleTableToJava(JNIEnv* env,
-                              std::span<const XDNetplay::BattleCustomizer::StyleOption> table)
+                              std::span<const XDNetplay::BattleCustomizer::StyleOption> table,
+                              bool model_table)
 {
   std::vector<std::string> flat;
-  flat.reserve(table.size() * 3);
+  flat.reserve(table.size() * 4);
   for (const auto& option : table)
   {
     flat.push_back(std::to_string(option.id));
@@ -94,6 +98,9 @@ jobjectArray StyleTableToJava(JNIEnv* env,
     flat.push_back(option.tier == XDNetplay::BattleCustomizer::Tier::Experimental ?
                        "experimental" :
                        "safe");
+    flat.push_back(!model_table ? "-" :
+                   XDNetplay::BattleCustomizer::ModelHasPortrait(option.id) ? "1" :
+                                                                              "0");
   }
   return SpanToJStringArray(env, flat);
 }
@@ -295,9 +302,11 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_UpdateCheckBridge_nativeCheckF
 // block is assembled in shared core at host time (nativeStartGame ->
 // BattleCustomizer::PrepareForStart and the TeamData arrival hook).
 //
-// Table encoding: flat [id, name, tier, id, name, tier, ...] with id decimal
-// and tier "safe" or "experimental". Tables are ordered tested-safe first, so
-// a dropdown can insert its "Experimental" divider at the first tier change.
+// Table encoding: flat [id, name, tier, portrait, ...] quads with id decimal,
+// tier "safe" or "experimental" and portrait "1"/"0" (models) or "-" (music/
+// venue). Music/venue tables are ordered tested-safe first, so a dropdown can
+// insert its "Experimental" divider at the first tier change; model dropdowns
+// show "(no portrait)" from the portrait flag instead of any tier marking.
 //
 // Selection encoding ("which", shared with BattleStyleBridge.kt):
 //   0 = host's own model   1 = guest-model fallback   2 = music   3 = venue
@@ -309,21 +318,21 @@ JNIEXPORT jobjectArray JNICALL
 Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativeGetModelTable(JNIEnv* env,
                                                                                         jobject)
 {
-  return StyleTableToJava(env, XDNetplay::BattleCustomizer::ModelTable());
+  return StyleTableToJava(env, XDNetplay::BattleCustomizer::ModelTable(), true);
 }
 
 JNIEXPORT jobjectArray JNICALL
 Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativeGetMusicTable(JNIEnv* env,
                                                                                         jobject)
 {
-  return StyleTableToJava(env, XDNetplay::BattleCustomizer::MusicTable());
+  return StyleTableToJava(env, XDNetplay::BattleCustomizer::MusicTable(), false);
 }
 
 JNIEXPORT jobjectArray JNICALL
 Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativeGetVenueTable(JNIEnv* env,
                                                                                         jobject)
 {
-  return StyleTableToJava(env, XDNetplay::BattleCustomizer::VenueTable());
+  return StyleTableToJava(env, XDNetplay::BattleCustomizer::VenueTable(), false);
 }
 
 JNIEXPORT jint JNICALL
