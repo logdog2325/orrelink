@@ -102,6 +102,13 @@ bool IsValidModelId(int id);
 bool IsValidMusicId(int id);
 bool IsValidVenueId(int id);
 
+// Whether the disc ships a pre-rendered pre-battle bust for this model: true
+// exactly for the six GBA player models (0x04..0x09). Every other model
+// battles fine (field-proven) but has no close-up portrait, so the connection
+// and team screens show none for it -- the UI labels such picks
+// "(no portrait)" instead of presenting a tier.
+bool ModelHasPortrait(int model_id);
+
 // Pure assembly: returns the op lines of the "$OrreLink Battle Style" AR code
 // (one "AAAAAAAA VVVVVVVV" per line, '\n'-separated, no "$" name line), or an
 // EMPTY string when every field is absent -- the caller must then emit no code

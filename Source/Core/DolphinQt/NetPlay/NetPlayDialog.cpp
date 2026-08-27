@@ -969,30 +969,31 @@ void NetPlayDialog::OnSubmitTeam()
   // payload as the team, as a "Model:" header line, and the HOST validates it
   // against its own copy of this table before assembling the synced AR block.
   // "No preference" sends no header at all -- the host's "Guest model"
-  // fallback dropdown then decides. Entries past the separator are valid but
-  // untested in battle, and their labels say so.
+  // fallback dropdown then decides. Every model is field-proven in battle, so
+  // no tier presentation here; the one caveat a pick can carry is having no
+  // pre-rendered bust, said in the label as "(no portrait)" and explained by
+  // the caption under the combo.
   auto* model_layout = new QHBoxLayout;
   auto* model_combo = new QComboBox(&dialog);
   model_combo->addItem(tr("No preference"), 0);
+  for (const XDNetplay::BattleCustomizer::StyleOption& option :
+       XDNetplay::BattleCustomizer::ModelTable())
   {
-    using XDNetplay::BattleCustomizer::Tier;
-    bool past_tested = false;
-    for (const XDNetplay::BattleCustomizer::StyleOption& option :
-         XDNetplay::BattleCustomizer::ModelTable())
-    {
-      if (!past_tested && option.tier == Tier::Experimental)
-      {
-        model_combo->insertSeparator(model_combo->count());
-        past_tested = true;
-      }
-      const QString name = QString::fromUtf8(option.name);
-      model_combo->addItem(
-          option.tier == Tier::Experimental ? tr("%1 (untested)").arg(name) : name, option.id);
-    }
+    const QString name = QString::fromUtf8(option.name);
+    model_combo->addItem(XDNetplay::BattleCustomizer::ModelHasPortrait(option.id) ?
+                             name :
+                             tr("%1 (no portrait)").arg(name),
+                         option.id);
   }
   model_layout->addWidget(new QLabel(tr("Trainer model:"), &dialog));
   model_layout->addWidget(model_combo, 1);
   dialog_layout->addLayout(model_layout);
+  auto* portrait_note = new QLabel(
+      tr("Models marked \"(no portrait)\" show no close-up on the connection and team "
+         "screens — the battle model still changes."),
+      &dialog);
+  portrait_note->setWordWrap(true);
+  dialog_layout->addWidget(portrait_note);
 
   // "Use my save": submit the party from the player's OWN local save (the
   // port-2 slot the Team Editor's "Host" role edits -- their slot regardless

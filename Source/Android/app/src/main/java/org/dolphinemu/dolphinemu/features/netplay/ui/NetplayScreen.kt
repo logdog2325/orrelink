@@ -251,6 +251,14 @@ fun NetplayScreen(
                         modifier = Modifier.fillMaxWidth(),
                         supportingText = stringResource(R.string.xd_style_submit_model_hint)
                     )
+                    // Caption under the model control: what "(no portrait)"
+                    // costs (nothing but the close-up), so nobody reads it as
+                    // "broken".
+                    Text(
+                        stringResource(R.string.xd_style_no_portrait_note),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(
                         value = teamDraft,
