@@ -572,6 +572,13 @@ bool IsValidVenueId(int id)
   return FindOption(VENUES, id) != nullptr;
 }
 
+bool ModelHasPortrait(int model_id)
+{
+  // Exactly the models with a bust class -- i.e. the six GBA player models the
+  // connection menu binds bust widgets for (see ModelBustClass above).
+  return ModelBustClass(model_id) != 0;
+}
+
 std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2_model,
                               std::optional<int> bgm, std::optional<int> venue, int p1_class,
                               int p2_class)
@@ -658,10 +665,29 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
     };
     // No collision: each side hides its own class. Collision (shared class):
     // hide only when BOTH sides are bustless, emitted once.
+    bool any_hide = false;
     if (p1_hide && (!classes_collide || p2_hide))
+    {
       emit_hide(p1_class);
+      any_hide = true;
+    }
     if (p2_hide && !classes_collide)
+    {
       emit_hide(p2_class);
+      any_hide = true;
+    }
+    // Class 0 rides along with any hide: the column-0 GC-protagonist bust is
+    // every bust widget's compile-time DEFAULT record (verified: all sixteen
+    // bust descriptors default to 0x201/0x208), so a widget drawn before its
+    // per-class re-crop -- the team preview screen does this -- shows the
+    // protagonist even though no class ever selected it. The complete-image
+    // scan proved these fourteen records are the ONLY path to the bust atlas,
+    // so zeroing class 0 too closes the last surface. Only ever emitted while
+    // a hide is active, i.e. a portrait-less pick in this app's GBA-vs-GBA
+    // flow -- a genuine GC-vs-GBA session (where column 0 is a real player's
+    // bust) never has these lines.
+    if (any_hide)
+      emit_hide(0);
   }
   if (music)
   {
@@ -695,7 +721,14 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
 // getter's working buffer (rebuilt in-call), never ctx+0x10 (races the random
 // venue roll); the venue stays on the field-proven record +0x06 pin.
 constexpr u32 ORRE_MENU_GLOBAL_LINES[][2] = {
-    {0x044349EC, 0x00000000},  // player layout = 2P (layout >= 2 would force tag mode)
+    {0x044349EC, 0x00000001},  // player layout = GBA vs GBA. The layout global IS the mode row:
+                               // 0 = GC vs GBA, 1 = GBA vs GBA, 2/3 = tag (>= 2 forces tag at
+                               // commit). Pinning 0 held the row on GC vs GBA and per-frame
+                               // reverted any attempt to select GBA vs GBA -- the field bug.
+                               // Value 1 verified against the layout table at 0x802EAA70 (ports
+                               // {2,3}, matching this fork's SI config exactly) and the mode
+                               // label atlas; layout 1 also skips the GC-pad presence gates, so
+                               // no new refusal dialog becomes reachable.
     {0x044349F0, 0x00000001},  // battle type = Double -> ctx+8 = 1 -> record 7
     {0x044349FC, 0x00000003},  // rules choice = Custom 1 (save-backed slot the getter
                                // returns DIRECTLY for selections 3..5 -- the pin holds)
