@@ -120,6 +120,22 @@ constexpr u32 BUST_TABLE_B = 0x042EB6A0;  // 32-bit writes into 0x802EB6A0[class
 constexpr u32 BUST_A_BY_CLASS[7] = {0, 0x209, 0x20A, 0x210, 0x211, 0x212, 0x213};
 constexpr u32 BUST_B_BY_CLASS[7] = {0, 0x202, 0x203, 0x204, 0x205, 0x206, 0x207};
 
+// The bust widgets per class, both sizes. Each widget's record sits at the
+// static address 0x803001A8 + id*72 (verified dump), with five per-language
+// 12-byte sub-records at +8 whose W/H u16 pair is one u32 at sub+4. Zeroing
+// that word on all five sub-records makes the widget draw NOTHING -- the
+// chosen way to hide the bust when a picked model has no portrait, because it
+// touches no lookup path that can miss (repointing at absent records or
+// textures null-derefs; a zero-size crop just draws no pixels). The busts are
+// pre-rendered 2D art -- the disc ships exactly seven portraits -- so hiding
+// is the only honest presentation for the other sixty models.
+constexpr u32 BUST_WIDGET_A[7] = {0x208, 0x209, 0x20A, 0x210, 0x211, 0x212, 0x213};  // small
+constexpr u32 BUST_WIDGET_B[7] = {0x201, 0x202, 0x203, 0x204, 0x205, 0x206, 0x207};  // large
+constexpr u32 BustWhWordAddr(u32 widget_id, u32 language_slot)
+{
+  return 0x04000000u | ((0x803001A8u + widget_id * 72 + 8 + 12 * language_slot + 4) & 0x01FFFFFFu);
+}
+
 // Model id -> bust class (1 FRLG-m, 2 FRLG-f, 3 RS-m, 4 RS-f, 5 E-m, 6 E-f).
 // Only the six GBA player models have bust widgets in the connection menu;
 // anything else returns 0 = no bust remap (battle model still changes).
@@ -625,6 +641,27 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
       AppendLine(&block, BUST_TABLE_A + 4 * static_cast<u32>(p2_class), BUST_A_BY_CLASS[w2]);
       AppendLine(&block, BUST_TABLE_B + 4 * static_cast<u32>(p2_class), BUST_B_BY_CLASS[w2]);
     }
+
+    // A pick with NO portrait (w == 0 while a model IS picked): hide that
+    // side's bust rather than showing the protagonist over a Miror B battle.
+    // Zero the crop size on the class's two widgets, all five language
+    // sub-records. Collision rule as above: same class on both saves shares
+    // the widgets, so stand down unless BOTH sides want them hidden.
+    const bool p1_hide = p1 && w1 == 0 && p1_class >= 1 && p1_class <= 6;
+    const bool p2_hide = p2 && w2 == 0 && p2_class >= 1 && p2_class <= 6;
+    const auto emit_hide = [&block](int cls) {
+      for (u32 m = 0; m < 5; m++)
+      {
+        AppendLine(&block, BustWhWordAddr(BUST_WIDGET_A[cls], m), 0);
+        AppendLine(&block, BustWhWordAddr(BUST_WIDGET_B[cls], m), 0);
+      }
+    };
+    // No collision: each side hides its own class. Collision (shared class):
+    // hide only when BOTH sides are bustless, emitted once.
+    if (p1_hide && (!classes_collide || p2_hide))
+      emit_hide(p1_class);
+    if (p2_hide && !classes_collide)
+      emit_hide(p2_class);
   }
   if (music)
   {
