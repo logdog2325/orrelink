@@ -1125,6 +1125,8 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_style_game_default">Game default</string>
     <string name="xd_style_no_preference">No preference</string>
     <string name="xd_style_experimental">Experimental</string>
+    <string name="xd_style_no_portrait_suffix">%1$s (no portrait)</string>
+    <string name="xd_style_no_portrait_note">Models marked “(no portrait)” show no close-up on the connection and team screens — the battle model still changes.</string>
     <string name="xd_style_submit_model_label">Trainer model</string>
     <string name="xd_style_submit_model_hint">Cosmetic — how you\'ll appear in the battle.</string>
 

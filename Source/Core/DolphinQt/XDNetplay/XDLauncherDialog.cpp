@@ -374,10 +374,13 @@ void XDLauncherDialog::CreateMainLayout()
   // Battle Style: picks the HOST makes. All but the first are purely cosmetic:
   // BattleCustomizer turns them into one synced AR code at Start, so both
   // players always see the same thing; "Game default" genuinely emits nothing
-  // and an all-default session stays byte-for-byte stock. Entries after each
-  // list's separator are valid but untested in battle -- their labels say so;
-  // venues whose terrain changes a few moves carry that in the label too, no
-  // extra dialogs.
+  // and an all-default session stays byte-for-byte stock. Music and venue
+  // entries after each list's separator are valid but untested in battle --
+  // their labels say so; venues whose terrain changes a few moves carry that
+  // in the label too, no extra dialogs. MODELS are field-proven, so their
+  // lists carry no tier presentation at all: instead, models without a
+  // pre-rendered bust say "(no portrait)" and a one-line note under the model
+  // rows explains what that means.
   //
   // The first row is the battle FORMAT (v1.4.0) -- the one pick that is not
   // cosmetic. It is persisted in MAIN_XD_FORMAT exactly like the style keys;
@@ -428,21 +431,26 @@ void XDLauncherDialog::CreateMainLayout()
       XDNetplay::FormatRules::FORMAT_ORRE_COLOSSEUM);
   const auto populate_style_combo =
       [this](QComboBox* combo, std::span<const XDNetplay::BattleCustomizer::StyleOption> table,
-             bool terrain_suffix) {
+             bool model_table, bool terrain_suffix) {
         using XDNetplay::BattleCustomizer::Tier;
         combo->addItem(tr("Game default"), 0);
         bool past_tested = false;
         for (const XDNetplay::BattleCustomizer::StyleOption& option : table)
         {
-          // The tables list tested-safe entries first; the tier change is
-          // where the "here be dragons" separator goes.
-          if (!past_tested && option.tier == Tier::Experimental)
+          // Music/venue tables list tested-safe entries first; the tier change
+          // is where the "here be dragons" separator goes. Model lists get no
+          // tier presentation (the field has disproven "untested" there):
+          // their one distinction is whether the pick has a pre-rendered bust,
+          // said in the label as "(no portrait)".
+          if (!model_table && !past_tested && option.tier == Tier::Experimental)
           {
             combo->insertSeparator(combo->count());
             past_tested = true;
           }
           const QString name = QString::fromUtf8(option.name);
-          const bool untested = option.tier == Tier::Experimental;
+          const bool untested = !model_table && option.tier == Tier::Experimental;
+          const bool no_portrait =
+              model_table && !XDNetplay::BattleCustomizer::ModelHasPortrait(option.id);
           const bool terrain = terrain_suffix && VenueAltersTerrain(option.id);
           QString item;
           if (untested && terrain)
@@ -451,6 +459,8 @@ void XDLauncherDialog::CreateMainLayout()
             item = tr("%1 (untested)").arg(name);
           else if (terrain)
             item = tr("%1 (alters Nature Power etc.)").arg(name);
+          else if (no_portrait)
+            item = tr("%1 (no portrait)").arg(name);
           else
             item = name;
           combo->addItem(item, option.id);
@@ -463,14 +473,25 @@ void XDLauncherDialog::CreateMainLayout()
       tr("Guest model (used only if they don't pick):"),
       tr("Fallback only: a model the guest picks when submitting\n"
          "their team always wins over this."));
+  // One line under the model rows: what "(no portrait)" costs (nothing but the
+  // close-up), so nobody reads it as "broken".
+  auto* portrait_note = new QLabel(
+      tr("Models marked \"(no portrait)\" show no close-up on the connection and team "
+         "screens — the battle model still changes."));
+  portrait_note->setWordWrap(true);
+  style_layout->addWidget(portrait_note, style_row, 0, 1, 2);
+  style_row++;
   m_style_music_combo = add_style_combo(tr("Battle music:"), QString());
   m_style_venue_combo = add_style_combo(
       tr("Battle location:"), tr("Locations that alter Nature Power, Camouflage or Secret Power\n"
                                  "say so in their name -- everything else is purely cosmetic."));
-  populate_style_combo(m_style_host_model_combo, XDNetplay::BattleCustomizer::ModelTable(), false);
-  populate_style_combo(m_style_guest_model_combo, XDNetplay::BattleCustomizer::ModelTable(), false);
-  populate_style_combo(m_style_music_combo, XDNetplay::BattleCustomizer::MusicTable(), false);
-  populate_style_combo(m_style_venue_combo, XDNetplay::BattleCustomizer::VenueTable(), true);
+  populate_style_combo(m_style_host_model_combo, XDNetplay::BattleCustomizer::ModelTable(), true,
+                       false);
+  populate_style_combo(m_style_guest_model_combo, XDNetplay::BattleCustomizer::ModelTable(), true,
+                       false);
+  populate_style_combo(m_style_music_combo, XDNetplay::BattleCustomizer::MusicTable(), false,
+                       false);
+  populate_style_combo(m_style_venue_combo, XDNetplay::BattleCustomizer::VenueTable(), false, true);
   style_layout->setColumnStretch(1, 1);
   style_box->setLayout(style_layout);
   layout->addWidget(style_box);
