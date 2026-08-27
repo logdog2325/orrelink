@@ -18,13 +18,17 @@ package org.dolphinemu.dolphinemu.features.xdnetplay
  * AR section is genuinely absent, never a write of the vanilla value.
  */
 object BattleStyleBridge {
-    /** One selectable option. Tables come tested-safe first, then
+    /** One selectable option. Music/venue tables come tested-safe first, then
      *  [experimental] entries, so a dropdown can insert its divider at the
-     *  first tier change. */
+     *  first tier change. [hasPortrait] is model-only (null for music/venue):
+     *  false means the game ships no pre-battle bust for this model — it
+     *  battles fine, but the connection and team screens show no close-up, and
+     *  the dropdowns label it "(no portrait)" instead of any tier marking. */
     data class StyleOption(
         val id: Int,
         val name: String,
-        val experimental: Boolean
+        val experimental: Boolean,
+        val hasPortrait: Boolean? = null
     )
 
     /** "which" indices shared with the C++ side of the bridge. */
@@ -52,13 +56,19 @@ object BattleStyleBridge {
      */
     fun setSelection(which: Int, id: Int) = nativeSetSelection(which, id)
 
-    /** Flat [id, name, tier, ...] triples from the C++ tables. */
+    /** Flat [id, name, tier, portrait, ...] quads from the C++ tables
+     *  (portrait "1"/"0" on models, "-" where the notion does not apply). */
     private fun parseTable(flat: Array<String>): List<StyleOption> =
-        (flat.indices step 3).map {
+        (flat.indices step 4).map {
             StyleOption(
                 id = flat[it].toIntOrNull() ?: 0,
                 name = flat[it + 1],
-                experimental = flat[it + 2] == "experimental"
+                experimental = flat[it + 2] == "experimental",
+                hasPortrait = when (flat[it + 3]) {
+                    "1" -> true
+                    "0" -> false
+                    else -> null
+                }
             )
         }
 
