@@ -65,7 +65,6 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var controllerMapped by mutableStateOf(false)
     private var biosLinkReady by mutableStateOf(false)
     private var statusMessage by mutableStateOf<String?>(null)
-    private var cheatsEnabled by mutableStateOf(false)
 
     // Cosmetic battle-style selectors (host side). The option tables live in
     // native code (BattleCustomizer) and are fetched once directories are
@@ -79,12 +78,13 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var musicId by mutableStateOf(0)
     private var venueId by mutableStateOf(0)
 
-    // The one-tap battle FORMAT pick (Free / Orre Colosseum), persisted in the
+    // The one-tap battle FORMAT pick (Free / Orre Colosseum / OU), persisted in the
     // native Main/XDNetplay/Format key via the settings model, exactly like
     // the Battle Style picks above. The key's value is what the enforcing
     // gates in shared core read when this device hosts; a pick here is
     // already "applied".
     private var formatId by mutableStateOf(FormatBridge.FORMAT_FREE)
+    private var practiceDummy by mutableStateOf(false)
 
     /** True from the moment "Search for Match" is tapped until it joins, hosts or gives up. */
     private var searching by mutableStateOf(false)
@@ -277,6 +277,11 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         DirectoryInitialization.start(this)
         AfterDirectoryInitializationRunner().runWithLifecycle(this) {
             initialized = true
+            // Boundary heal for a killed session's leftovers (an opponent's
+            // team in a socket save, a disposable over an import) before
+            // anything on this screen reads or seeds the saves. No-op unless
+            // leftovers exist.
+            SaveImportBridge.healLeftoverSession()
             refreshChecks()
             GameFileCacheManager.startLoad()
         }
@@ -315,10 +320,10 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     onPickEmeraldRom = { pickEmeraldRom.launch(arrayOf("*/*")) },
                     onTeamEditor = { TeamEditorActivity.launch(this) },
                     onPlayXd = { bootXd() },
-                    cheatsEnabled = cheatsEnabled,
-                    onCheatsChanged = { on ->
-                        cheatsEnabled = on
-                        BooleanSetting.MAIN_ENABLE_CHEATS.setBoolean(NativeConfig.LAYER_BASE, on)
+                    practiceDummy = practiceDummy,
+                    onPracticeDummyChanged = { on ->
+                        practiceDummy = on
+                        BooleanSetting.MAIN_GBA_PRACTICE_DUMMY.setBoolean(NativeConfig.LAYER_BASE, on)
                         NativeConfig.save(NativeConfig.LAYER_BASE)
                     },
                     modelOptions = modelOptions,
@@ -546,7 +551,6 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     }
 
     private fun refreshChecks() {
-        cheatsEnabled = BooleanSetting.MAIN_ENABLE_CHEATS.boolean
         // Battle-style tables are static native data — fetch once; selections
         // re-read every refresh so an external config change is reflected.
         if (modelOptions.isEmpty()) {
@@ -560,10 +564,12 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         musicId = BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_MUSIC)
         venueId = BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_VENUE)
         formatId = IntSetting.MAIN_XD_FORMAT.int
+        practiceDummy = BooleanSetting.MAIN_GBA_PRACTICE_DUMMY.boolean
         migrateContentPaths()
         emeraldRomSet = ensureGbaConfig()
         xdGameFound = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID) != null
         teamSavesReady = if (emeraldRomSet) seedTeamSaves() else false
+        seedVsModeGci()
         controllerMapped = try {
             AutoMapper.isMapped() || AutoMapper.autoMap()
         } catch (_: Exception) {
@@ -711,10 +717,11 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         if (IntSetting.MAIN_SI_DEVICE_2.int != 13) {
             IntSetting.MAIN_SI_DEVICE_2.setInt(NativeConfig.LAYER_BASE, 13); changed = true
         }
-        // The 2-year-stable papajefe XDNetplay bundle runs with cheats ON so the
-        // $XD OU Fixes AR code (enabled in the bundled GXXE01.ini) actually
-        // Cheats are off by default and controlled by the "$XD OU Fixes" switch
-        // on the launcher (host's choice syncs to the guest in netplay). Don't
+        // Cheats are DERIVED state for XD sessions: shared core's
+        // PrepareForStart turns MAIN_ENABLE_CHEATS on exactly when the session
+        // needs the AR engine (a Battle Style/rules block, or Format = OU, the
+        // pick that replaced the old standalone "$XD OU Fixes" switch) and off
+        // otherwise; the host's value syncs to the guest in netplay. Don't
         // force them on here.
         // PBR mode turns the touch overlay on for the Wii Remote pointer. XD is
         // played with the handheld's physical buttons, so put it back.
@@ -740,6 +747,36 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
      * Places the bundled dummy team saves where Dolphin expects the netplay
      * GBA saves, so hosting works out of the box. Never overwrites.
      */
+    // Mirror of desktop's XDNetplay::SeedVsModeGci (XDNetplayConfig.cpp): put
+    // the bundled VS-mode memory-card save into GC/USA/Card A once, never
+    // overwriting, so a fresh install boots XD with VS mode ready instead of a
+    // new-game screen. The source is the build-time Sys asset tree (the jni
+    // CMakeLists copies Data/Sys into assets/Sys for every APK), the same
+    // file desktop reads from its Sys directory. Written via temp + atomic
+    // rename so a copy interrupted mid-write can never leave a truncated file
+    // that the exists() guard would then keep forever. Failure is non-fatal
+    // -- the player can still start a story save; retried on every refresh.
+    private fun seedVsModeGci() {
+        val cardDir = File(
+            DirectoryInitialization.getUserDirectory(),
+            "GC" + File.separator + "USA" + File.separator + "Card A"
+        )
+        val target = File(cardDir, "01-GXXE-PokemonXD.gci")
+        val tmp = File(cardDir, "01-GXXE-PokemonXD.gci.tmp")
+        try {
+            if (target.exists()) return
+            cardDir.mkdirs()
+            assets.open("Sys/XDNetplay/01-GXXE-PokemonXD.gci").use { input ->
+                tmp.outputStream().use { input.copyTo(it) }
+            }
+            if (!tmp.renameTo(target)) tmp.delete()
+        } catch (_: Exception) {
+            // Missing asset or storage hiccup: drop the partial temp so the
+            // next refresh retries cleanly.
+            tmp.delete()
+        }
+    }
+
     private fun seedTeamSaves(): Boolean {
         val rom = StringSetting.MAIN_GBA_ROM_2.string
             .ifEmpty { StringSetting.MAIN_GBA_ROM_3.string }

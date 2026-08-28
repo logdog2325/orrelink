@@ -48,6 +48,7 @@
 #include "UICommon/GameFile.h"
 #include "UICommon/NetPlayIndex.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
+#include "UICommon/XDNetplay/DisposableSave.h"
 #include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
 #include "UICommon/XDNetplay/SaveImport.h"
@@ -194,14 +195,13 @@ void PrepareNetplayConfig()
 void PreparePublishConfig(bool open_challenge)
 {
   Config::SetBaseOrCurrent(Config::NETPLAY_USE_INDEX, true);
-  // The "[Orre] " room tag rides the published name when the host's Format
-  // pick is Orre Colosseum -- label only, no matchmaking filter change; with
-  // Format = Free the name is byte-identical to before the feature.
+  // The "[Orre] " / "[OU] " room tags ride the published name from the host's
+  // Format pick -- labels only, no matchmaking filter change; with Format =
+  // Free the name is byte-identical to before the feature.
   Config::SetBaseOrCurrent(
       Config::NETPLAY_INDEX_NAME,
-      XDNetplay::MakeOpenSessionName(
-          Config::Get(Config::NETPLAY_NICKNAME),
-          XDNetplay::FormatRules::IsOrreColosseum(Config::Get(Config::MAIN_XD_FORMAT))));
+      XDNetplay::MakeOpenSessionName(Config::Get(Config::NETPLAY_NICKNAME),
+                                     Config::Get(Config::MAIN_XD_FORMAT)));
   if (Config::Get(Config::NETPLAY_INDEX_REGION).empty())
     Config::SetBaseOrCurrent(Config::NETPLAY_INDEX_REGION, "NA");
   if (open_challenge)
@@ -415,10 +415,12 @@ void XDLauncherDialog::CreateMainLayout()
          "  • Soul Dew is banned\n"
          "Sleep, Freeze and Self-KO clauses are honor rules: please follow\n"
          "them yourselves — OrreLink never enforces them.\n\n"
-         "Free — no restrictions; sessions are exactly as before this option\n"
-         "existed. When you JOIN a room, the host's Format applies, not yours;\n"
-         "your own pick still gives you legality notes in the Team Editor and\n"
-         "the Submit Team dialog."));
+         "OU — runs the community $XD OU Fixes patches for both players\n"
+         "(bring-6-pick-4 and its mechanics fixes). No team restrictions.\n\n"
+         "Free — no patches, no restrictions; sessions are exactly as before\n"
+         "this option existed. When you JOIN a room, the host's Format\n"
+         "applies, not yours; your own pick still gives you legality notes in\n"
+         "the Team Editor and the Submit Team dialog."));
   // The entry labels come from FormatRules so the dropdown, the refusal
   // dialogs and the room-chat messages all name the formats identically.
   m_format_combo->addItem(
@@ -429,6 +431,10 @@ void XDLauncherDialog::CreateMainLayout()
       QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(
           XDNetplay::FormatRules::FORMAT_ORRE_COLOSSEUM)),
       XDNetplay::FormatRules::FORMAT_ORRE_COLOSSEUM);
+  m_format_combo->addItem(
+      QString::fromUtf8(
+          XDNetplay::FormatRules::FormatDisplayName(XDNetplay::FormatRules::FORMAT_OU)),
+      XDNetplay::FormatRules::FORMAT_OU);
   const auto populate_style_combo =
       [this](QComboBox* combo, std::span<const XDNetplay::BattleCustomizer::StyleOption> table,
              bool model_table, bool terrain_suffix) {
@@ -496,13 +502,6 @@ void XDLauncherDialog::CreateMainLayout()
   style_box->setLayout(style_layout);
   layout->addWidget(style_box);
 
-  m_cheats_check = new QCheckBox(tr("Enable $XD OU Fixes cheat (OU format)"));
-  m_cheats_check->setToolTip(
-      tr("Off by default. When you HOST, this choice applies to both players.\n"
-         "Needed for the OU bring-6-pick-4 format; leave off for Orre Colosseum."));
-  m_cheats_check->setChecked(Config::Get(Config::MAIN_ENABLE_CHEATS));
-  layout->addWidget(m_cheats_check);
-
   // Same setting the hub's own checkbox writes. Reworded because the hub, not
   // this launcher, is what actually opens at startup now -- a checkbox that
   // names the wrong window is worse than no checkbox.
@@ -530,8 +529,6 @@ void XDLauncherDialog::ConnectWidgets()
   connect(m_team_saves_row.fix_button, &QPushButton::clicked, this,
           &XDLauncherDialog::OnFixTeamSaves);
   connect(m_vs_save_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixVsSave);
-  connect(m_gba_input_row.fix_button, &QPushButton::clicked, this,
-          &XDLauncherDialog::OnGbaInputInfo);
 
   connect(m_save_row_port2.import_button, &QPushButton::clicked, this,
           [this] { OnImportSave(1); });
@@ -546,13 +543,28 @@ void XDLauncherDialog::ConnectWidgets()
   connect(m_search_button, &QPushButton::clicked, this, &XDLauncherDialog::OnSearchForMatch);
   connect(m_host_button, &QPushButton::clicked, this, &XDLauncherDialog::OnHost);
   connect(m_join_button, &QPushButton::clicked, this, &XDLauncherDialog::OnJoin);
-  connect(m_browse_button, &QPushButton::clicked, this, [this] { emit BrowsePublic(); });
-  connect(m_team_editor_button, &QPushButton::clicked, this, &XDLauncherDialog::OnTeamEditor);
-
-  connect(m_cheats_check, &QCheckBox::toggled, this, [](bool checked) {
-    Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, checked);
-    Config::Save();
+  connect(m_browse_button, &QPushButton::clicked, this, [this] {
+    // The browser's join path skips this dialog, so gate at the door: joining
+    // without the dump or the official BIOS produces exactly the silent
+    // GBA-not-detected session the checklist exists to prevent.
+    if (!FindXdGame())
+    {
+      ModalMessageBox::warning(
+          this, tr("OrreLink"),
+          tr("Pokémon XD (USA) was not found in your game list. Add its folder first."));
+      return;
+    }
+    if (!XDNetplay::CheckOfficialBios(nullptr))
+    {
+      ModalMessageBox::warning(
+          this, tr("OrreLink"),
+          tr("The official GBA BIOS is required — XD cannot detect the GBA without it. "
+             "Add it with \"Choose BIOS...\" first."));
+      return;
+    }
+    emit BrowsePublic();
   });
+  connect(m_team_editor_button, &QPushButton::clicked, this, &XDLauncherDialog::OnTeamEditor);
 
   connect(m_practice_dummy_check, &QCheckBox::toggled, this, [](bool checked) {
     Config::SetBaseOrCurrent(Config::MAIN_GBA_PRACTICE_DUMMY, checked);
@@ -594,6 +606,12 @@ bool XDLauncherDialog::ShowOnStartup()
 void XDLauncherDialog::showEvent(QShowEvent* event)
 {
   QDialog::showEvent(event);
+  // Boundary heal for a killed session's leftovers (an opponent's team in a
+  // socket save, a disposable over an import): the launcher opening is the
+  // first thing a player does after a crash, and everything it leads to --
+  // solo boot, the team editor, hosting -- reads the socket saves. No-op
+  // unless leftovers exist; refuses to run while a room or emulation is live.
+  XDNetplay::DisposableSave::HealLeftoverSession();
   {
     const QSignalBlocker blocker(m_practice_dummy_check);
     m_practice_dummy_check->setChecked(Config::Get(Config::MAIN_GBA_PRACTICE_DUMMY));
@@ -915,14 +933,6 @@ void XDLauncherDialog::OnFixVsSave()
   RefreshChecklist();
 }
 
-void XDLauncherDialog::OnGbaInputInfo()
-{
-  ModalMessageBox::information(
-      this, tr("GBA Input"),
-      tr("Map the GBA buttons in the main Controllers settings: ports 2 and 3 are set to "
-         "Emulated GBA by the launcher; only the button mapping is up to you."));
-}
-
 void XDLauncherDialog::OnTeamEditor()
 {
   if (!m_team_editor)
@@ -1123,6 +1133,17 @@ void XDLauncherDialog::OnJoin()
   {
     ModalMessageBox::warning(this, tr("OrreLink"),
                              tr("Enter the host code your opponent shared."));
+    return;
+  }
+
+  // Netplay never downloads the game: a joiner without the XD dump in their
+  // game list connects and then dies at start with a generic "game not found"
+  // far from the checklist that explains the fix. Same gate as Boot/Host.
+  if (!FindXdGame())
+  {
+    ModalMessageBox::warning(
+        this, tr("OrreLink"),
+        tr("Pokémon XD (USA) was not found in your game list. Add its folder first."));
     return;
   }
 

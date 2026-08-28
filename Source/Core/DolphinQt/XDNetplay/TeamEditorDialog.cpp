@@ -36,6 +36,7 @@
 #include "DolphinQt/QtUtils/QueueOnObject.h"
 #include "DolphinQt/Settings.h"
 
+#include "UICommon/XDNetplay/DisposableSave.h"
 #include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Text.h"
 #include "UICommon/XDNetplay/MonFactory.h"
@@ -137,6 +138,12 @@ void TeamEditorDialog::ConnectWidgets()
 void TeamEditorDialog::showEvent(QShowEvent* event)
 {
   QDialog::showEvent(event);
+  // The editor displays whatever the socket save holds -- after a killed
+  // session that can be the OPPONENT's team. Heal leftovers before every
+  // (re)load: the dialog instance is cached across opens, so a ctor-only heal
+  // would miss every open after the first. No-op unless leftovers exist;
+  // stands down while a room or emulation is live.
+  XDNetplay::DisposableSave::HealLeftoverSession();
   ReloadForRole();
 }
 

@@ -569,6 +569,13 @@ void NetPlayDialog::reject()
 
 void NetPlayDialog::show(std::string nickname, bool use_traversal)
 {
+  // The room is open from here (host and joiner alike; the one call site is
+  // MainWindow's room creation): mark the netplay session active so boundary
+  // heals (launcher showEvent, team editor open) know the guest-team stashes
+  // and the disposable-save swap now belong to a LIVE room. OnRoomClosed's
+  // EndSession is the matching clear.
+  XDNetplay::BattleCustomizer::BeginSession();
+
   m_nickname = std::move(nickname);
   m_use_traversal = use_traversal;
   m_buffer_size = 0;
