@@ -134,6 +134,7 @@
 #include "UICommon/GameFile.h"
 #include "UICommon/XDNetplay/Version.h"
 #include "UICommon/XDNetplay/DisposableSave.h"
+#include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 #include "UICommon/ResourcePack/Manager.h"
 #include "UICommon/ResourcePack/ResourcePack.h"
@@ -1812,19 +1813,22 @@ bool MainWindow::NetPlayHost(const UICommon::GameFile& game)
   if (is_traversal)
     host_port = Config::Get(Config::NETPLAY_LISTEN_PORT);
 
-  // FORMAT host gate: with the launcher's Format pick on Orre Colosseum, the
-  // host's own port-2 party and the port-3 guest-fallback party must both be
-  // legal (both will be played under the room's rules). Runs BEFORE the
-  // disposable-save swap below so a refusal leaves nothing swapped -- and the
-  // verdict is identical either way, since the disposable carries exactly the
-  // import's party. With Format = Free this is one int compare and hosting is
-  // untouched. The reason names the offending mon/item and which slot.
+  // FORMAT host gate: with the launcher's Format pick on any format with team
+  // rules, the host's own port-2 party and the port-3 guest-fallback party
+  // must both be legal (both will be played under the room's rules). Runs
+  // BEFORE the disposable-save swap below so a refusal leaves nothing swapped
+  // -- and the verdict is identical either way, since the disposable carries
+  // exactly the import's party. With Format = Free/OU this is one int compare
+  // and hosting is untouched. The reason names the offending mon/item/level
+  // and which slot.
   if (std::string format_reason; !XDNetplay::ValidateHostPartiesForFormat(&format_reason))
   {
     ModalMessageBox::critical(
         nullptr, tr("OrreLink"),
-        tr("Cannot host an Orre Colosseum room: %1\n\nFix the team in the Team Editor, or "
+        tr("Cannot host a %1 room: %2\n\nFix the team in the Team Editor, or "
            "switch the Format back to Free.")
+            .arg(QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(
+                Config::Get(Config::MAIN_XD_FORMAT))))
             .arg(QString::fromStdString(format_reason)));
     return false;
   }

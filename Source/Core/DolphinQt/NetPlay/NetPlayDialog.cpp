@@ -1047,7 +1047,8 @@ void NetPlayDialog::OnSubmitTeam()
   // would mean fetching it -- the send path resolves links later anyway).
   // With the local pick on Free none of this exists: no label in the layout,
   // no parse, no validation call, ever.
-  if (XDNetplay::FormatRules::IsOrreColosseum(Config::Get(Config::MAIN_XD_FORMAT)))
+  if (const int local_format = Config::Get(Config::MAIN_XD_FORMAT);
+      XDNetplay::FormatRules::HasTeamRules(local_format))
   {
     // Game data loads once per dialog open; on failure (broken install) the
     // note simply never appears -- feedback is a courtesy, never a judge.
@@ -1064,7 +1065,8 @@ void NetPlayDialog::OnSubmitTeam()
       // Everything is captured by value (widget pointers parented to the
       // stack dialog, plus the shared_ptr); the connections die with the
       // dialog, so nothing here outlives what it touches.
-      const auto update_format_note = [format_note, team_edit, use_save_check, format_data] {
+      const auto update_format_note = [format_note, team_edit, use_save_check, format_data,
+                                       local_format] {
         QString reason;
         if (use_save_check->isChecked())
         {
@@ -1086,7 +1088,7 @@ void NetPlayDialog::OnSubmitTeam()
                 if (const auto party = save->ReadParty())
                 {
                   const XDNetplay::FormatRules::Verdict verdict =
-                      XDNetplay::FormatRules::ValidateParty(*party, *format_data);
+                      XDNetplay::FormatRules::ValidateParty(local_format, *party, *format_data);
                   if (!verdict.ok)
                     reason = QString::fromStdString(verdict.reason);
                 }
@@ -1098,6 +1100,7 @@ void NetPlayDialog::OnSubmitTeam()
         else
         {
           const XDNetplay::FormatRules::Verdict verdict = XDNetplay::FormatRules::ValidateSets(
+              local_format,
               XDNetplay::ShowdownParser::ParseTeam(team_edit->toPlainText().toStdString()),
               *format_data);
           if (!verdict.ok)
@@ -1105,7 +1108,11 @@ void NetPlayDialog::OnSubmitTeam()
         }
         if (!reason.isEmpty())
         {
-          format_note->setText(tr("note: this team is not Orre Colosseum legal - %1").arg(reason));
+          format_note->setText(
+              tr("note: this team is not %1 legal - %2")
+                  .arg(QString::fromUtf8(
+                      XDNetplay::FormatRules::FormatDisplayName(local_format)))
+                  .arg(reason));
         }
         format_note->setVisible(!reason.isEmpty());
       };

@@ -402,10 +402,13 @@ class TeamRepo(private val context: Context) {
      * be for a room someone else will host, and Free rooms take any team.
      */
     private fun orreFormatNote(): String? {
-        if (!FormatBridge.isOrreColosseum(IntSetting.MAIN_XD_FORMAT.int)) return null
+        val format = IntSetting.MAIN_XD_FORMAT.int
+        if (!FormatBridge.hasTeamRules(format)) return null
         val reason = FormatBridge.validateParty(party)
         if (reason.isEmpty()) return null
-        return context.getString(R.string.xd_format_note, reason)
+        return context.getString(
+            R.string.xd_format_note, FormatBridge.displayName(format), reason
+        )
     }
 
     fun removeAt(index: Int) {

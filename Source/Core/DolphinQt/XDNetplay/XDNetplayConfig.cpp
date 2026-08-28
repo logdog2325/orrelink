@@ -68,11 +68,7 @@ std::string MakeOpenSessionName(const std::string& nickname, int format_key_valu
   // matchmaking filter keys off them); with the Format pick on Free the name
   // is byte-identical to the pre-Format builds.
   const std::string base = "XD [OC] " + (nickname.empty() ? std::string("Player") : nickname);
-  if (XDNetplay::FormatRules::IsOrreColosseum(format_key_value))
-    return "[Orre] " + base;
-  if (XDNetplay::FormatRules::IsOu(format_key_value))
-    return "[OU] " + base;
-  return base;
+  return XDNetplay::FormatRules::FormatSessionTag(format_key_value) + base;
 }
 
 bool LooksLikeXdSession(const std::string& published_game_name)
