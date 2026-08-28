@@ -3,6 +3,8 @@
 
 #include "UICommon/XDNetplay/DisposableSave.h"
 
+#include "UICommon/XDNetplay/BattleCustomizer.h"
+
 #include <atomic>
 #include <mutex>
 #include <optional>
@@ -201,29 +203,20 @@ std::optional<EmeraldSave> BuildDisposable(int device, std::vector<u8> source_by
   return disposable;
 }
 
-// Crash self-heal, part 1: if the crashed session ALSO left TeamInjector's
-// lifecycle unfinished on the port-3 slot (a guest's party may still be in the
-// save and its .bak/.tmp), finish that first: RestoreHostTeam runs its purge
-// inline when emulation is down, restoring the disposable from .hostteam and
-// scrubbing the guest copies; part 2 (RestoreNow) then puts the import back
-// over the disposable. Calling RestoreHostTeam here also registers
-// TeamInjector's Core-state hook before this module ever registers its own,
-// preserving the restore-after-purge callback order.
+// Crash self-heal, part 1, is XDNetplay::HealLeftoverGuestState (TeamInjector):
+// if the crashed session left the guest-team lifecycle unfinished (a guest's
+// party may still be in a socket save, with .bak/.tmp/.guestteam beside it),
+// its purge restores the pre-injection save -- for an imported port that is
+// the session's disposable -- and scrubs the guest copies; part 2 (RestoreNow)
+// then puts the import back over the result. It goes through RestoreHostTeam,
+// which keeps TeamInjector's Core-state hook registered ahead of this
+// module's, preserving the restore-after-purge callback order.
 //
 // MUST be called with s_restore_mutex NOT held: RestoreHostTeam's first call
 // registers a Core-state callback (HookableEvent's own lock), and this
 // module's callback takes s_restore_mutex under that same lock -- taking the
 // two in the opposite order here could deadlock (same note as TeamInjector's
 // out-of-lock registration).
-void FinishInnerLifecycleIfLeftover()
-{
-  const std::string save_path = SavePathForDevice(2);
-  if (!save_path.empty() && File::Exists(save_path + NETPLAY_ORIG_SUFFIX) &&
-      InnerLifecyclePending(save_path))
-  {
-    XDNetplay::RestoreHostTeam(2);
-  }
-}
 
 // Crash self-heal, part 2, for one port. First-stash-wins: the leftover
 // .netplayorig IS the import; it is restored, never re-stashed over (a
@@ -248,9 +241,22 @@ void HealLeftoverSession()
   // LIVE session's stash, and "healing" it would put the full import back into
   // the very save path the room is about to sync. Same guard for a running
   // game: the mGBA cores own the socket saves.
+  // Room-scoped guard first: IsNetPlayRunning is GAME-scoped and cannot see a
+  // lobby or a between-battles window, which is exactly when a live room's
+  // .netplayorig stash and guest-team markers exist (see the TeamInjector
+  // heal's guard note). BeginSession/EndSession bracket the room on both
+  // platforms.
+  if (XDNetplay::BattleCustomizer::IsNetplaySessionActive())
+    return;
   if (NetPlay::IsNetPlayRunning() || !Core::IsUninitialized(Core::System::GetInstance()))
     return;
-  FinishInnerLifecycleIfLeftover();
+  // The guest-team lifecycle heals STANDALONE, not only under a .netplayorig:
+  // a template-save host (no import, so no .netplayorig ever exists) whose
+  // session was killed still has the opponent's party as the socket save, and
+  // the old .netplayorig-gated finish walked right past it -- the next solo
+  // boot then played the guest's team (the 1.4.2 field report). Same
+  // out-of-lock ordering note as the part-1 comment above.
+  XDNetplay::HealLeftoverGuestState();
   std::lock_guard lock(s_restore_mutex);
   HealDeviceNow(1);
   HealDeviceNow(2);
@@ -280,9 +286,11 @@ bool PrepareForHosting(std::string* error)
 
   // A crashed previous session next: restore before anything is rebuilt, so
   // the extraction below always reads the real import, never a stale
-  // disposable. The inner-lifecycle finish runs before the lock (see
-  // FinishInnerLifecycleIfLeftover's deadlock note).
-  FinishInnerLifecycleIfLeftover();
+  // disposable -- and so a leftover GUEST team can never be what SyncSaveData
+  // ships to this room's joiners (the standalone heal covers hosts with no
+  // import, where no .netplayorig gates the finish). Runs before the lock
+  // (see the part-1 deadlock note above).
+  XDNetplay::HealLeftoverGuestState();
 
   std::lock_guard lock(s_restore_mutex);
   HealDeviceNow(1);

@@ -31,6 +31,7 @@
 
 #include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/DisposableSave.h"
+#include "UICommon/XDNetplay/FormatRules.h"
 
 namespace XDNetplay
 {
@@ -60,14 +61,18 @@ bool IsXdGameId(const std::string& game_id)
   return game_id.rfind(XD_GAME_ID, 0) == 0;
 }
 
-std::string MakeOpenSessionName(const std::string& nickname, bool orre_format)
+std::string MakeOpenSessionName(const std::string& nickname, int format_key_value)
 {
   // Mirrors XdMatchmaker.sessionName() on Android, byte for byte. The
-  // "[Orre] " room tag is a purely human-readable label (no matchmaking
-  // filter keys off it in this patch); with the Format pick on Free the name
+  // "[Orre] " / "[OU] " room tags are purely human-readable labels (no
+  // matchmaking filter keys off them); with the Format pick on Free the name
   // is byte-identical to the pre-Format builds.
   const std::string base = "XD [OC] " + (nickname.empty() ? std::string("Player") : nickname);
-  return orre_format ? "[Orre] " + base : base;
+  if (XDNetplay::FormatRules::IsOrreColosseum(format_key_value))
+    return "[Orre] " + base;
+  if (XDNetplay::FormatRules::IsOu(format_key_value))
+    return "[OU] " + base;
+  return base;
 }
 
 bool LooksLikeXdSession(const std::string& published_game_name)
@@ -106,15 +111,21 @@ bool EnsureGbaConfig()
   Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(2),
                            SerialInterface::SIDEVICE_GC_GBA_EMULATED);
 
-  // Cheats (the $XD OU Fixes code) are off by default now and governed by the
-  // launcher's "OU rules ($XD OU Fixes)" toggle; don't force them on here.
+  // Cheats (the $XD OU Fixes code) are DERIVED state: BattleCustomizer::
+  // PrepareForStart turns them on exactly when the session needs the AR engine
+  // (a style/rules block, or Format = OU -- the pick that replaced the old
+  // standalone toggle) and off otherwise. Don't force them here.
 
   // Session-boundary scrub for the cosmetic battle-style feature: remove any
   // "$OrreLink Battle Style" block a crashed session left orphaned in the
   // local GXXE01.ini, so stale cosmetics cannot leak into a solo boot or the
-  // next session. EnsureGbaConfig only runs from the launcher (never while a
-  // room is open), which is exactly the boundary BeginSession wants.
-  BattleCustomizer::BeginSession();
+  // next session. Deliberately NOT BeginSession: this helper also runs for
+  // SOLO boots, and claiming the netplay lifecycle there made the solo
+  // cleanup hook stand down -- EndSession (which restores the reconciled
+  // cheats flag) then waited for a room-closed event a solo boot never gets.
+  // The netplay room itself calls BeginSession when it opens
+  // (NetPlayDialog::show / Android nativeHost).
+  BattleCustomizer::ScrubLeftovers();
 
   // Same boundary, same reason, for the disposable netplay saves: if a crashed
   // hosted session left a <save>.netplayorig stash behind, the socket save
@@ -165,9 +176,9 @@ void ApplyStartForcing(NetPlay::NetPlayServer* server)
   gba_config[2].enabled = true;
 
   // Sync the host's team saves to the guest, give each player only their own
-  // Sync codes so the HOST's cheat choice governs both sides (if the host runs
-  // $XD OU Fixes, the guest gets it too; if not, both run clean). We no longer
-  // force cheats on -- the host's launcher toggle decides.
+  // Sync codes so the HOST's choice governs both sides (if the host's Format
+  // is OU, the $XD OU Fixes code carries to the guest; if not, both run
+  // clean). Cheats themselves are reconciled by PrepareForStart below.
   Config::SetBaseOrCurrent(Config::NETPLAY_SAVEDATA_LOAD, true);
   Config::SetBaseOrCurrent(Config::NETPLAY_HIDE_REMOTE_GBAS, true);
   Config::SetBaseOrCurrent(Config::NETPLAY_SYNC_CODES, true);

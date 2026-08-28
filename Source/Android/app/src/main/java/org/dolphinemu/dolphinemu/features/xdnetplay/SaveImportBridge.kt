@@ -54,6 +54,15 @@ object SaveImportBridge {
     fun restoreDefaultSave(deviceNumber: Int): Outcome =
         parseOutcome(nativeRestoreDefaultSave(deviceNumber))
 
+    /**
+     * Boundary heal for a killed session's leftovers: if an opponent's team is
+     * still in a socket save (or a disposable is still standing in for an
+     * import), put the player's own data back before anything reads or syncs
+     * it. No-op unless leftovers exist; refuses while a room or emulation is
+     * live. Call when a screen that reads the socket saves opens.
+     */
+    fun healLeftoverSession() = nativeHealLeftoverSession()
+
     /** Outcome encoding shared with the C++ side: ["1"/"0", message]. */
     private fun parseOutcome(flat: Array<String>): Outcome =
         Outcome(ok = flat.getOrNull(0) == "1", message = flat.getOrNull(1) ?: "")
@@ -61,4 +70,6 @@ object SaveImportBridge {
     private external fun nativeImportUserSave(sourcePath: String, device: Int): Array<String>
 
     private external fun nativeRestoreDefaultSave(device: Int): Array<String>
+
+    private external fun nativeHealLeftoverSession()
 }
