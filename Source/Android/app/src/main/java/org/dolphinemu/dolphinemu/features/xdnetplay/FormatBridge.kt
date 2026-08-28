@@ -7,7 +7,7 @@ import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Mon
 /**
  * Kotlin side of the battle-FORMAT bridge in
  * Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp — the one-tap Format pick
- * (Free / Orre Colosseum) for XD GBA-vs-GBA netplay.
+ * (Free / Orre Colosseum / OU) for XD GBA-vs-GBA netplay.
  *
  * This exposes VALIDATION only, and validation is deliberately not duplicated
  * in Kotlin: the ruleset — the restricted-species ban list, Species Clause,
@@ -30,6 +30,12 @@ object FormatBridge {
     const val FORMAT_FREE = 0
     const val FORMAT_ORRE_COLOSSEUM = 1
 
+    /** The community "$XD OU Fixes" patches (bring 6 pick 4). No legality
+     *  layer — like Free it produces no notes; shared core enables the
+     *  Sys-bundled OU Fixes code on the host when this is the pick (the
+     *  Format dropdown replaced the old standalone OU switch). */
+    const val FORMAT_OU = 2
+
     /**
      * True only for the exact Orre Colosseum value, matching
      * FormatRules::IsOrreColosseum: an unknown/garbage key value behaves as
@@ -37,6 +43,9 @@ object FormatBridge {
      */
     fun isOrreColosseum(formatKeyValue: Int): Boolean =
         formatKeyValue == FORMAT_ORRE_COLOSSEUM
+
+    /** True only for the exact OU value — same unknown-behaves-as-Free rule. */
+    fun isOu(formatKeyValue: Int): Boolean = formatKeyValue == FORMAT_OU
 
     /**
      * Orre Colosseum check of a Showdown team export, using shared core's own

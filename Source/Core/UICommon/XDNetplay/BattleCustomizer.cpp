@@ -447,10 +447,13 @@ std::mutex s_mutex;
 // The guest's submitted model, already validated. Overwritten (or reset) by
 // every TeamData arrival; wins over the host's fallback dropdown.
 std::optional<int> s_guest_model;
-// True after PrepareForStart turned MAIN_ENABLE_CHEATS on for a cosmetics-only
-// session; tells RegenerateFromConfig the user's real OU choice is still OFF
-// and tells EndSession to give the flag back.
-bool s_cheats_forced = false;
+// The user's MAIN_ENABLE_CHEATS value from before PrepareForStart first
+// reconciled it for this session (the flag is DERIVED state during an XD
+// session: on iff the style/rules block or the OU format needs the AR engine).
+// Set once per session on the first reconciliation that changes the flag;
+// EndSession writes it back, so a desktop user's global cheats preference for
+// other games survives XD sessions unchanged.
+std::optional<bool> s_cheats_before;
 // Whether the most recent RegenerateIni left a non-empty block in the file.
 bool s_block_active = false;
 // True between BeginSession and EndSession -- i.e. a netplay room owns the
@@ -775,12 +778,41 @@ void BeginSession()
   {
     std::lock_guard lock(s_mutex);
     s_guest_model.reset();
-    s_cheats_forced = false;
+    s_cheats_before.reset();
     s_block_active = false;
     s_netplay_session = true;
   }
   // All-default = pure removal of anything a crashed session left behind.
   RegenerateIni(Selection{}, /*ou_enabled=*/true, nullptr);
+}
+
+void ScrubLeftovers()
+{
+  // Same stance as the file heals: while emulation runs, whatever is stashed
+  // belongs to the LIVE boot -- most importantly s_cheats_before, which the
+  // core-state hook's EndSession needs intact to restore the cheats flag when
+  // that boot ends. (Desktop hits this for real: the launcher's Host/Join
+  // buttons run EnsureGbaConfig -> here BEFORE MainWindow refuses because a
+  // game is running.) Every caller is a recurring boundary, so standing down
+  // only delays the scrub.
+  if (!Core::IsUninitialized(Core::System::GetInstance()))
+    return;
+  {
+    std::lock_guard lock(s_mutex);
+    // A live room owns the stashes and the INI block -- nothing is a leftover.
+    if (s_netplay_session)
+      return;
+    s_guest_model.reset();
+    s_cheats_before.reset();
+    s_block_active = false;
+  }
+  RegenerateIni(Selection{}, /*ou_enabled=*/true, nullptr);
+}
+
+bool IsNetplaySessionActive()
+{
+  std::lock_guard lock(s_mutex);
+  return s_netplay_session;
 }
 
 void SetGuestModel(std::optional<int> id)
@@ -1000,17 +1032,11 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status)
 
 bool RegenerateFromConfig(std::string* status)
 {
-  bool forced;
-  {
-    std::lock_guard lock(s_mutex);
-    forced = s_cheats_forced;
-  }
-  // Once PrepareForStart has forced cheats on, MAIN_ENABLE_CHEATS no longer
-  // reflects the user's OU choice -- it was OFF, or no force would have
-  // happened. Without this, the regenerate before a SECOND Start in the same
-  // room would drop the OU-Fixes disable and hand the guest OU patches the
-  // host never asked for.
-  const bool ou_enabled = !forced && Config::Get(Config::MAIN_ENABLE_CHEATS);
+  // The OU choice is the Format dropdown now (the old standalone toggle is
+  // gone), so it reads straight from the format key -- PrepareForStart's
+  // cheats reconciliation can no longer distort it, however many Starts a
+  // room sees.
+  const bool ou_enabled = Config::Get(Config::MAIN_XD_FORMAT) == FormatRules::FORMAT_OU;
   return RegenerateIni(ConfigSelection(), ou_enabled, status);
 }
 
@@ -1043,72 +1069,77 @@ void PrepareForStart()
   RegenerateFromConfig(nullptr);
 
   bool active;
-  bool forced;
   {
     std::lock_guard lock(s_mutex);
     active = s_block_active;
-    forced = s_cheats_forced;
   }
-  // The AR engine and SyncCodes are both gated on the host's global cheats
-  // flag; a cosmetic pick with the OU toggle off would silently do nothing
-  // without this. Runs before RequestStartGame, therefore before the
-  // SetupNetSettings snapshot and the SyncCodes INI read. When nothing is
-  // active the flag is left entirely alone -- a stock session stays stock.
-  if (active && !forced && !Config::Get(Config::MAIN_ENABLE_CHEATS))
+  // MAIN_ENABLE_CHEATS is DERIVED state for an XD session: the old standalone
+  // "OU Fixes" toggle became the OU entry of the Format dropdown, so nothing
+  // user-facing writes this flag for XD any more. The AR engine (and netplay's
+  // SyncCodes, via the SetupNetSettings snapshot taken after this hook) must
+  // be ON when anything of ours has to load -- the style/rules block, or the
+  // Sys-bundled OU Fixes code in OU format -- and OFF otherwise, INCLUDING
+  // when a stale true is left over from the removed toggle: without the
+  // off-direction, "Free" would silently keep shipping OU patches the UI can
+  // no longer show or clear. The pre-session value is remembered once and
+  // EndSession writes it back, so a desktop user's global cheats preference
+  // for other games survives XD sessions unchanged. Ordering stays safe in
+  // both directions: the regenerate above already wrote the INI for exactly
+  // this format (OU on -> no local disable; otherwise the block, when active,
+  // carries the "$XD OU Fixes" disable).
+  const bool ou = Config::Get(Config::MAIN_XD_FORMAT) == FormatRules::FORMAT_OU;
+  const bool need_cheats = active || ou;
+  if (Config::Get(Config::MAIN_ENABLE_CHEATS) != need_cheats)
   {
     {
       std::lock_guard lock(s_mutex);
-      s_cheats_forced = true;
+      if (!s_cheats_before)
+        s_cheats_before = !need_cheats;
     }
-    // RegenerateFromConfig above already saw the pre-force value (OU off) and
-    // wrote the "$XD OU Fixes" local disable, so forcing afterwards is safe.
-    Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, true);
-    LogNote("battlestyle cheats forced on for this session (OU stays disabled)");
-  }
-  else if (!active && forced)
-  {
-    // The force is a per-start invariant, not a latch. If the block emptied
-    // between battles in the same room (guest re-submitted without a model,
-    // host zeroed the dropdowns), the regenerate above stripped the OU-Fixes
-    // disable -- so leaving cheats forced on would ship Sys-enabled OU
-    // patches the host's toggle says are OFF. Give the flag back before the
-    // SetupNetSettings snapshot reads it.
-    {
-      std::lock_guard lock(s_mutex);
-      s_cheats_forced = false;
-    }
-    Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, false);
-    LogNote("battlestyle block emptied; forced cheats handed back");
+    Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, need_cheats);
+    LogNote(fmt::format("battlestyle cheats {} for this session (format={} block={})",
+                        need_cheats ? "on" : "off",
+                        FormatRules::FormatDisplayName(Config::Get(Config::MAIN_XD_FORMAT)),
+                        active ? "active" : "empty"));
   }
 }
 
 void EndSession()
 {
-  bool forced;
+  std::optional<bool> cheats_before;
   {
     std::lock_guard lock(s_mutex);
     s_guest_model.reset();
-    forced = s_cheats_forced;
-    s_cheats_forced = false;
+    cheats_before = s_cheats_before;
+    s_cheats_before.reset();
     s_netplay_session = false;
   }
   // Pure removal: with the stash cleared and an all-default selection this
   // strips the block, its enabled line and the OU-Fixes disable, leaving the
   // user's GXXE01.ini as it was before the session.
   RegenerateIni(Selection{}, /*ou_enabled=*/true, nullptr);
-  // Give the cheats flag back if the pre-start hook forced it: the user's OU
-  // toggle reads this key, and leaving it flipped would turn a cosmetics-only
-  // session into OU rules next time.
-  if (forced)
+  // Put the cheats flag back the way the user had it before the session's
+  // reconciliation (see PrepareForStart): the flag is only DERIVED state while
+  // an XD session runs, and a desktop user's global preference for other games
+  // must survive it.
+  if (cheats_before)
   {
-    Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, false);
+    // Base explicitly, not SetBaseOrCurrent: a mid-game room close runs this
+    // while the Netplay config layer still holds MAIN_ENABLE_CHEATS, and
+    // SetBaseOrCurrent would then route the restore into the CurrentRun layer
+    // -- which BootManager::RestoreConfig wipes moments later, stranding the
+    // reconciled value in Base forever. The pre-session value was captured
+    // FROM Base (PrepareForStart runs before any boot layers exist), so Base
+    // is exactly where it belongs; the still-running game never sees the
+    // write because the Netplay layer keeps overriding until teardown.
+    Config::Set(Config::LayerType::Base, Config::MAIN_ENABLE_CHEATS, *cheats_before);
     Config::Save();
   }
 #ifdef HAS_LIBMGBA
   // The session's log is closed by the time cleanup runs; append like the team
   // purge does, so the same file also records that the block was taken out.
   GBADetectLog::LogPostSession(
-      fmt::format("battlestyle cleanup done cheats_restored={}", forced ? 1 : 0));
+      fmt::format("battlestyle cleanup done cheats_restored={}", cheats_before ? 1 : 0));
 #endif
 }
 }  // namespace XDNetplay::BattleCustomizer

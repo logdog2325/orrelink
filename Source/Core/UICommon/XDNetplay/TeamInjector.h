@@ -203,4 +203,26 @@ bool ValidateHostPartiesForFormat(std::string* reason);
 // and runs then. Callers do not need to care which happened. Every run appends
 // a "teamcleanup" line to the GBA detect log.
 void RestoreHostTeam(int device);
+
+// Boot-boundary self-heal for a session that DIED without its cleanup: the
+// app was killed or crashed while a room was open, so RestoreHostTeam never
+// ran, and the socket save still holds the last guest's party with .guestteam
+// / .hostteam lying beside it. Field case: a killed 1.4.1 session left the
+// opponent's full team as the port-3 save, and the next SOLO boot played it.
+// SelfHealStaleGuestState only runs when the NEXT injection arrives, which a
+// solo boot never triggers -- this is the missing boundary heal.
+//
+// For each GBA device with lifecycle files pending, runs the full purge
+// (restore the host's save, scrub .bak/.tmp/NetPlayTemp copies, drop the
+// marker). When no lifecycle is pending it still deletes stray NetPlayTemp
+// saves -- a JOINER's machine keeps the host's synced saves there when a
+// session is killed, with no marker to say so.
+//
+// Safe to call from any session boundary, as often as wanted: it is a no-op
+// unless leftovers exist, and it refuses to touch anything while netplay is
+// running (markers then belong to the LIVE session) or while emulation owns
+// the saves. DisposableSave::HealLeftoverSession calls this first, so every
+// existing heal boundary (launcher open, solo boot, host start, save import)
+// gets it automatically.
+void HealLeftoverGuestState();
 }  // namespace XDNetplay

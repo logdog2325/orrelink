@@ -71,9 +71,9 @@ fun XDLauncherScreen(
     onPickEmeraldRom: () -> Unit,
     onTeamEditor: () -> Unit,
     onPlayXd: () -> Unit,
+    practiceDummy: Boolean,
+    onPracticeDummyChanged: (Boolean) -> Unit,
     onBattle: () -> Unit,
-    cheatsEnabled: Boolean,
-    onCheatsChanged: (Boolean) -> Unit,
     modelOptions: List<BattleStyleBridge.StyleOption>,
     musicOptions: List<BattleStyleBridge.StyleOption>,
     venueOptions: List<BattleStyleBridge.StyleOption>,
@@ -172,14 +172,15 @@ fun XDLauncherScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("\$XD OU Fixes cheat", style = MaterialTheme.typography.bodyLarge)
+                        Text("Practice vs dummy", style = MaterialTheme.typography.bodyLarge)
                         Text(
-                            "Off by default. When you host, this applies to both players.",
+                            "Auto-plays GBA port 3 so you can practice link battles alone.",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
-                    Switch(checked = cheatsEnabled, onCheckedChange = onCheatsChanged)
+                    Switch(checked = practiceDummy, onCheckedChange = onPracticeDummyChanged)
                 }
+
                 Spacer(Modifier.height(12.dp))
                 // The battle Format pick plus the cosmetic battle-style
                 // selectors, host-side. The guest picks its OWN model in the
@@ -234,7 +235,11 @@ fun XDLauncherScreen(
                 Spacer(Modifier.height(12.dp))
                 OutlinedButton(
                     onClick = onFindBattles,
-                    enabled = xdGameFound,
+                    // Same gate as Battle: the lobby's join path skips this
+                    // screen's checklist, and joining without the official
+                    // BIOS is exactly the silent GBA-not-detected session the
+                    // checklist exists to prevent.
+                    enabled = xdGameFound && biosLinkReady,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Find Battles  —  public lobby", style = MaterialTheme.typography.titleMedium)
@@ -296,6 +301,11 @@ private fun BattleStyleCard(
                         id = FormatBridge.FORMAT_ORRE_COLOSSEUM,
                         name = stringResource(R.string.xd_format_orre),
                         experimental = false
+                    ),
+                    BattleStyleBridge.StyleOption(
+                        id = FormatBridge.FORMAT_OU,
+                        name = stringResource(R.string.xd_format_ou),
+                        experimental = false
                     )
                 ),
                 selectedId = formatId,
@@ -303,10 +313,10 @@ private fun BattleStyleCard(
                 onSelected = onFormatChanged,
                 modifier = Modifier.fillMaxWidth(),
                 supportingText = stringResource(
-                    if (formatId == FormatBridge.FORMAT_ORRE_COLOSSEUM) {
-                        R.string.xd_format_hint_orre
-                    } else {
-                        R.string.xd_format_hint_free
+                    when (formatId) {
+                        FormatBridge.FORMAT_ORRE_COLOSSEUM -> R.string.xd_format_hint_orre
+                        FormatBridge.FORMAT_OU -> R.string.xd_format_hint_ou
+                        else -> R.string.xd_format_hint_free
                     }
                 )
             )

@@ -27,6 +27,7 @@ import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
 import org.dolphinemu.dolphinemu.features.xdnetplay.LobbySession
 import org.dolphinemu.dolphinemu.features.xdnetplay.NetPlayIndexBridge
+import org.dolphinemu.dolphinemu.features.xdnetplay.FormatBridge
 import org.dolphinemu.dolphinemu.features.xdnetplay.XdMatchmaker
 import org.dolphinemu.dolphinemu.services.GameFileCacheManager
 import org.dolphinemu.dolphinemu.ui.main.ThemeProvider
@@ -208,14 +209,15 @@ class FindBattlesActivity : AppCompatActivity(), ThemeProvider {
         // exactly when a room hosted right now would.
         val nickname = StringSetting.NETPLAY_NICKNAME.string
         val defaultName = XdMatchmaker.sessionName(nickname)
-        // A stored name matching EITHER auto-shape is an auto-name from an
+        // A stored name matching ANY auto-shape is an auto-name from an
         // earlier publish, not something the user typed — recompute it, so a
-        // "[Orre] " tag stuck in config from a previous pick can never
-        // mislabel a Free room (or vice versa). Hand-typed names pass through
-        // untouched.
+        // "[Orre] " or "[OU] " tag stuck in config from a previous pick can
+        // never mislabel a Free room (or vice versa). Hand-typed names pass
+        // through untouched.
         val autoNames = setOf(
-            XdMatchmaker.sessionName(nickname, orreFormat = false),
-            XdMatchmaker.sessionName(nickname, orreFormat = true)
+            XdMatchmaker.sessionName(nickname, formatId = FormatBridge.FORMAT_FREE),
+            XdMatchmaker.sessionName(nickname, formatId = FormatBridge.FORMAT_ORRE_COLOSSEUM),
+            XdMatchmaker.sessionName(nickname, formatId = FormatBridge.FORMAT_OU)
         )
         uiState = uiState.copy(
             publishEnabled = NativeConfig.getBoolean(

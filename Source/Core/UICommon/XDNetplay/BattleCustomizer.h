@@ -48,12 +48,14 @@ namespace XDNetplay::BattleCustomizer
 //
 // Cheats gating: nothing ships unless the host's MAIN_ENABLE_CHEATS is true
 // when RequestStartGame runs (SetupNetSettings snapshots it; guests inherit
-// it through the netplay config layer). The launcher equates that flag with
-// its "OU rules ($XD OU Fixes)" toggle, so when a cosmetic is active while
-// the OU toggle is OFF, PrepareForStart forces cheats on and RegenerateIni
-// writes "$XD OU Fixes" into the local [ActionReplay_Disabled] -- the local
-// pass of ReadEnabledAndDisabled can disable a Sys-bundled code -- keeping
-// the OU patches off while the cosmetic block runs. EndSession undoes both.
+// it through the netplay config layer). Since the Format dropdown absorbed
+// the old standalone "OU Fixes" toggle, that flag is DERIVED state for XD
+// sessions: PrepareForStart reconciles it to (block active || format == OU),
+// in both directions, remembering the pre-session value. When the block is
+// active while the format is NOT OU, RegenerateIni writes "$XD OU Fixes"
+// into the local [ActionReplay_Disabled] -- the local pass of
+// ReadEnabledAndDisabled can disable a Sys-bundled code -- keeping the OU
+// patches off while the block runs. EndSession restores the remembered flag.
 //
 // Every address in the generated block is NTSC-U (GXXE01) ONLY. The block is
 // keyed to the GXXE01 local INI, so a future PAL/JP experiment cannot inherit
@@ -158,13 +160,14 @@ struct Selection
 // Reads the four MAIN_XD_STYLE_* config keys.
 Selection ConfigSelection();
 
-// Session-boundary scrub: clears the stashed guest model and removes any
-// "$OrreLink Battle Style" block a crashed session left orphaned in
-// User/GameSettings/GXXE01.ini (plus its enabled line and the OU-Fixes local
-// disable), so stale cosmetics can never leak into a solo boot or the next
-// session. Call when a hosting flow begins (desktop: EnsureGbaConfig;
-// Android: nativeHost). Do NOT call while a room is open -- it would discard
-// a guest's submitted model.
+// Room-open entry: performs the same scrub as ScrubLeftovers AND marks the
+// netplay session active (IsNetplaySessionActive). Call when the netplay room
+// actually opens -- desktop: NetPlayDialog::show (host and joiner alike);
+// Android: the end of nativeHost, and nativeJoin's external-join branch after
+// the client connects. Do NOT call from solo-boot or launcher boundaries
+// (that is ScrubLeftovers' job -- claiming the lifecycle there makes the
+// solo-cleanup hook stand down and strands the cheats-flag restore), and NOT
+// while a room is open -- it would discard a guest's submitted model.
 void BeginSession();
 
 // Stash the guest's submitted model (host side, netplay thread). Called on
@@ -175,6 +178,23 @@ void BeginSession();
 // values are dropped here, never clamped. Cleared by Begin/EndSession.
 void SetGuestModel(std::optional<int> id);
 
+// Boundary scrub WITHOUT claiming the netplay lifecycle: clears the stashes
+// and strips any leftover "$OrreLink Battle Style" block a crashed session
+// left in the local INI. This is the call for solo-boot and launcher-open
+// boundaries -- BeginSession does the same scrub but also marks a netplay
+// session as active, which makes the solo-cleanup core-state hook stand down
+// and EndSession (the cheats-flag restore) wait for a room-closed event that
+// a solo boot never gets. No-op while a netplay session is active: whatever
+// is stashed then belongs to the LIVE room, not to a crashed one.
+void ScrubLeftovers();
+
+// True from BeginSession (a netplay room opened in this process) until
+// EndSession. The heal machinery consults this: NetPlay::IsNetPlayRunning()
+// is GAME-scoped (true only while a netplay game runs), yet guest teams are
+// injected exactly while it is false -- in the lobby and between battles --
+// so lifecycle files on disk are only "leftovers" when this is false too.
+bool IsNetplaySessionActive();
+
 // Rewrites the "$OrreLink Battle Style" block in User/GameSettings/GXXE01.ini
 // from sel (+ the stashed guest model, which wins over sel.guest_model_
 // fallback), enables it via [ActionReplay_Enabled], and -- only while the
@@ -184,24 +204,25 @@ void SetGuestModel(std::optional<int> id);
 bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status);
 
 // RegenerateIni driven entirely by config: selection from the MAIN_XD_STYLE_*
-// keys, ou_enabled from MAIN_ENABLE_CHEATS (corrected for a force applied by
-// PrepareForStart earlier in this session, so a second Start in the same room
-// cannot mistake our own forcing for the user's OU choice). This is the call
-// for the host's TeamData handlers: regenerate on every submission arrival so
-// a model submitted any time before Start is honored.
+// keys, ou_enabled from MAIN_XD_FORMAT == FORMAT_OU (the Format dropdown is
+// the OU choice now; the flag PrepareForStart reconciles cannot distort it).
+// This is the call for the host's TeamData handlers: regenerate on every
+// submission arrival so a model submitted any time before Start is honored.
 bool RegenerateFromConfig(std::string* status);
 
 // The pre-start hook, host side, strictly before RequestStartGame (desktop:
 // ApplyStartForcing; Android: nativeStartGame): regenerates the block once
-// more, then -- only when the block is non-empty -- forces MAIN_ENABLE_CHEATS
-// on so the block actually loads and ships (see the gating note above).
+// more, then reconciles MAIN_ENABLE_CHEATS to what this session needs -- on
+// when the block is non-empty or the format is OU, off otherwise (see the
+// gating note above; the off-direction is what keeps a stale flag from the
+// removed OU toggle from silently shipping OU patches under "Free").
 // A submission that arrives after this point is rejected by the server while
 // the battle runs, so the synced set can never diverge mid-session.
 void PrepareForStart();
 
 // End-of-session cleanup, next to RestoreHostTeam in the OnRoomClosed hooks:
 // clears the guest stash, removes the block/enabled/disabled lines (pure
-// removal -- the file is stock again), and gives MAIN_ENABLE_CHEATS back to
-// the user if PrepareForStart forced it on this session.
+// removal -- the file is stock again), and puts MAIN_ENABLE_CHEATS back to
+// its pre-session value if PrepareForStart reconciled it this session.
 void EndSession();
 }  // namespace XDNetplay::BattleCustomizer
