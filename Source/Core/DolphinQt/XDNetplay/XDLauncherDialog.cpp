@@ -405,16 +405,22 @@ void XDLauncherDialog::CreateMainLayout()
   m_format_combo = add_style_combo(
       tr("Format:"),
       tr("Applies when you host: your room plays under this ruleset.\n\n"
-         "Orre Colosseum — the canon in-game ruleset. Enforced before a room\n"
-         "opens (your team and the port-3 fallback team) and on every guest\n"
-         "submission:\n"
+         "The community formats are three RULESETS times two ENTRY SHAPES:\n\n"
+         "Orre Colosseum / Hoenn Stadium — the canon ruleset (Lv 100):\n"
          "  • Gen 1–3 species, except Mewtwo, Mew, Lugia, Ho-Oh, Celebi,\n"
          "    Kyogre, Groudon, Rayquaza, Jirachi and Deoxys\n"
-         "  • Species Clause — no duplicate species on a team\n"
-         "  • Item Clause — no duplicate held items on a team\n"
+         "  • Species Clause and Item Clause — no duplicates\n"
          "  • Soul Dew is banned\n"
-         "Sleep, Freeze and Self-KO clauses are honor rules: please follow\n"
-         "them yourselves — OrreLink never enforces them.\n\n"
+         "Unlimited — everything allowed, Soul Dew included; the clauses\n"
+         "still apply. Lv 100.\n"
+         "Limited — LEVEL 50 (Pokémon above Lv 50 cannot enter) and ALL\n"
+         "legendaries banned, the birds, beasts, Regis and Latis included.\n\n"
+         "Orre shapes: bring 6, pick 4.  Hoenn shapes: bring 6, pick 3.\n"
+         "The in-game rules screen is pre-set to match, and teams are checked\n"
+         "before a room opens (yours and the port-3 fallback) and on every\n"
+         "guest submission. Sleep, Freeze and Self-KO clauses are honor\n"
+         "rules: please follow them yourselves — OrreLink never enforces\n"
+         "them.\n\n"
          "OU — runs the community $XD OU Fixes patches for both players\n"
          "(bring-6-pick-4 and its mechanics fixes). No team restrictions.\n\n"
          "Free — no patches, no restrictions; sessions are exactly as before\n"
@@ -423,18 +429,18 @@ void XDLauncherDialog::CreateMainLayout()
          "the Team Editor and the Submit Team dialog."));
   // The entry labels come from FormatRules so the dropdown, the refusal
   // dialogs and the room-chat messages all name the formats identically.
-  m_format_combo->addItem(
-      QString::fromUtf8(
-          XDNetplay::FormatRules::FormatDisplayName(XDNetplay::FormatRules::FORMAT_FREE)),
-      XDNetplay::FormatRules::FORMAT_FREE);
-  m_format_combo->addItem(
-      QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(
-          XDNetplay::FormatRules::FORMAT_ORRE_COLOSSEUM)),
-      XDNetplay::FormatRules::FORMAT_ORRE_COLOSSEUM);
-  m_format_combo->addItem(
-      QString::fromUtf8(
-          XDNetplay::FormatRules::FormatDisplayName(XDNetplay::FormatRules::FORMAT_OU)),
-      XDNetplay::FormatRules::FORMAT_OU);
+  // Dropdown order mirrors FormatBridge.ALL_FORMATS on Android: Free, the
+  // Orre family, the Hoenn family, then OU.
+  for (const int format_id :
+       {XDNetplay::FormatRules::FORMAT_FREE, XDNetplay::FormatRules::FORMAT_ORRE_COLOSSEUM,
+        XDNetplay::FormatRules::FORMAT_ORRE_UNLIMITED, XDNetplay::FormatRules::FORMAT_ORRE_LIMITED,
+        XDNetplay::FormatRules::FORMAT_HOENN_STADIUM,
+        XDNetplay::FormatRules::FORMAT_HOENN_UNLIMITED,
+        XDNetplay::FormatRules::FORMAT_HOENN_LIMITED, XDNetplay::FormatRules::FORMAT_OU})
+  {
+    m_format_combo->addItem(
+        QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(format_id)), format_id);
+  }
   const auto populate_style_combo =
       [this](QComboBox* combo, std::span<const XDNetplay::BattleCustomizer::StyleOption> table,
              bool model_table, bool terrain_suffix) {

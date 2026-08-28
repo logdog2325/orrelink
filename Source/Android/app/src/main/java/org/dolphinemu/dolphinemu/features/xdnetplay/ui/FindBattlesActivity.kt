@@ -211,14 +211,10 @@ class FindBattlesActivity : AppCompatActivity(), ThemeProvider {
         val defaultName = XdMatchmaker.sessionName(nickname)
         // A stored name matching ANY auto-shape is an auto-name from an
         // earlier publish, not something the user typed — recompute it, so a
-        // "[Orre] " or "[OU] " tag stuck in config from a previous pick can
-        // never mislabel a Free room (or vice versa). Hand-typed names pass
-        // through untouched.
-        val autoNames = setOf(
-            XdMatchmaker.sessionName(nickname, formatId = FormatBridge.FORMAT_FREE),
-            XdMatchmaker.sessionName(nickname, formatId = FormatBridge.FORMAT_ORRE_COLOSSEUM),
-            XdMatchmaker.sessionName(nickname, formatId = FormatBridge.FORMAT_OU)
-        )
+        // format tag stuck in config from a previous pick can never mislabel
+        // a room under a different pick. Hand-typed names pass through
+        // untouched.
+        val autoNames = XdMatchmaker.autoNames(nickname)
         uiState = uiState.copy(
             publishEnabled = NativeConfig.getBoolean(
                 NativeConfig.LAYER_ACTIVE, FILE, SECTION, KEY_USE_INDEX, false

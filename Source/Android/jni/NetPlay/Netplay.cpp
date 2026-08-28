@@ -25,6 +25,7 @@
 #include "UICommon/GameFile.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/DisposableSave.h"
+#include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
 #include "UICommon/XDNetplay/PartyBundle.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
@@ -277,18 +278,20 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeHost(JNIEnv
                                        Config::Get(Config::NETPLAY_HOST_PORT);
 
   // FORMAT host gate (mirrors the desktop MainWindow::NetPlayHost hook): with
-  // the Format pick on Orre Colosseum, the host's port-2 party and port-3
-  // guest-fallback party must both be legal before a room can open. Runs
-  // BEFORE the disposable-save swap so a refusal leaves nothing swapped, and
-  // ships its reason through the same connection-error surface the FRLG/
-  // disposable hosting refusal uses. Format = Free: one int compare, hosting
-  // untouched.
+  // the Format pick on any format with team rules, the host's port-2 party
+  // and port-3 guest-fallback party must both be legal before a room can
+  // open. Runs BEFORE the disposable-save swap so a refusal leaves nothing
+  // swapped, and ships its reason through the same connection-error surface
+  // the FRLG/disposable hosting refusal uses. Format = Free/OU: one int
+  // compare, hosting untouched.
   if (std::string format_reason; !XDNetplay::ValidateHostPartiesForFormat(&format_reason))
   {
     if (ui)
     {
-      ui->OnConnectionError("Cannot host an Orre Colosseum room: " + format_reason +
-                            " - fix the team, or switch the Format back to Free");
+      ui->OnConnectionError(
+          std::string("Cannot host a ") +
+          XDNetplay::FormatRules::FormatDisplayName(Config::Get(Config::MAIN_XD_FORMAT)) +
+          " room: " + format_reason + " - fix the team, or switch the Format back to Free");
     }
     return 0;
   }

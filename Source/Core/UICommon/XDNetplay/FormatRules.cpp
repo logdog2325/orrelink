@@ -35,6 +35,54 @@ constexpr BannedSpecies BANNED_SPECIES[] = {
     {382, "Kyogre"}, {383, "Groudon"}, {384, "Rayquaza"}, {385, "Jirachi"}, {386, "Deoxys"},
 };
 
+// The remaining Gen 1-3 legendaries, banned ONLY by the Limited ruleset (on
+// top of BANNED_SPECIES). National dex numbers, same identity rules as above.
+constexpr BannedSpecies LEGENDARY_SPECIES[] = {
+    {144, "Articuno"}, {145, "Zapdos"},   {146, "Moltres"},   {243, "Raikou"},
+    {244, "Entei"},    {245, "Suicune"},  {377, "Regirock"},  {378, "Regice"},
+    {379, "Registeel"}, {380, "Latias"},  {381, "Latios"},
+};
+
+const BannedSpecies* FindLegendarySpecies(int nat_dex)
+{
+  for (const BannedSpecies& banned : LEGENDARY_SPECIES)
+  {
+    if (banned.nat_dex == nat_dex)
+      return &banned;
+  }
+  return nullptr;
+}
+
+// What one format enforces. The clauses (Species/Item) are not in here
+// because every format with team rules applies them unconditionally.
+struct RulesProfile
+{
+  bool ban_restricted = false;   // BANNED_SPECIES (Restricted + Mythicals)
+  bool ban_legendaries = false;  // LEGENDARY_SPECIES on top (Limited only)
+  bool ban_soul_dew = false;
+  int max_level = 0;  // 0 = no level rule; Limited = 50 (the in-game Lv50
+                      // ruleset refuses over-level mons at team entry, so the
+                      // gates say it in words first)
+};
+
+RulesProfile ProfileFor(int format_key_value)
+{
+  switch (format_key_value)
+  {
+  case FORMAT_ORRE_COLOSSEUM:
+  case FORMAT_HOENN_STADIUM:
+    return {true, false, true, 0};
+  case FORMAT_ORRE_UNLIMITED:
+  case FORMAT_HOENN_UNLIMITED:
+    return {false, false, false, 0};
+  case FORMAT_ORRE_LIMITED:
+  case FORMAT_HOENN_LIMITED:
+    return {true, true, true, 50};
+  default:
+    return {};
+  }
+}
+
 // Soul Dew's Gen 3 item id, verified against the bundled
 // Data/Sys/XDNetplay/gen3data.json, field "items"."souldew" = 191.
 constexpr int SOUL_DEW_ITEM_ID = 191;
@@ -63,6 +111,9 @@ struct Entry
   // Held item id; 0 = no item. ITEMLESS MONS NEVER COUNT AS DUPLICATES of
   // each other -- "no item" is excluded from the Item Clause entirely.
   int item_id = 0;
+  // Level when the entry point knows it, else 0 (never checked). Showdown
+  // sets default to 100 in the parser; built mons carry the save's byte.
+  int level = 0;
   // What the refusal message calls this mon / item: for Showdown sets the
   // text the user actually typed, for built mons the Gen3Data name.
   std::string species_display;
@@ -79,20 +130,39 @@ std::string Capitalize(std::string name)
 }
 
 // The shared rule core. Check order is fixed so refusals are deterministic:
-// banned species, banned item, Species Clause, Item Clause -- first violation
-// wins, and within a check the earliest party slot wins.
-Verdict ValidateEntries(const std::vector<Entry>& entries)
+// banned species, banned item, level, Species Clause, Item Clause -- first
+// violation wins, and within a check the earliest party slot wins.
+Verdict ValidateEntries(const RulesProfile& profile, const std::vector<Entry>& entries)
 {
   for (const Entry& entry : entries)
   {
-    if (FindBannedSpecies(entry.nat_dex) != nullptr)
+    if (profile.ban_restricted && FindBannedSpecies(entry.nat_dex) != nullptr)
+      return {false, fmt::format("banned species: {}", entry.species_display)};
+    if (profile.ban_legendaries && FindLegendarySpecies(entry.nat_dex) != nullptr)
       return {false, fmt::format("banned species: {}", entry.species_display)};
   }
 
-  for (const Entry& entry : entries)
+  if (profile.ban_soul_dew)
   {
-    if (entry.item_id == SOUL_DEW_ITEM_ID)
-      return {false, fmt::format("banned item: {}", entry.item_display)};
+    for (const Entry& entry : entries)
+    {
+      if (entry.item_id == SOUL_DEW_ITEM_ID)
+        return {false, fmt::format("banned item: {}", entry.item_display)};
+    }
+  }
+
+  if (profile.max_level > 0)
+  {
+    for (const Entry& entry : entries)
+    {
+      // level == 0 means the entry point could not know it; the in-game rules
+      // screen is the final arbiter there.
+      if (entry.level > profile.max_level)
+      {
+        return {false, fmt::format("over the level limit: {} (Lv {}, max {})",
+                                   entry.species_display, entry.level, profile.max_level)};
+      }
+    }
   }
 
   // Species Clause: no duplicate species among the party.
@@ -142,17 +212,57 @@ bool IsOu(int format_key_value)
   return format_key_value == FORMAT_OU;
 }
 
-const char* FormatDisplayName(int format_key_value)
+bool HasTeamRules(int format_key_value)
 {
-  if (IsOrreColosseum(format_key_value))
-    return "Orre Colosseum";
-  if (IsOu(format_key_value))
-    return "OU";
-  return "Free";
+  switch (format_key_value)
+  {
+  case FORMAT_ORRE_COLOSSEUM:
+  case FORMAT_ORRE_UNLIMITED:
+  case FORMAT_ORRE_LIMITED:
+  case FORMAT_HOENN_STADIUM:
+  case FORMAT_HOENN_UNLIMITED:
+  case FORMAT_HOENN_LIMITED:
+    return true;
+  default:
+    return false;
+  }
 }
 
-Verdict ValidateSets(const std::vector<ShowdownSet>& sets, const Gen3Data& data)
+const char* FormatDisplayName(int format_key_value)
 {
+  switch (format_key_value)
+  {
+  case FORMAT_ORRE_COLOSSEUM: return "Orre Colosseum";
+  case FORMAT_OU: return "OU";
+  case FORMAT_ORRE_UNLIMITED: return "Orre Unlimited";
+  case FORMAT_ORRE_LIMITED: return "Orre Limited";
+  case FORMAT_HOENN_STADIUM: return "Hoenn Stadium";
+  case FORMAT_HOENN_UNLIMITED: return "Hoenn Unlimited";
+  case FORMAT_HOENN_LIMITED: return "Hoenn Limited";
+  default: return "Free";
+  }
+}
+
+const char* FormatSessionTag(int format_key_value)
+{
+  switch (format_key_value)
+  {
+  case FORMAT_ORRE_COLOSSEUM: return "[Orre] ";
+  case FORMAT_OU: return "[OU] ";
+  case FORMAT_ORRE_UNLIMITED: return "[Orre-U] ";
+  case FORMAT_ORRE_LIMITED: return "[Orre-L] ";
+  case FORMAT_HOENN_STADIUM: return "[Hoenn] ";
+  case FORMAT_HOENN_UNLIMITED: return "[Hoenn-U] ";
+  case FORMAT_HOENN_LIMITED: return "[Hoenn-L] ";
+  default: return "";
+  }
+}
+
+Verdict ValidateSets(int format_key_value, const std::vector<ShowdownSet>& sets,
+                     const Gen3Data& data)
+{
+  if (!HasTeamRules(format_key_value))
+    return {};
   std::vector<Entry> entries;
   entries.reserve(sets.size());
   for (const ShowdownSet& set : sets)
@@ -170,6 +280,7 @@ Verdict ValidateSets(const std::vector<ShowdownSet>& sets, const Gen3Data& data)
     entry.nat_dex = species->nat_dex;
     entry.species_key = species->nat_dex;
     entry.species_display = set.species;  // name the mon what the user typed
+    entry.level = set.level;
     if (set.item)
     {
       const std::optional<int> item_id = data.ItemId(*set.item);
@@ -182,11 +293,13 @@ Verdict ValidateSets(const std::vector<ShowdownSet>& sets, const Gen3Data& data)
     // the Item Clause -- itemless mons must never collide with each other.
     entries.push_back(std::move(entry));
   }
-  return ValidateEntries(entries);
+  return ValidateEntries(ProfileFor(format_key_value), entries);
 }
 
-Verdict ValidateParty(std::span<const Gen3Mon> party, const Gen3Data& data)
+Verdict ValidateParty(int format_key_value, std::span<const Gen3Mon> party, const Gen3Data& data)
 {
+  if (!HasTeamRules(format_key_value))
+    return {};
   // Reverse maps, built per call: internal species id -> species entry, and
   // item id -> normalized display name. Party validation is a rare,
   // interactive-scale event; a linear pass over ~400 species / ~350 items is
@@ -206,6 +319,7 @@ Verdict ValidateParty(std::span<const Gen3Mon> party, const Gen3Data& data)
       continue;
 
     Entry entry;
+    entry.level = static_cast<int>(mon.level);
     const auto species_it = species_by_internal_id.find(static_cast<int>(mon.species));
     if (species_it != species_by_internal_id.end())
     {
@@ -246,6 +360,6 @@ Verdict ValidateParty(std::span<const Gen3Mon> party, const Gen3Data& data)
     }
     entries.push_back(std::move(entry));
   }
-  return ValidateEntries(entries);
+  return ValidateEntries(ProfileFor(format_key_value), entries);
 }
 }  // namespace XDNetplay::FormatRules

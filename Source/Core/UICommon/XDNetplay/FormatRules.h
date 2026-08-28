@@ -67,6 +67,18 @@ namespace XDNetplay::FormatRules
 constexpr int FORMAT_FREE = 0;
 constexpr int FORMAT_ORRE_COLOSSEUM = 1;
 constexpr int FORMAT_OU = 2;
+// The Orre community's settled competitive formats (2026-08-27 scope, see
+// docs/orre-community-formats.md in the patch repo): three RULESETS times two
+// ENTRY SHAPES. Standard = Orre Colosseum's rules; Unlimited = all Pokemon
+// and items allowed (Soul Dew legal; Species/Item Clause still apply);
+// Limited = level 50 with ALL legendaries banned (the Restricted/Mythical
+// list plus every other legendary). Orre = bring 6 pick 4; Hoenn = bring 6
+// pick 3. FORMAT_ORRE_COLOSSEUM above is the Standard/Orre cell.
+constexpr int FORMAT_ORRE_UNLIMITED = 3;
+constexpr int FORMAT_ORRE_LIMITED = 4;
+constexpr int FORMAT_HOENN_STADIUM = 5;
+constexpr int FORMAT_HOENN_UNLIMITED = 6;
+constexpr int FORMAT_HOENN_LIMITED = 7;
 
 // True only for the exact Orre Colosseum value: an unknown/garbage key value
 // behaves as Free (no enforcement), never as a surprise lockout.
@@ -74,6 +86,19 @@ bool IsOrreColosseum(int format_key_value);
 
 // True only for the exact OU value -- same unknown-behaves-as-Free rule.
 bool IsOu(int format_key_value);
+
+// True for every format that carries a party-legality layer (the six
+// community formats -- Unlimited included, since Species and Item Clause
+// still apply there). False for Free, OU and every unknown value: those
+// validate nothing, so the callers' "one int compare then nothing" contract
+// holds.
+bool HasTeamRules(int format_key_value);
+
+// The public-lobby session-name tag for a format, brackets and trailing
+// space included ("[Orre] ", "[Hoenn-L] ", ...), or "" for Free and unknown
+// values. Shared by both platforms so the lobby reads identically everywhere;
+// purely a human-readable label -- matchmaking never keys off it.
+const char* FormatSessionTag(int format_key_value);
 
 // Short display name for a format key value ("Free" / "Orre Colosseum" /
 // "OU"), shared by both platforms' UI so the dropdowns and messages agree.
@@ -99,7 +124,8 @@ struct Verdict
 // mon can never land in the save -- validating it would risk refusing a paste
 // whose offending entry was never going to play. Validates ALL resolvable
 // sets, whatever the party size (1..6; a paste is capped downstream).
-Verdict ValidateSets(const std::vector<ShowdownSet>& sets, const Gen3Data& data);
+Verdict ValidateSets(int format_key_value, const std::vector<ShowdownSet>& sets,
+                     const Gen3Data& data);
 
 // Entry point (b): built Gen3Mon spans -- the party-bundle path and save
 // reading. mon.species is the INTERNAL (Hoenn) species id; it is mapped to the
@@ -107,5 +133,6 @@ Verdict ValidateSets(const std::vector<ShowdownSet>& sets, const Gen3Data& data)
 // apply (the two id spaces diverge from Hoenn onward: Kyogre is internal 404,
 // National 382). held_item == 0 means "no item" and never counts toward the
 // Item Clause. Validates every non-empty mon in the span (party size 1..6).
-Verdict ValidateParty(std::span<const Gen3Mon> party, const Gen3Data& data);
+Verdict ValidateParty(int format_key_value, std::span<const Gen3Mon> party,
+                      const Gen3Data& data);
 }  // namespace XDNetplay::FormatRules

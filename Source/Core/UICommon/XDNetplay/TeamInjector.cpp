@@ -510,12 +510,12 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
   // format=Free this block is a single int compare -- no validation runs and
   // behavior stays byte-identical. (Parsing twice under Orre is deliberate:
   // the pristine Free path below keeps its original shape.)
-  if (FormatRules::IsOrreColosseum(Config::Get(Config::MAIN_XD_FORMAT)))
+  if (const int format = Config::Get(Config::MAIN_XD_FORMAT); FormatRules::HasTeamRules(format))
   {
     const FormatRules::Verdict verdict =
-        FormatRules::ValidateSets(ShowdownParser::ParseTeam(showdown_text), *data);
+        FormatRules::ValidateSets(format, ShowdownParser::ParseTeam(showdown_text), *data);
     if (!verdict.ok)
-      return fail("Orre Colosseum: " + verdict.reason);
+      return fail(std::string(FormatRules::FormatDisplayName(format)) + ": " + verdict.reason);
   }
 
   const std::string save_path = ResolveGuestSavePath(device, &error);
@@ -661,24 +661,25 @@ bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* s
   // FORMAT gate (guest submission, bundle form): same contract as the Showdown
   // gate in InjectGuestTeam -- the HOST's format key governs, the check runs
   // BEFORE any lifecycle side effect (self-heal/stash), and a refusal goes out
-  // through the status -> room-chat path prefixed "Orre Colosseum: ". The
+  // through the status -> room-chat path prefixed with the format's name. The
   // decoded mons carry INTERNAL species ids; ValidateParty maps them to
   // National dex numbers through Gen3Data before the ban list applies. With
   // format=Free this is a single int compare and nothing else runs. Unlike the
   // Showdown path, Orre cannot proceed when gen3data.json is unreadable --
   // waving an unvalidatable party through would silently break the room's
   // ruleset, so the submission is refused just as loudly.
-  if (FormatRules::IsOrreColosseum(Config::Get(Config::MAIN_XD_FORMAT)))
+  if (const int format = Config::Get(Config::MAIN_XD_FORMAT); FormatRules::HasTeamRules(format))
   {
     std::string data_error;
     const auto data = Gen3Data::LoadBundled(&data_error);
     if (!data)
-      return fail(fmt::format("Orre Colosseum: cannot validate the party (game data "
-                              "unavailable: {})",
-                              data_error));
-    const FormatRules::Verdict verdict = FormatRules::ValidateParty(decoded->mons, *data);
+    {
+      return fail(fmt::format("{}: cannot validate the party (game data unavailable: {})",
+                              FormatRules::FormatDisplayName(format), data_error));
+    }
+    const FormatRules::Verdict verdict = FormatRules::ValidateParty(format, decoded->mons, *data);
     if (!verdict.ok)
-      return fail("Orre Colosseum: " + verdict.reason);
+      return fail(std::string(FormatRules::FormatDisplayName(format)) + ": " + verdict.reason);
   }
 
   const std::string save_path = ResolveGuestSavePath(device, &error);
@@ -744,9 +745,10 @@ bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* s
 
 bool ValidateHostPartiesForFormat(std::string* reason)
 {
-  // Free (or any unknown key value): one int compare, nothing else -- no file
-  // reads, no validation, hosting proceeds exactly as before this feature.
-  if (!FormatRules::IsOrreColosseum(Config::Get(Config::MAIN_XD_FORMAT)))
+  // Free/OU (or any unknown key value): one int compare, nothing else -- no
+  // file reads, no validation, hosting proceeds exactly as before.
+  const int format = Config::Get(Config::MAIN_XD_FORMAT);
+  if (!FormatRules::HasTeamRules(format))
     return true;
 
 #ifndef HAS_LIBMGBA
@@ -789,14 +791,14 @@ bool ValidateHostPartiesForFormat(std::string* reason)
     if (!party || party->empty())
       continue;
 
-    const FormatRules::Verdict verdict = FormatRules::ValidateParty(*party, *data);
+    const FormatRules::Verdict verdict = FormatRules::ValidateParty(format, *party, *data);
     if (!verdict.ok)
     {
       if (reason)
       {
-        *reason = fmt::format("{} (GBA port {}) is not Orre Colosseum legal - {}",
+        *reason = fmt::format("{} (GBA port {}) is not {} legal - {}",
                               device == 1 ? "your team" : "the guest-slot fallback team",
-                              device + 1, verdict.reason);
+                              device + 1, FormatRules::FormatDisplayName(format), verdict.reason);
       }
       return false;
     }
