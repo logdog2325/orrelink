@@ -84,7 +84,6 @@ private:
   void OnFixGbaInput();
   void OnFixTeamSaves();
   void OnFixVsSave();
-  void OnGbaInputInfo();
 
   // |device| is the GBA device number: 1 = port 2 (your side), 2 = port 3
   // (the guest slot).
@@ -123,7 +122,7 @@ private:
   // "Game default", which genuinely emits nothing.
   //
   // m_format_combo is the one non-cosmetic pick in that group: the battle
-  // FORMAT (Free / Orre Colosseum), persisted in MAIN_XD_FORMAT and enforced
+  // FORMAT (Free / Orre Colosseum / OU), persisted in MAIN_XD_FORMAT and enforced
   // by FormatRules' gates -- see the tooltip built in CreateMainLayout.
   QComboBox* m_format_combo;
   QComboBox* m_style_host_model_combo;
@@ -132,7 +131,6 @@ private:
   QComboBox* m_style_venue_combo;
 
   QCheckBox* m_practice_dummy_check;
-  QCheckBox* m_cheats_check;
   QCheckBox* m_show_on_startup_check;
   QPushButton* m_boot_button;
   QPushButton* m_host_button;
