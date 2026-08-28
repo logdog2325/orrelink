@@ -26,6 +26,13 @@
 //                        runs, sessions stay byte-identical to a build
 //                        without this feature.
 //     1 = Orre Colosseum the canon in-game ruleset of XD's Orre Colosseum.
+//     2 = OU             the community "$XD OU Fixes" patch set (bring 6 pick
+//                        4 and its mechanics fixes). No party-legality layer:
+//                        like Free it validates nothing here; picking it makes
+//                        the host session run with the Sys-bundled OU Fixes
+//                        code enabled (BattleCustomizer derives the cheats
+//                        flag from this key -- the format dropdown REPLACED
+//                        the old standalone "OU Fixes" toggle).
 //
 // What "Orre Colosseum" enforces HERE (the party-legality layer):
 //   * Species ban list: Gen 1-3 species EXCEPT the restricted legendaries and
@@ -59,13 +66,17 @@ namespace XDNetplay::FormatRules
 // it travels through config/JNI as a plain integer, like the style picks.
 constexpr int FORMAT_FREE = 0;
 constexpr int FORMAT_ORRE_COLOSSEUM = 1;
+constexpr int FORMAT_OU = 2;
 
 // True only for the exact Orre Colosseum value: an unknown/garbage key value
 // behaves as Free (no enforcement), never as a surprise lockout.
 bool IsOrreColosseum(int format_key_value);
 
-// Short display name for a format key value ("Free" / "Orre Colosseum"),
-// shared by both platforms' UI so the dropdowns and messages agree.
+// True only for the exact OU value -- same unknown-behaves-as-Free rule.
+bool IsOu(int format_key_value);
+
+// Short display name for a format key value ("Free" / "Orre Colosseum" /
+// "OU"), shared by both platforms' UI so the dropdowns and messages agree.
 const char* FormatDisplayName(int format_key_value);
 
 // Validation outcome. When !ok, reason is one specific human sentence naming

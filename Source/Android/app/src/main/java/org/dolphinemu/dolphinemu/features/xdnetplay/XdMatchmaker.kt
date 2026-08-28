@@ -30,6 +30,7 @@ object XdMatchmaker {
      *     XD [OC] <nickname>            ("OC" = Open Challenge)
      *     [Orre] XD [OC] <nickname>     when the host's Format pick is
      *                                   Orre Colosseum
+     *     [OU] XD [OC] <nickname>       when the host's Format pick is OU
      *
      * The IDENTICAL format lives in XDNetplayConfig.cpp::MakeOpenSessionName on
      * desktop. Keep the two in sync — it is the only thing that lets a human
@@ -37,12 +38,13 @@ object XdMatchmaker {
      *
      * Matching itself never keys off the name (see [pickMatch]); the tags are
      * for people, so a differently named open room is still joinable. The
-     * "[Orre] " prefix in particular is a human-readable label only — this
-     * patch adds no matchmaking filter for it, and a Free room's name is
-     * byte-identical to before the Format feature existed.
+     * "[Orre] " and "[OU] " prefixes in particular are human-readable labels
+     * only — this patch adds no matchmaking filter for them, and a Free
+     * room's name is byte-identical to before the Format feature existed.
      */
     const val SESSION_NAME_PREFIX = "XD [OC] "
     const val ORRE_TAG = "[Orre] "
+    const val OU_TAG = "[OU] "
 
     const val FILE = Settings.FILE_DOLPHIN
     const val SECTION = Settings.SECTION_INI_NETPLAY
@@ -55,17 +57,21 @@ object XdMatchmaker {
     const val DEFAULT_REGION = "NA"
 
     /**
-     * The name a room this device hosts should publish under. [orreFormat]
+     * The name a room this device hosts should publish under. [formatId]
      * defaults to the device's own Format pick — the caller IS the host on
      * every publish path — and is overridable so [FindBattlesActivity] can
-     * recognize both auto-name shapes regardless of the current pick.
+     * recognize every auto-name shape regardless of the current pick.
      */
     fun sessionName(
         nickname: String,
-        orreFormat: Boolean = FormatBridge.isOrreColosseum(IntSetting.MAIN_XD_FORMAT.int)
+        formatId: Int = IntSetting.MAIN_XD_FORMAT.int
     ): String {
         val base = SESSION_NAME_PREFIX + nickname.ifEmpty { "Player" }
-        return if (orreFormat) ORRE_TAG + base else base
+        return when {
+            FormatBridge.isOrreColosseum(formatId) -> ORRE_TAG + base
+            FormatBridge.isOu(formatId) -> OU_TAG + base
+            else -> base
+        }
     }
 
     /**

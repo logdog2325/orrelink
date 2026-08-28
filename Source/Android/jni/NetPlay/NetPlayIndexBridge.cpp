@@ -453,11 +453,23 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeRestore
   return SpanToJStringArray(env, outcome);
 }
 
+JNIEXPORT void JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeHealLeftoverSession(
+    JNIEnv*, jobject)
+{
+  // Boundary heal for a killed session's leftovers, callable from the screens
+  // that read the socket saves (launcher checklist, team editor). Mirrors the
+  // desktop launcher's showEvent heal; no-op unless leftovers exist, refuses
+  // while a room or emulation is live.
+  XDNetplay::DisposableSave::HealLeftoverSession();
+}
+
 // ---------------------------------------------------------------------------
 // Format bridge (Kotlin counterpart: features/xdnetplay/FormatBridge)
 // ---------------------------------------------------------------------------
 //
-// PASTE-TIME validation for the one-tap FORMAT pick (Free / Orre Colosseum).
+// PASTE-TIME validation for the one-tap FORMAT pick (Free / Orre Colosseum /
+// OU; only Orre Colosseum has a legality layer).
 // The ruleset lives ONLY in UICommon/XDNetplay/FormatRules -- the same code
 // the enforcing gates run (the host gate in nativeHost, the guest-submission
 // gate in the host's TeamInjector) -- so a note shown here and a refusal shown

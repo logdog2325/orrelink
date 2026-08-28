@@ -31,6 +31,7 @@ import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.SaveNaming
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.ShowdownParser
 import org.dolphinemu.dolphinemu.ui.main.ThemeProvider
 import org.dolphinemu.dolphinemu.ui.theme.DolphinTheme
+import org.dolphinemu.dolphinemu.features.xdnetplay.SaveImportBridge
 import org.dolphinemu.dolphinemu.utils.DirectoryInitialization
 import org.dolphinemu.dolphinemu.utils.ThemeHelper
 import org.json.JSONObject
@@ -49,6 +50,12 @@ class TeamEditorActivity : AppCompatActivity(), ThemeProvider {
         super.onCreate(savedInstanceState)
 
         repo = TeamRepo(this)
+        // The editor displays whatever the socket save holds -- after a killed
+        // session that can be the OPPONENT's team. Heal leftovers before the
+        // first read; no-op in a live room (the room-wide lock governs there).
+        if (DirectoryInitialization.areDolphinDirectoriesReady()) {
+            SaveImportBridge.healLeftoverSession()
+        }
         reload(TeamRole.HOST)
 
         setContent {

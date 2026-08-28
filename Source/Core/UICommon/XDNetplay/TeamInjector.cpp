@@ -27,11 +27,13 @@
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/HW/GBADetectLog.h"
+#include "Core/NetPlayProto.h"
 #include "Core/System.h"
 #ifdef HAS_LIBMGBA
 #include "Core/HW/GBACore.h"
 #endif
 
+#include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Data.h"
 #include "UICommon/XDNetplay/Gen3Mon.h"
@@ -842,5 +844,58 @@ void RestoreHostTeam(int device)
 
   if (Core::IsUninitialized(Core::System::GetInstance()))
     RunPendingPurge();
+}
+
+void HealLeftoverGuestState()
+{
+  // While a netplay SESSION is open in this process, .guestteam/.hostteam are
+  // the LIVE room's lifecycle -- purging now would delete the current guest's
+  // submitted team. IsNetPlayRunning alone cannot see this: it is GAME-scoped
+  // (set at StartGame, cleared at StopGame), and guest teams are injected
+  // exactly while it is false -- in the lobby and between battles -- so the
+  // room-scoped BattleCustomizer flag is the guard that actually matters
+  // (BeginSession fires when a room opens on either platform, EndSession when
+  // it closes). While emulation runs, the mGBA cores own the save files.
+  // Either way: stand down; every caller is a boundary that recurs, so a
+  // skipped heal is only delayed.
+  if (BattleCustomizer::IsNetplaySessionActive() || NetPlay::IsNetPlayRunning() ||
+      !Core::IsUninitialized(Core::System::GetInstance()))
+    return;
+
+  bool purged = false;
+  for (const int device : {1, 2})
+  {
+    const std::string save_path = SavePathForDevice(device);
+    if (save_path.empty())
+      continue;
+    if (File::Exists(save_path + GUEST_MARK_SUFFIX) || File::Exists(save_path + HOST_STASH_SUFFIX))
+    {
+      // Through RestoreHostTeam, not PurgeNow directly: it runs inline here
+      // (emulation is down), and its once-registration keeps TeamInjector's
+      // Core-state hook ahead of DisposableSave's in listener order -- the
+      // same reason the old .netplayorig-gated heal went through it.
+      RestoreHostTeam(device);
+      purged = true;
+    }
+  }
+  if (purged)
+    return;
+
+  // No injection lifecycle pending, but a JOINER's machine can still hold the
+  // host's synced saves in NetPlayTemp*.sav after a killed session -- there is
+  // no marker for those, their cleanup normally rides the room-close purge
+  // that never ran. Netplay rebuilds these files from the wire at every sync,
+  // so deleting them while emulation is down is always safe.
+  std::vector<std::string> notes;
+  for (int slot = 0; slot < 4; ++slot)
+  {
+    if (ScrubAndDelete(NetPlayTempSavePath(slot)))
+      notes.emplace_back(fmt::format("removed=netplaytemp{}", slot + 1));
+  }
+#ifdef HAS_LIBMGBA
+  if (!notes.empty())
+    GBADetectLog::LogPostSession(
+        fmt::format("boot-heal teamcleanup {}", fmt::format("{}", fmt::join(notes, " "))));
+#endif
 }
 }  // namespace XDNetplay
