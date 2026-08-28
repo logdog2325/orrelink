@@ -225,6 +225,17 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeJoin(JNIEnv
   }
   else
   {
+    // EXTERNAL join only (a host's self-join of its local server lands in the
+    // branch above): boundary heal before connecting, for a killed earlier
+    // session's leftovers -- an opponent's team in a socket save, a previous
+    // host's saves in the NetPlayTemp copies. On the host path this call
+    // would be a disaster, not a no-op: nativeHost has ALREADY swapped
+    // imported saves for disposables and stashed them as .netplayorig, and
+    // the heal would put the full imports right back into the synced path.
+    // (nativeHost's BeginSession also arms the session-active guard, but the
+    // branch split keeps this correct on its own.)
+    XDNetplay::DisposableSave::HealLeftoverSession();
+
     const std::string traversal_choice = Config::Get(Config::NETPLAY_TRAVERSAL_CHOICE);
     is_traversal = traversal_choice == "traversal";
     host_ip = is_traversal ? Config::Get(Config::NETPLAY_HOST_CODE) :
@@ -238,6 +249,14 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeJoin(JNIEnv
 
   if (!client->IsConnected())
     return 0;
+
+  // The room is open from here for a JOINER: mark the netplay session active
+  // so boundary heals (launcher, team editor) stand down for its duration --
+  // the desktop counterpart is NetPlayDialog::show, which covers both roles.
+  // A self-joining host already did this at the end of nativeHost; the
+  // OnRoomClosed callback's EndSession is the matching clear for both.
+  if (!XDNetplay::BattleCustomizer::IsNetplaySessionActive())
+    XDNetplay::BattleCustomizer::BeginSession();
 
   return reinterpret_cast<jlong>(client.release());
 }

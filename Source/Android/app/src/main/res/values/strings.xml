@@ -1136,7 +1136,9 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_format_label">Format</string>
     <string name="xd_format_free">Free</string>
     <string name="xd_format_orre">Orre Colosseum</string>
-    <string name="xd_format_hint_free">No team rules — anything a Gen 3 save can hold.</string>
+    <string name="xd_format_ou">OU</string>
+    <string name="xd_format_hint_free">No patches, no team rules — anything a Gen 3 save can hold.</string>
+    <string name="xd_format_hint_ou">Applies to rooms you host: runs the community $XD OU Fixes patches for both players (bring 6, pick 4, and its mechanics fixes). No team rules.</string>
     <string name="xd_format_hint_orre">Applies to rooms you host (listed with an [Orre] tag): no Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys; no duplicate species; no duplicate held items; Soul Dew banned. Sleep, Freeze, and Self-KO clauses are honor rules — not enforced.</string>
     <!-- Non-blocking paste-time note; %1$s is a reason from shared core,
          e.g. "banned species: Kyogre". -->
