@@ -43,8 +43,6 @@ object XdMatchmaker {
      * room's name is byte-identical to before the Format feature existed.
      */
     const val SESSION_NAME_PREFIX = "XD [OC] "
-    const val ORRE_TAG = "[Orre] "
-    const val OU_TAG = "[OU] "
 
     const val FILE = Settings.FILE_DOLPHIN
     const val SECTION = Settings.SECTION_INI_NETPLAY
@@ -67,12 +65,14 @@ object XdMatchmaker {
         formatId: Int = IntSetting.MAIN_XD_FORMAT.int
     ): String {
         val base = SESSION_NAME_PREFIX + nickname.ifEmpty { "Player" }
-        return when {
-            FormatBridge.isOrreColosseum(formatId) -> ORRE_TAG + base
-            FormatBridge.isOu(formatId) -> OU_TAG + base
-            else -> base
-        }
+        return FormatBridge.sessionTag(formatId) + base
     }
+
+    /** Every auto-name shape [sessionName] can produce for [nickname] — one
+     *  per format tag. FindBattles uses this to tell an auto-published name
+     *  from a hand-typed one. */
+    fun autoNames(nickname: String): Set<String> =
+        FormatBridge.ALL_FORMATS.map { sessionName(nickname, formatId = it) }.toSet()
 
     /**
      * Picks the room "Search for Match" should join, or null to host instead.

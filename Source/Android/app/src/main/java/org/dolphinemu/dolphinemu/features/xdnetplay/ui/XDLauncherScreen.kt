@@ -303,6 +303,31 @@ private fun BattleStyleCard(
                         experimental = false
                     ),
                     BattleStyleBridge.StyleOption(
+                        id = FormatBridge.FORMAT_ORRE_UNLIMITED,
+                        name = stringResource(R.string.xd_format_orre_unlimited),
+                        experimental = false
+                    ),
+                    BattleStyleBridge.StyleOption(
+                        id = FormatBridge.FORMAT_ORRE_LIMITED,
+                        name = stringResource(R.string.xd_format_orre_limited),
+                        experimental = false
+                    ),
+                    BattleStyleBridge.StyleOption(
+                        id = FormatBridge.FORMAT_HOENN_STADIUM,
+                        name = stringResource(R.string.xd_format_hoenn),
+                        experimental = false
+                    ),
+                    BattleStyleBridge.StyleOption(
+                        id = FormatBridge.FORMAT_HOENN_UNLIMITED,
+                        name = stringResource(R.string.xd_format_hoenn_unlimited),
+                        experimental = false
+                    ),
+                    BattleStyleBridge.StyleOption(
+                        id = FormatBridge.FORMAT_HOENN_LIMITED,
+                        name = stringResource(R.string.xd_format_hoenn_limited),
+                        experimental = false
+                    ),
+                    BattleStyleBridge.StyleOption(
                         id = FormatBridge.FORMAT_OU,
                         name = stringResource(R.string.xd_format_ou),
                         experimental = false
@@ -312,13 +337,28 @@ private fun BattleStyleCard(
                 defaultLabel = stringResource(R.string.xd_format_free),
                 onSelected = onFormatChanged,
                 modifier = Modifier.fillMaxWidth(),
-                supportingText = stringResource(
+                supportingText = run {
+                    // The Hoenn shapes share their ruleset's hint plus the
+                    // bring-6-pick-3 suffix; every other id has its own text.
+                    val hoenn = stringResource(R.string.xd_format_hint_hoenn_suffix)
                     when (formatId) {
-                        FormatBridge.FORMAT_ORRE_COLOSSEUM -> R.string.xd_format_hint_orre
-                        FormatBridge.FORMAT_OU -> R.string.xd_format_hint_ou
-                        else -> R.string.xd_format_hint_free
+                        FormatBridge.FORMAT_ORRE_COLOSSEUM ->
+                            stringResource(R.string.xd_format_hint_orre)
+                        FormatBridge.FORMAT_ORRE_UNLIMITED ->
+                            stringResource(R.string.xd_format_hint_unlimited)
+                        FormatBridge.FORMAT_ORRE_LIMITED ->
+                            stringResource(R.string.xd_format_hint_limited)
+                        FormatBridge.FORMAT_HOENN_STADIUM ->
+                            stringResource(R.string.xd_format_hint_hoenn_standard) + hoenn
+                        FormatBridge.FORMAT_HOENN_UNLIMITED ->
+                            stringResource(R.string.xd_format_hint_unlimited) + hoenn
+                        FormatBridge.FORMAT_HOENN_LIMITED ->
+                            stringResource(R.string.xd_format_hint_limited) + hoenn
+                        FormatBridge.FORMAT_OU ->
+                            stringResource(R.string.xd_format_hint_ou)
+                        else -> stringResource(R.string.xd_format_hint_free)
                     }
-                )
+                }
             )
             Text(
                 text = stringResource(R.string.xd_style_section_hint),
