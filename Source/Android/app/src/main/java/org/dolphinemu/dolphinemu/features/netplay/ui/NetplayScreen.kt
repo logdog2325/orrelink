@@ -156,15 +156,18 @@ fun NetplayScreen(
     initialUseMySave: Boolean,
     modelOptions: List<BattleStyleBridge.StyleOption>,
     /**
-     * True when THIS device's Format pick is Orre Colosseum. Drives only the
-     * non-blocking paste-time note in the Submit Team sheet — the room is
-     * governed by the HOST's key, enforced host-side in shared core.
+     * True when THIS device's Format pick carries team rules (any of the six
+     * community formats). Drives only the non-blocking paste-time note in the
+     * Submit Team sheet — the room is governed by the HOST's key, enforced
+     * host-side in shared core.
      */
     orreFormatLocal: Boolean,
+    /** Display name of the local Format pick, for the note's wording. */
+    localFormatName: String = "",
     /**
-     * Shared core's Orre Colosseum check of a Showdown draft
-     * (FormatBridge.validateShowdown): "" = no complaint, else one reason.
-     * Injected so previews need no native library.
+     * Shared core's legality check of a Showdown draft against the local
+     * Format pick (FormatBridge.validateShowdown): "" = no complaint, else
+     * one reason. Injected so previews need no native library.
      */
     validateTeamForFormat: (String) -> String,
 ) {
@@ -267,8 +270,8 @@ fun NetplayScreen(
                         enabled = !useMySave,
                         modifier = Modifier.fillMaxWidth().height(220.dp)
                     )
-                    // Paste-time Orre Colosseum note, shown immediately while
-                    // the local Format pick is Orre. NEVER blocking: Send
+                    // Paste-time format note, shown immediately while the
+                    // local Format pick carries team rules. NEVER blocking: Send
                     // stays enabled — the note exists so a refusal from the
                     // host's gate is no surprise. (A pokepast.es link parses
                     // to nothing and gets no note; the host still enforces on
@@ -281,7 +284,9 @@ fun NetplayScreen(
                         if (formatReason.isNotEmpty()) {
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                stringResource(R.string.xd_format_note, formatReason),
+                                stringResource(
+                                    R.string.xd_format_note, localFormatName, formatReason
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error
                             )

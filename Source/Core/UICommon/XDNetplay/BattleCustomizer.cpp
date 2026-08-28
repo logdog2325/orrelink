@@ -20,6 +20,7 @@
 
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
+#include "Core/System.h"
 
 #ifdef HAS_LIBMGBA
 #include "Core/HW/GBACore.h"
@@ -710,19 +711,23 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
   return block;
 }
 
-// The Orre Colosseum in-game ruleset, pinned into Custom 1. Design: instead of
-// pinning individual clause bytes -- several of whose meanings are unverified
-// -- the WHOLE 144-byte slot is written with the game's own stock LV100
-// tournament preset (main.dol file 0x2E7C08 + 3*0x90; min 1 / max 100 / total
-// 600 / species-clause encoding 00,06 / tournament marker at +0x08, all-zero
-// tail), with exactly one change: the u16 at +0x1A (entries) set to 4 for
-// bring-6-pick-4. Every byte is the game's own tournament value, so no
-// unverified meaning is ever guessed at. The rules screen's menu globals are
-// pinned alongside so the selection is Double / Custom 1 and enforcement
-// (GameCube-side entry validator, lha ruleset+0/+2) routes through the pinned
-// slot. Do-not-pin findings from the field map are respected: never the
-// getter's working buffer (rebuilt in-call), never ctx+0x10 (races the random
-// venue roll); the venue stays on the field-proven record +0x06 pin.
+// The community formats' in-game rulesets, pinned into Custom 1. Design:
+// instead of pinning individual clause bytes -- several of whose meanings are
+// unverified -- the WHOLE 144-byte slot is written with one of the game's own
+// stock tournament presets (main.dol preset table at file 0x2E7C08 +
+// slot*0x90: slot 3 = Lv100, min 1 / max 100 / total 600; slot 2 = Lv50,
+// min 1 / max 50 / total 300; both share every other byte, tournament marker
+// at +0x08, all-zero tail -- verified by extracting both slots from a clean
+// GXXE01 main.dol), with exactly one change: the u16 at +0x1A (entries, the
+// low half of word 6) set to 4 for the Orre bring-6-pick-4 shapes or 3 for
+// the Hoenn bring-6-pick-3 shapes. Every byte is the game's own tournament
+// value, so no unverified meaning is ever guessed at. The rules screen's menu
+// globals are pinned alongside so the selection is Double / Custom 1 and
+// enforcement (GameCube-side entry validator, lha ruleset+0/+2) routes
+// through the pinned slot. Do-not-pin findings from the field map are
+// respected: never the getter's working buffer (rebuilt in-call), never
+// ctx+0x10 (races the random venue roll); the venue stays on the
+// field-proven record +0x06 pin.
 constexpr u32 ORRE_MENU_GLOBAL_LINES[][2] = {
     {0x044349EC, 0x00000001},  // player layout = GBA vs GBA. The layout global IS the mode row:
                                // 0 = GC vs GBA, 1 = GBA vs GBA, 2/3 = tag (>= 2 forces tag at
@@ -737,29 +742,73 @@ constexpr u32 ORRE_MENU_GLOBAL_LINES[][2] = {
                                // returns DIRECTLY for selections 3..5 -- the pin holds)
 };
 constexpr u32 ORRE_RULESET_BASE = 0x044334C0;  // Custom 1: 0x80433310 + 3*144
-constexpr u32 ORRE_RULESET_WORDS[36] = {
+// Stock preset slots, entries word (index 6) still at the STOCK value 6 --
+// the emitter patches its low half per format. Only words 0-1 differ between
+// the two levels.
+constexpr u32 RULESET_LV100_WORDS[36] = {
     0x00010064, 0x02580006, 0x00000002, 0x00000000, 0x01010001, 0xFFC4FFEC,
-    0x01010004, 0x00010000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x01010006, 0x00010000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
 };
+constexpr u32 RULESET_LV50_WORDS[36] = {
+    0x00010032, 0x012C0006, 0x00000002, 0x00000000, 0x01010001, 0xFFC4FFEC,
+    0x01010006, 0x00010000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+};
+constexpr int RULESET_ENTRIES_WORD = 6;  // u16 at +0x1A = low half of word 6
 
 std::string FormatRuleLines()
 {
   // Sleep/Freeze/Self-KO clauses stay honor rules and are never emitted here;
   // species/item/ban clauses are enforced app-side by FormatRules. This pins
-  // only what the in-game rules screen controls: Double, level 100, bring 6
-  // pick 4, via the game's own tournament preset (see above).
-  if (Config::Get(Config::MAIN_XD_FORMAT) != FormatRules::FORMAT_ORRE_COLOSSEUM)
-    return {};
+  // only what the in-game rules screen controls -- Double, the level preset,
+  // and the entry count -- via the game's own tournament presets (see above).
+  // The format matrix: Standard/Unlimited pin Lv100 (they differ only in the
+  // app-side legality layer), Limited pins Lv50; Orre shapes enter 4, Hoenn
+  // shapes enter 3.
+  const int format = Config::Get(Config::MAIN_XD_FORMAT);
+  const u32* words = nullptr;
+  u32 entries = 0;
+  switch (format)
+  {
+  case FormatRules::FORMAT_ORRE_COLOSSEUM:
+  case FormatRules::FORMAT_ORRE_UNLIMITED:
+    words = RULESET_LV100_WORDS;
+    entries = 4;
+    break;
+  case FormatRules::FORMAT_ORRE_LIMITED:
+    words = RULESET_LV50_WORDS;
+    entries = 4;
+    break;
+  case FormatRules::FORMAT_HOENN_STADIUM:
+  case FormatRules::FORMAT_HOENN_UNLIMITED:
+    words = RULESET_LV100_WORDS;
+    entries = 3;
+    break;
+  case FormatRules::FORMAT_HOENN_LIMITED:
+    words = RULESET_LV50_WORDS;
+    entries = 3;
+    break;
+  default:
+    return {};  // Free / OU / unknown: no rules pin, sessions stay stock
+  }
 
   std::string lines;
   for (const auto& line : ORRE_MENU_GLOBAL_LINES)
     AppendLine(&lines, line[0], line[1]);
   for (size_t i = 0; i < 36; i++)
-    AppendLine(&lines, ORRE_RULESET_BASE + static_cast<u32>(4 * i), ORRE_RULESET_WORDS[i]);
+  {
+    u32 word = words[i];
+    if (i == RULESET_ENTRIES_WORD)
+      word = (word & 0xFFFF0000u) | entries;
+    AppendLine(&lines, ORRE_RULESET_BASE + static_cast<u32>(4 * i), word);
+  }
   return lines;
 }
 
@@ -783,7 +832,7 @@ void BeginSession()
     s_netplay_session = true;
   }
   // All-default = pure removal of anything a crashed session left behind.
-  RegenerateIni(Selection{}, /*ou_enabled=*/true, nullptr);
+  RegenerateIni(Selection{}, /*ou_enabled=*/true, nullptr, /*include_format_rules=*/false);
 }
 
 void ScrubLeftovers()
@@ -806,7 +855,7 @@ void ScrubLeftovers()
     s_cheats_before.reset();
     s_block_active = false;
   }
-  RegenerateIni(Selection{}, /*ou_enabled=*/true, nullptr);
+  RegenerateIni(Selection{}, /*ou_enabled=*/true, nullptr, /*include_format_rules=*/false);
 }
 
 bool IsNetplaySessionActive()
@@ -871,7 +920,8 @@ static int SaveBustClass(int device)
 #endif
 }
 
-bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status)
+bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
+                   bool include_format_rules)
 {
   // Guest stash (already validated) wins over the host's fallback dropdown --
   // the same precedence the socket-3 team fallback uses.
@@ -897,11 +947,14 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status)
   // through FormatRuleLines() (see BattleCustomizer.h). Today the helper
   // returns "" for every format, so this append never changes the block and
   // an all-default session stays byte-for-byte stock in both formats.
-  if (const std::string format_lines = FormatRuleLines(); !format_lines.empty())
+  if (include_format_rules)
   {
-    if (!block.empty())
-      block.push_back('\n');
-    block += format_lines;
+    if (const std::string format_lines = FormatRuleLines(); !format_lines.empty())
+    {
+      if (!block.empty())
+        block.push_back('\n');
+      block += format_lines;
+    }
   }
   const bool active = !block.empty();
 
@@ -1117,7 +1170,7 @@ void EndSession()
   // Pure removal: with the stash cleared and an all-default selection this
   // strips the block, its enabled line and the OU-Fixes disable, leaving the
   // user's GXXE01.ini as it was before the session.
-  RegenerateIni(Selection{}, /*ou_enabled=*/true, nullptr);
+  RegenerateIni(Selection{}, /*ou_enabled=*/true, nullptr, /*include_format_rules=*/false);
   // Put the cheats flag back the way the user had it before the session's
   // reconciliation (see PrepareForStart): the flag is only DERIVED state while
   // an XD session runs, and a desktop user's global preference for other games

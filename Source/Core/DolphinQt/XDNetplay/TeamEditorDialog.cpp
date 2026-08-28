@@ -419,17 +419,19 @@ void TeamEditorDialog::OnImport()
 
 QString TeamEditorDialog::FormatComplianceNote() const
 {
-  // Free (or an unknown key value): one int compare, no validation observable.
-  if (!FormatRules::IsOrreColosseum(Config::Get(Config::MAIN_XD_FORMAT)))
+  // Free/OU (or an unknown key value): one int compare, no validation at all.
+  const int format = Config::Get(Config::MAIN_XD_FORMAT);
+  if (!FormatRules::HasTeamRules(format))
     return {};
   // Without game data the editor could not have built a party to check anyway
   // (and the note is a courtesy, never a judge -- when in doubt, stay quiet).
   if (!m_data)
     return {};
-  const FormatRules::Verdict verdict = FormatRules::ValidateParty(m_party, *m_data);
+  const FormatRules::Verdict verdict = FormatRules::ValidateParty(format, m_party, *m_data);
   if (verdict.ok)
     return {};
-  return tr("note: this team is not Orre Colosseum legal - %1")
+  return tr("note: this team is not %1 legal - %2")
+      .arg(QString::fromUtf8(FormatRules::FormatDisplayName(format)))
       .arg(QString::fromStdString(verdict.reason));
 }
 

@@ -201,7 +201,14 @@ bool IsNetplaySessionActive();
 // block is active AND ou_enabled is false -- disables the Sys-bundled
 // "$XD OU Fixes" via [ActionReplay_Disabled]. An all-default call is a pure
 // removal. status, when given, receives a one-line human-readable summary.
-bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status);
+// include_format_rules=false is the REMOVAL mode: the format's rules-pin
+// lines are skipped even when a format is picked, so an all-default call
+// really does strip everything of ours from the INI. Session-boundary scrubs
+// and end-of-session cleanup use it -- without it, a picked format would
+// leave its rules block at rest in the file between sessions, where any
+// cheats-on GXXE01 boot outside our flows would load it.
+bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
+                   bool include_format_rules = true);
 
 // RegenerateIni driven entirely by config: selection from the MAIN_XD_STYLE_*
 // keys, ou_enabled from MAIN_XD_FORMAT == FORMAT_OU (the Format dropdown is
