@@ -60,8 +60,9 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
         // THIS device's Format pick, read once for the sheet's non-blocking
         // paste-time note. Only advisory here: the room is governed by the
         // HOST's key, enforced host-side in shared core (TeamInjector).
-        val orreFormatLocal =
-            FormatBridge.isOrreColosseum(IntSetting.MAIN_XD_FORMAT.int)
+        val localFormat = IntSetting.MAIN_XD_FORMAT.int
+        val orreFormatLocal = FormatBridge.hasTeamRules(localFormat)
+        val localFormatName = FormatBridge.displayName(localFormat)
 
         setContent {
             DolphinTheme {
@@ -80,6 +81,7 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
                     initialUseMySave = submitPrefill.useMySave,
                     modelOptions = modelOptions,
                     orreFormatLocal = orreFormatLocal,
+                    localFormatName = localFormatName,
                     validateTeamForFormat = FormatBridge::validateShowdown,
                     game = viewModel.game.collectAsState().value,
                     onStartGame = viewModel::startGame,

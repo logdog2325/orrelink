@@ -497,7 +497,8 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeValidateSho
     return ToJString(env, "");
 
   const XDNetplay::FormatRules::Verdict verdict = XDNetplay::FormatRules::ValidateSets(
-      XDNetplay::ShowdownParser::ParseTeam(GetJString(env, jtext)), *data);
+      Config::Get(Config::MAIN_XD_FORMAT), XDNetplay::ShowdownParser::ParseTeam(GetJString(env, jtext)),
+      *data);
   return ToJString(env, verdict.ok ? std::string{} : verdict.reason);
 }
 
@@ -508,7 +509,7 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeValidateSho
 // from Gen3Data.
 JNIEXPORT jstring JNICALL
 Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeValidateParty(
-    JNIEnv* env, jobject, jintArray jspecies, jintArray jitems)
+    JNIEnv* env, jobject, jintArray jspecies, jintArray jitems, jintArray jlevels)
 {
   const XDNetplay::Gen3Data* data = CachedGen3Data();
   if (data == nullptr)
@@ -528,15 +529,22 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeValidatePar
   // Only the two FormatRules inputs are populated; pid stays 0, so a
   // species-0 entry reads as an empty slot (Gen3Mon::IsEmpty) and is skipped
   // rather than misjudged.
+  // Levels ride a third parallel array (0 = unknown, skipped by the level
+  // rule) so the Limited formats can warn about over-level mons at paste time.
+  std::vector<jint> levels(species.size());
+  if (count > 0 && jlevels != nullptr && env->GetArrayLength(jlevels) >= count)
+    env->GetIntArrayRegion(jlevels, 0, count, levels.data());
+
   std::vector<XDNetplay::Gen3Mon> party(species.size());
   for (size_t i = 0; i < species.size(); i++)
   {
     party[i].species = static_cast<u32>(species[i]);
     party[i].held_item = static_cast<u32>(items[i]);
+    party[i].level = static_cast<u32>(std::max<jint>(levels[i], 0));
   }
 
-  const XDNetplay::FormatRules::Verdict verdict =
-      XDNetplay::FormatRules::ValidateParty(party, *data);
+  const XDNetplay::FormatRules::Verdict verdict = XDNetplay::FormatRules::ValidateParty(
+      Config::Get(Config::MAIN_XD_FORMAT), party, *data);
   return ToJString(env, verdict.ok ? std::string{} : verdict.reason);
 }
 
