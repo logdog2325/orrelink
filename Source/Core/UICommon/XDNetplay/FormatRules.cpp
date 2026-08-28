@@ -137,9 +137,18 @@ bool IsOrreColosseum(int format_key_value)
   return format_key_value == FORMAT_ORRE_COLOSSEUM;
 }
 
+bool IsOu(int format_key_value)
+{
+  return format_key_value == FORMAT_OU;
+}
+
 const char* FormatDisplayName(int format_key_value)
 {
-  return IsOrreColosseum(format_key_value) ? "Orre Colosseum" : "Free";
+  if (IsOrreColosseum(format_key_value))
+    return "Orre Colosseum";
+  if (IsOu(format_key_value))
+    return "OU";
+  return "Free";
 }
 
 Verdict ValidateSets(const std::vector<ShowdownSet>& sets, const Gen3Data& data)
