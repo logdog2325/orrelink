@@ -1137,12 +1137,21 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_format_free">Free</string>
     <string name="xd_format_orre">Orre Colosseum</string>
     <string name="xd_format_ou">OU</string>
+    <string name="xd_format_orre_unlimited">Orre Unlimited</string>
+    <string name="xd_format_orre_limited">Orre Limited</string>
+    <string name="xd_format_hoenn">Hoenn Stadium</string>
+    <string name="xd_format_hoenn_unlimited">Hoenn Unlimited</string>
+    <string name="xd_format_hoenn_limited">Hoenn Limited</string>
     <string name="xd_format_hint_free">No patches, no team rules — anything a Gen 3 save can hold.</string>
     <string name="xd_format_hint_ou">Applies to rooms you host: runs the community $XD OU Fixes patches for both players (bring 6, pick 4, and its mechanics fixes). No team rules.</string>
+    <string name="xd_format_hint_unlimited">Applies to rooms you host: the rules screen is pre-set to Lv 100 doubles. All Pokémon and items are allowed — Soul Dew included; Species and Item Clause still apply.</string>
+    <string name="xd_format_hint_limited">Applies to rooms you host: the rules screen is pre-set to LEVEL 50 doubles — Pokémon above Lv 50 cannot enter. All legendaries are banned (the Orre Colosseum list plus Articuno, Zapdos, Moltres, Raikou, Entei, Suicune, the Regis, Latias and Latios); no duplicate species or items; Soul Dew banned.</string>
+    <string name="xd_format_hint_hoenn_suffix">" Entries: bring 6, pick 3."</string>
+    <string name="xd_format_hint_hoenn_standard">Applies to rooms you host (listed with a [Hoenn] tag): no Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys; no duplicate species; no duplicate held items; Soul Dew banned. Sleep, Freeze, and Self-KO clauses are honor rules — not enforced.</string>
     <string name="xd_format_hint_orre">Applies to rooms you host (listed with an [Orre] tag): no Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys; no duplicate species; no duplicate held items; Soul Dew banned. Sleep, Freeze, and Self-KO clauses are honor rules — not enforced.</string>
     <!-- Non-blocking paste-time note; %1$s is a reason from shared core,
          e.g. "banned species: Kyogre". -->
-    <string name="xd_format_note">note: this team is not Orre Colosseum legal - %1$s</string>
+    <string name="xd_format_note">note: this team is not %1$s legal - %2$s</string>
 
     <!-- XD Netplay: joiner's Submit Team sheet, "Use my save" (party-bundle)
          mode. Refusal messages (FireRed/LeafGreen save, empty party, ...) come
