@@ -44,13 +44,13 @@
 //   * Soul Dew is banned outright (item id 191; see the .cpp).
 //
 // What it deliberately does NOT enforce:
-//   * Doubles / level-100 / bring-6-pick-4 / team preview are the IN-GAME
-//     rules layer, which ships in a separate rules-pin patch once its field
-//     map completes. BattleCustomizer::FormatRuleLines() is the seam it lands
-//     in; today that helper returns nothing.
-//   * Sleep Clause, Freeze Clause and the Self-KO Clause are HONOR rules --
-//     they are documented in UI copy and never enforced by code, matching how
-//     the real Orre Colosseum leaves them to the players.
+//   * The battle type, level preset, entries and entry mode are the IN-GAME
+//     rules layer: BattleCustomizer::FormatRuleLines() pins them per format
+//     (Double/Single, Lv100/Lv50, pick 4/3 with entry mode 0 so the game's
+//     own pick-N flow runs).
+//   * Sleep Clause, Freeze Clause and the Self-KO Clause are enforced by the
+//     GAME, not here: BattleCustomizer pins the stock tournament ruleset
+//     whose decoded clause bytes have them all ON.
 //
 // Enforcement sites (the callers):
 //   * guest submission gate -- InjectGuestTeam / InjectGuestBundle validate
