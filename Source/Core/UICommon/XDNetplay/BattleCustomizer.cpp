@@ -585,7 +585,7 @@ bool ModelHasPortrait(int model_id)
 
 std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2_model,
                               std::optional<int> bgm, std::optional<int> venue, int p1_class,
-                              int p2_class)
+                              int p2_class, bool hide_default_busts)
 {
   // Each field independently: an id that fails validation is treated as absent
   // (fall back, never clamp -- an out-of-table model id dereferences garbage
@@ -596,8 +596,12 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
   const bool location = venue && IsValidVenueId(*venue);
 
   std::string block;
-  if (!p1 && !p2 && !music && !location)
+  if (!p1 && !p2 && !music && !location && !hide_default_busts)
     return block;  // genuine game default: no code at all
+  // hide_default_busts alone still builds a block: a format session with
+  // all-default cosmetic picks -- exactly the field-reported case -- must
+  // emit the guard line plus the class-0 bust zeroes, or the fix (and the
+  // guard preceding the appended format lines) silently no-ops.
 
   // Guard line first: "00000000 40000000" is the AR full terminator. On the
   // host -- where this runs as its own fresh code -- it is a no-op (Dolphin
@@ -680,17 +684,19 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
       emit_hide(p2_class);
       any_hide = true;
     }
-    // Class 0 rides along with any hide: the column-0 GC-protagonist bust is
-    // every bust widget's compile-time DEFAULT record (verified: all sixteen
-    // bust descriptors default to 0x201/0x208), so a widget drawn before its
-    // per-class re-crop -- the team preview screen does this -- shows the
-    // protagonist even though no class ever selected it. The complete-image
-    // scan proved these fourteen records are the ONLY path to the bust atlas,
-    // so zeroing class 0 too closes the last surface. Only ever emitted while
-    // a hide is active, i.e. a portrait-less pick in this app's GBA-vs-GBA
-    // flow -- a genuine GC-vs-GBA session (where column 0 is a real player's
-    // bust) never has these lines.
-    if (any_hide)
+    // Class 0 rides along with any hide OR any format pin: the column-0
+    // GC-protagonist bust is every bust widget's compile-time DEFAULT record
+    // (verified: all sixteen bust descriptors default to 0x201/0x208), so a
+    // widget drawn before its per-class re-crop -- the team preview screen
+    // does this -- shows the protagonist even though no class ever selected
+    // it. The complete-image scan proved these fourteen records are the ONLY
+    // path to the bust atlas, so zeroing class 0 closes the last surface.
+    // With a format pinned the session is GBA-vs-GBA by construction, where
+    // that default head is ALWAYS wrong (field report: both preview sides
+    // showed the protagonist with default picks) -- so formats hide it
+    // unconditionally. A genuine GC-vs-GBA session (where column 0 is a real
+    // player's bust) never gets these lines: no format pin, no hide.
+    if (any_hide || hide_default_busts)
       emit_hide(0);
   }
   if (music)
@@ -737,17 +743,39 @@ constexpr u32 ORRE_MENU_GLOBAL_LINES[][2] = {
                                // {2,3}, matching this fork's SI config exactly) and the mode
                                // label atlas; layout 1 also skips the GC-pad presence gates, so
                                // no new refusal dialog becomes reachable.
-    {0x044349F0, 0x00000001},  // battle type = Double -> ctx+8 = 1 -> record 7
     {0x044349FC, 0x00000003},  // rules choice = Custom 1 (save-backed slot the getter
                                // returns DIRECTLY for selections 3..5 -- the pin holds)
 };
+// Battle type is per SHAPE, so it is emitted separately from the shared
+// globals above: Orre shapes battle Double (1 -> ctx+8 = 1 -> record 7),
+// Hoenn shapes battle SINGLE (0 -- the constructor default, verified against
+// the commit path: it composes cleanly with layout 1 and the Custom-1 pin,
+// and the tag-forcing override only fires for layout >= 2).
+constexpr u32 BATTLE_TYPE_GLOBAL = 0x044349F0;
 constexpr u32 ORRE_RULESET_BASE = 0x044334C0;  // Custom 1: 0x80433310 + 3*144
-// Stock preset slots, entries word (index 6) still at the STOCK value 6 --
-// the emitter patches its low half per format. Only words 0-1 differ between
-// the two levels.
+// Stock preset slots with two deliberate edits applied at emit time / below:
+// the entries word (index 6) is still at the STOCK value 6 -- the emitter
+// patches its low half per format -- and word 7's high u16 (+0x1C, the ENTRY
+// MODE) is zeroed from the stock 1. Entry mode is the decoded reason
+// "entries" never bit: the effective-entries getter (0x8004cfe0) returns 6
+// whenever +0x1C != 0 and only reads +0x1A (entries) when it is 0, while the
+// rules SCREEN prints +0x1A either way -- hence the 1.5.0 field bug "shows 4,
+// plays 6v6". With +0x1C = 0 the game's own pick-N flow runs and the whole
+// chain enforces N (getter -> entry validator 0x8004b14c -> init 0x8004b210
+// -> GBA reply handler -> marshaller), matching what the game's own
+// default-custom builder writes (li 4 / sth +0x1A, li 0 -> +0x1C).
+// Clause bytes (+0x0C..+0x13) are stock and were decoded: Species, Item,
+// Sleep, Freeze and BOTH Self-KO halves are all ON in these values -- the
+// game itself enforces them, no honor system needed. The per-item ban flags
+// (+0x52..+0x71, all 0) CANNOT ban Soul Dew: the 32-entry bannable-item
+// table (0x8032EB08) does not contain item 191 at all, and the game's
+// hardcoded Soul Dew check lives only in the default-rules builder that
+// custom slots bypass -- so Soul Dew stays app-side-enforced (the paste/
+// host/submission gates), by structural necessity.
+// Only words 0-1 differ between the two levels.
 constexpr u32 RULESET_LV100_WORDS[36] = {
     0x00010064, 0x02580006, 0x00000002, 0x00000000, 0x01010001, 0xFFC4FFEC,
-    0x01010006, 0x00010000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x01010006, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
@@ -755,7 +783,7 @@ constexpr u32 RULESET_LV100_WORDS[36] = {
 };
 constexpr u32 RULESET_LV50_WORDS[36] = {
     0x00010032, 0x012C0006, 0x00000002, 0x00000000, 0x01010001, 0xFFC4FFEC,
-    0x01010006, 0x00010000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    0x01010006, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
@@ -765,7 +793,8 @@ constexpr int RULESET_ENTRIES_WORD = 6;  // u16 at +0x1A = low half of word 6
 
 std::string FormatRuleLines()
 {
-  // Sleep/Freeze/Self-KO clauses stay honor rules and are never emitted here;
+  // Sleep/Freeze/Self-KO clauses ride the stock clause bytes in the preset
+  // words above (all decoded ON -- the game itself enforces them);
   // species/item/ban clauses are enforced app-side by FormatRules. This pins
   // only what the in-game rules screen controls -- Double, the level preset,
   // and the entry count -- via the game's own tournament presets (see above).
@@ -775,6 +804,7 @@ std::string FormatRuleLines()
   const int format = Config::Get(Config::MAIN_XD_FORMAT);
   const u32* words = nullptr;
   u32 entries = 0;
+  u32 battle_type = 1;  // Double (Orre shapes); Hoenn shapes override to Single
   switch (format)
   {
   case FormatRules::FORMAT_ORRE_COLOSSEUM:
@@ -790,10 +820,12 @@ std::string FormatRuleLines()
   case FormatRules::FORMAT_HOENN_UNLIMITED:
     words = RULESET_LV100_WORDS;
     entries = 3;
+    battle_type = 0;  // Single
     break;
   case FormatRules::FORMAT_HOENN_LIMITED:
     words = RULESET_LV50_WORDS;
     entries = 3;
+    battle_type = 0;  // Single
     break;
   default:
     return {};  // Free / OU / unknown: no rules pin, sessions stay stock
@@ -802,6 +834,7 @@ std::string FormatRuleLines()
   std::string lines;
   for (const auto& line : ORRE_MENU_GLOBAL_LINES)
     AppendLine(&lines, line[0], line[1]);
+  AppendLine(&lines, BATTLE_TYPE_GLOBAL, battle_type);
   for (size_t i = 0; i < 36; i++)
   {
     u32 word = words[i];
@@ -938,15 +971,18 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
   // Side mapping (host -> "Player" block, guest -> "Opponent" line) is the
   // expected orientation; if the one-time emulator test shows it reversed,
   // swap the first two arguments HERE only.
+  // A format rules-pin implies GBA-vs-GBA, where the preview's default
+  // protagonist busts are always wrong -- have the block hide them.
+  const bool format_pinned =
+      include_format_rules && FormatRules::HasTeamRules(Config::Get(Config::MAIN_XD_FORMAT));
   std::string block = GenerateCodeBlock(
       sel.host_model > 0 ? std::optional<int>(sel.host_model) : std::nullopt, guest_model,
       sel.music > 0 ? std::optional<int>(sel.music) : std::nullopt,
       sel.venue > 0 ? std::optional<int>(sel.venue) : std::nullopt,
-      SaveBustClass(1), SaveBustClass(2));
-  // FORMAT seam: the future rules-pin patch contributes its in-game rule pins
-  // through FormatRuleLines() (see BattleCustomizer.h). Today the helper
-  // returns "" for every format, so this append never changes the block and
-  // an all-default session stays byte-for-byte stock in both formats.
+      SaveBustClass(1), SaveBustClass(2), format_pinned);
+  // FORMAT seam: FormatRuleLines() contributes the picked format's in-game
+  // rule pins (menu globals, battle type, Custom-1 ruleset); Free/OU return
+  // "" and an all-default session stays byte-for-byte stock.
   if (include_format_rules)
   {
     if (const std::string format_lines = FormatRuleLines(); !format_lines.empty())
