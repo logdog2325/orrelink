@@ -137,6 +137,26 @@ constexpr u32 BustWhWordAddr(u32 widget_id, u32 language_slot)
   return 0x04000000u | ((0x803001A8u + widget_id * 72 + 8 + 12 * language_slot + 4) & 0x01FFFFFFu);
 }
 
+// The PICK/TEAM-PREVIEW screen's trainer-picture panels -- a different system
+// from the bust widgets above. That screen is built from 28-byte element
+// records in DOL .data ({handler u32, id u16, pad u16, color u32, img u16,
+// x u16, y u16, w u16, h u16, ...}); the trainer picture is the img-0x25F
+// 306x168 panel, one record per player-slot position (2x2 grid of layout
+// variants, one handler each -- exhaustive scan of the data section found
+// exactly these four). In GBA-vs-GBA that picture is ALWAYS the baked GC
+// protagonist -- the wrong head for both players (the community's OU code
+// kills it too, by nopping the whole element handler's frame setup, which
+// corrupts the dispatcher stack and takes the Pokemon pictures with it; this
+// zeroes just the panels' w/h instead, one 16-bit AR write covering w and h
+// per record via the repeat count, leaving the mon pictures and the rest of
+// the element pass intact). Vanilla value at +0x12: 0x0132 0x00A8.
+constexpr u32 PREVIEW_TRAINER_PANEL_RECORDS[4] = {0x80329D88, 0x8032A274, 0x8032A760,
+                                                  0x8032AC4C};
+constexpr u32 PreviewPanelWhAddr(u32 record)
+{
+  return 0x02000000u | ((record + 0x12) & 0x01FFFFFFu);  // 16-bit write at &w
+}
+
 // Model id -> bust class (1 FRLG-m, 2 FRLG-f, 3 RS-m, 4 RS-f, 5 E-m, 6 E-f).
 // Only the six GBA player models have bust widgets in the connection menu;
 // anything else returns 0 = no bust remap (battle model still changes).
@@ -697,7 +717,15 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
     // unconditionally. A genuine GC-vs-GBA session (where column 0 is a real
     // player's bust) never gets these lines: no format pin, no hide.
     if (any_hide || hide_default_busts)
+    {
       emit_hide(0);
+      // Same trigger, different screen: blank the pick/preview screen's four
+      // trainer-picture panels (see PREVIEW_TRAINER_PANEL_RECORDS). Value:
+      // repeat count 1 in the high half makes the one 16-bit write cover both
+      // w (+0x12) and h (+0x14).
+      for (const u32 record : PREVIEW_TRAINER_PANEL_RECORDS)
+        AppendLine(&block, PreviewPanelWhAddr(record), 0x00010000);
+    }
   }
   if (music)
   {
