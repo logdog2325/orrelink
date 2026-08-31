@@ -130,22 +130,33 @@ bool ModelHasPortrait(int model_id);
 // binds only those six bust widgets) and needs the two sides' classes to
 // differ; outside those bounds the bust stays vanilla while the battle model
 // still changes.
+// hide_default_busts: also zero the class-0 default bust pair (widgets
+// 0x201/0x208 -- the GC-protagonist portrait every bust descriptor defaults
+// to). The team-preview screen draws its busts from those defaults before any
+// per-class re-crop, so in a GBA-vs-GBA session they are ALWAYS the wrong
+// head; the format pins guarantee GBA-vs-GBA, so RegenerateIni passes true
+// whenever a format rules-pin is active. Portrait-less picks force the same
+// zeroing regardless (the 1.4.2 behavior).
 std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2_model,
                               std::optional<int> bgm, std::optional<int> venue,
-                              int p1_class = 0, int p2_class = 0);
+                              int p1_class = 0, int p2_class = 0,
+                              bool hide_default_busts = false);
 
-// ---- FORMAT seam (v1.4.0) --------------------------------------------------
-// The IN-GAME rules layer of the Orre Colosseum format -- doubles, level 100,
-// bring-6-pick-4, team preview -- is pinned by AR writes that ship in a
-// SEPARATE rules-pin patch once its field map completes. THIS is the seam that
+// ---- FORMAT seam ------------------------------------------------------------
+// The IN-GAME rules layer of the community formats -- battle type, level
+// preset, entries/entry mode, clauses -- is pinned by AR writes emitted from
+// FormatRuleLines below. THIS is the seam that
 // patch lands in: RegenerateIni appends whatever this helper returns to the
 // assembled "$OrreLink Battle Style" block, and the helper consults the format
 // key (Config::MAIN_XD_FORMAT, values in FormatRules.h) to decide what to
-// emit. TODAY it returns "" for every format, so format=Free and format=Orre
-// generate byte-identical blocks and sessions. Party legality (species/item
-// bans and clauses) is NOT this seam's business -- FormatRules validates that
-// at the submission/host gates. Sleep/Freeze/Self-KO clauses are honor rules:
-// documented in UI copy, never emitted here.
+// emit: the six community formats pin the menu globals, the battle type
+// (Double for Orre shapes, Single for Hoenn shapes) and the whole Custom-1
+// ruleset slot (level preset, entries, entry mode 0); Free/OU emit nothing
+// and stay byte-identical to stock. Species/item ban legality is NOT this
+// seam's business -- FormatRules validates that at the submission/host gates
+// -- but the battle-time clauses (Sleep, Freeze, Self-KO, Species, Item)
+// ARE covered here: the pinned stock clause bytes have them all ON, so the
+// game itself enforces them in battle.
 std::string FormatRuleLines();
 
 // The host's four launcher selections. 0 (the config default) = game default.
