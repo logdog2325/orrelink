@@ -156,6 +156,26 @@ constexpr u32 PreviewPanelWhAddr(u32 record)
 {
   return 0x02000000u | ((record + 0x12) & 0x01FFFFFFu);  // 16-bit write at &w
 }
+// The record w/h zeroing above CANNOT close the brief flash on its own: the
+// game RELOADS the record bank from the menu fsys at battle-mode entry and
+// can build the screen in that same frame, before the once-per-frame AR
+// write reapplies -- a build that races the reload copies the restored
+// 306x168 and the face shows until the next rebuild. The race-immune kill is
+// one byte in the IMG ENTRY for the panels' image (entry 0x25F of the
+// 72-byte img-entry table at 0x803001A8; entry base 0x8030AC60): clearing
+// byte0's type bits (stock 0x90 -> 0x80, bit7 = chain-terminator preserved)
+// makes screen CONSTRUCTION match no image-type branch, so the element's
+// draw flag is never set and nothing is ever emitted for it -- independent
+// of whatever the raced records contain. Verified: the entry table has no
+// runtime writer anywhere in the DOL (patches to it cannot lose a reload
+// race), the four panel records are the only consumers of entry 0x25F, and
+// type-0 entries are a natively supported state (entry 0 ships as 0x80).
+// (Zeroing the entry's texkeys instead was PROVEN WRONG: the renderer's
+// null-texture guard only skips the texture BIND and UV math, then still
+// emits the 306x168 quad sampling whatever texture the previous element
+// left bound -- and texkey 0 can even match a genuine key-0 registration.)
+constexpr u32 PREVIEW_PANEL_IMG_TYPE_LINE = 0x0030AC60;  // 8-bit write @ 0x8030AC60
+constexpr u32 PREVIEW_PANEL_IMG_TYPE_VALUE = 0x00000080;  // type bits cleared, bit7 kept
 
 // Model id -> bust class (1 FRLG-m, 2 FRLG-f, 3 RS-m, 4 RS-f, 5 E-m, 6 E-f).
 // Only the six GBA player models have bust widgets in the connection menu;
@@ -722,9 +742,11 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
       // Same trigger, different screen: blank the pick/preview screen's four
       // trainer-picture panels (see PREVIEW_TRAINER_PANEL_RECORDS). Value:
       // repeat count 1 in the high half makes the one 16-bit write cover both
-      // w (+0x12) and h (+0x14).
+      // w (+0x12) and h (+0x14). Steady-state only -- the reload race is
+      // closed by the img-entry type byte below.
       for (const u32 record : PREVIEW_TRAINER_PANEL_RECORDS)
         AppendLine(&block, PreviewPanelWhAddr(record), 0x00010000);
+      AppendLine(&block, PREVIEW_PANEL_IMG_TYPE_LINE, PREVIEW_PANEL_IMG_TYPE_VALUE);
     }
   }
   if (music)
