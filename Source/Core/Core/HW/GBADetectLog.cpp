@@ -37,7 +37,11 @@ int s_live_devices = 0;  // ref-count -> session begin/end
 // Bounded: a user flipping dropdowns for an hour without booting must not
 // grow this without limit -- older notes fall off, the freshest state wins.
 std::vector<std::string> s_boot_notes;
-constexpr size_t MAX_BOOT_NOTES = 32;
+constexpr size_t MAX_BOOT_NOTES = 160;  // raised from 32: one Battle Style
+// regenerate emits ~60 lines (guard + models + bust/panel hides + menu pins +
+// 36 ruleset words) and the ring was evicting the block's HEAD, which is
+// exactly the part field debugging needs (the 1.5.2 preview-flash session
+// could not show whether the hide lines shipped).
 // Atomic so every Log* can early-out lock-free and stop FORMATTING once capped
 // (Review #1 I5: the byte cap must bound CPU/lock cost, not just disk).
 std::atomic<bool> s_capped{false};
