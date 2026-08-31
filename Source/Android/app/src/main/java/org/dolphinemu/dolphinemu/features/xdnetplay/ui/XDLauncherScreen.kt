@@ -288,8 +288,9 @@ private fun BattleStyleCard(
             // The one-tap battle FORMAT pick. Unlike everything below it is
             // NOT cosmetic — with Orre Colosseum picked, hosting validates
             // both host-side parties, and guest submissions are gated (shared
-            // core's FormatRules; the honor clauses in the hint stay
-            // unenforced by design). It therefore sits above the
+            // core's FormatRules; the battle-time clauses in the hint are
+            // enforced by the game's own pinned ruleset, not at these
+            // gates). It therefore sits above the
             // "Cosmetic only" hint, which introduces the style dropdowns.
             // The dropdown reuses BattleStyleDropdown: the default entry
             // (id 0) is Free, so an unknown key value renders as Free —
