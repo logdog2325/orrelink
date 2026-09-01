@@ -101,9 +101,9 @@ fun TeamEditorScreen(
             // joiners — say it right here, per selected role.
             Text(
                 text = if (state.role == TeamRole.HOST)
-                    "Your team: plays when you host, and it is what \"Use my save\" submits when you join someone else's room."
+                    "Your team when you host, and what \"Use my save\" sends when you join."
                 else
-                    "Only used in rooms YOU host (the fallback team a joining guest plays if they never submit one) and in solo play — it does not affect rooms you join.",
+                    "Played by a joiner who submits no team, and in solo play. Not used when you join.",
                 color = XDColors.TextDim,
                 fontSize = 12.sp
             )
