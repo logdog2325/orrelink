@@ -389,6 +389,19 @@ void XDLauncherDialog::CreateMainLayout()
   auto* style_box = new QGroupBox(tr("Battle Style"));
   auto* style_layout = new QGridLayout;
   int style_row = 0;
+  {
+    // Who controls what is a recurring question: music/location are HOST
+    // picks (they ship in the host-assembled session code both players run);
+    // models are PER PLAYER (a joiner picks theirs in the Submit Team
+    // sheet, and that pick beats the host's fallback dropdown).
+    auto* who_note = new QLabel(
+        tr("Music and battle location follow the HOST — your picks apply to rooms you host "
+           "and do nothing in rooms you join. Models are per player: pick yours here when "
+           "hosting, or in the Submit Team sheet when joining."));
+    who_note->setWordWrap(true);
+    style_layout->addWidget(who_note, style_row, 0, 1, 2);
+    style_row++;
+  }
   const auto add_style_combo = [&](const QString& label, const QString& tooltip) {
     auto* description = new QLabel(label);
     auto* combo = new QComboBox;
