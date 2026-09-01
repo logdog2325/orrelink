@@ -132,7 +132,8 @@ private:
   u32 m_diag_cmd_log_count = 0;   // first-N command-dump budget (<=64)
   u32 m_diag_cmd_burst = 0;       // extra command lines emitted after a transition
   u32 m_diag_rd_count = 0;        // I4: ungated READ count (ground truth in sum)
-  u32 m_diag_wr_count = 0;        // Link-progress trail (logged to gba_detect, never shown on screen, never a
+  u32 m_diag_wr_count = 0;        // I4: ungated WRITE count (ground truth in sum)
+  // Link-progress trail (logged to gba_detect, never shown on screen, never a
   // control input): last phase / last 10% bucket announced, so each step is
   // written once per lock.
   int m_osd_phase = 0;  // 0 idle, 1 negotiating, 2 uploading, 3 client starting
