@@ -94,6 +94,17 @@ fun TeamEditorScreen(
                     )
                 }
             }
+            Spacer(Modifier.height(6.dp))
+            // Which slot matters where is the #1 point of confusion for
+            // joiners — say it right here, per selected role.
+            Text(
+                text = if (state.role == TeamRole.HOST)
+                    "Your team: plays when you host, and it is what \"Use my save\" submits when you join someone else's room."
+                else
+                    "Only used in rooms YOU host (the fallback team a joining guest plays if they never submit one) and in solo play — it does not affect rooms you join.",
+                color = XDColors.TextDim,
+                fontSize = 12.sp
+            )
             Spacer(Modifier.height(14.dp))
 
             if (!state.ready) {
