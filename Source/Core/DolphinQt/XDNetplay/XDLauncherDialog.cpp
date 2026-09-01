@@ -395,9 +395,10 @@ void XDLauncherDialog::CreateMainLayout()
     // models are PER PLAYER (a joiner picks theirs in the Submit Team
     // sheet, and that pick beats the host's fallback dropdown).
     auto* who_note = new QLabel(
-        tr("Music and battle location follow the HOST — your picks apply to rooms you host "
-           "and do nothing in rooms you join. Models are per player: pick yours here when "
-           "hosting, or in the Submit Team sheet when joining."));
+        tr("HOST-ONLY on this screen: Format, music and battle location come from whoever "
+           "hosts — your picks here apply to rooms you host and do nothing in rooms you join. "
+           "JOINING? Everything you control — your team and your trainer model — is set in "
+           "the NEXT window (Submit Team, inside the room). HOSTING? Your trainer name is set inside the room (or in the team editor)."));
     who_note->setWordWrap(true);
     style_layout->addWidget(who_note, style_row, 0, 1, 2);
     style_row++;

@@ -195,8 +195,10 @@ std::string NetPlayUICallbacks::OnTeamSubmission(const std::string& player,
   std::string status;
   const bool applied =
       submission.save_bundle ?
-          XDNetplay::InjectGuestBundle(*submission.save_bundle, 2, &status) :
-          XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status);
+          XDNetplay::InjectGuestBundle(*submission.save_bundle, 2, &status,
+                                       submission.raise_to_level_100) :
+          XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status,
+                                     submission.raise_to_level_100);
   if (!applied)
     return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
   return status;

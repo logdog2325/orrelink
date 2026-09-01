@@ -300,7 +300,20 @@ constexpr StyleOption MODELS[] = {
 // default" already plays, and the vanilla value must never be written.
 // Display names are best-effort stem translations; finalize EVERY label with a
 // listening pass through the selector before release.
+// "No music": the VS BGM selector (0x8004D580) hands staBGM_tunaide[n] to a
+// null-guarded setter with no range check, and the streamed-voice starter
+// (0x801871B4) tests the stored id against ZERO before touching the GSDVD
+// stream table -- id 0 is the engine's own "start nothing" sentinel: no
+// stream, no fault, cries/hit SFX unaffected (they go through MusyX, a
+// separate table). The table id is kept OUTSIDE u16 range so it can never
+// collide with a real stream id or with 0 (= "Game default" in the pickers);
+// GenerateCodeBlock maps it to the written value 0. Requested by a community
+// player; the old silent "Event Theme" pick was removed for the same effect
+// with none of the guarantees.
+constexpr int MUSIC_SILENT_ID = 0x10000;
+
 constexpr StyleOption MUSICS[] = {
+    {MUSIC_SILENT_ID, "No music (silent battle)", Tier::TestedSafe},
     {1313, "XD Battle 1 (wild battle)", Tier::TestedSafe},
     {1314, "XD Battle 1b (wild variant)", Tier::TestedSafe},
     {1315, "XD Battle 6 (trainer)", Tier::TestedSafe},
@@ -727,8 +740,10 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
   }
   if (music)
   {
-    // Three identical u32 slots (primary encoding; see MUSIC_LINES).
-    const u32 value = static_cast<u32>(*bgm) & 0xFFFF;
+    // Three identical u32 slots (primary encoding; see MUSIC_LINES). The
+    // silent pick writes 0 (see MUSIC_SILENT_ID); everything else is a u16
+    // stream id.
+    const u32 value = *bgm == MUSIC_SILENT_ID ? 0u : (static_cast<u32>(*bgm) & 0xFFFF);
     for (const u32 addr : MUSIC_LINES)
       AppendLine(&block, addr, value);
   }

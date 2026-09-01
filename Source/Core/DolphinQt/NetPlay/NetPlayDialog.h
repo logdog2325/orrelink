@@ -111,6 +111,7 @@ private:
   void ConnectWidgets();
   void OnChat();
   void OnSubmitTeam();
+  void OnSetHostName();
   void OnStart();
   void DisplayMessage(const QString& msg, const std::string& color,
                       int duration = OSD::Duration::NORMAL);
@@ -128,6 +129,8 @@ private:
   QLineEdit* m_chat_type_edit;
   QPushButton* m_chat_send_button;
   QPushButton* m_submit_team_button;
+  QLineEdit* m_host_name_edit;
+  QPushButton* m_host_name_button;
 
   // Players
   QGroupBox* m_players_box;

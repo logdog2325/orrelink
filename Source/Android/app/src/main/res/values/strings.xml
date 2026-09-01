@@ -1116,7 +1116,7 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_update_no_browser">No app on this device can open the release page.</string>
 
     <string name="xd_style_section_title">Battle Style</string>
-    <string name="xd_style_section_hint">Cosmetic only. Music and battle location follow the HOST: your picks apply to rooms you host, and do nothing in rooms you join. Models are per player — you pick yours here when hosting, and in the Submit Team sheet when joining.</string>
+    <string name="xd_style_section_hint">HOST-ONLY on this screen: Format, music and battle location come from whoever hosts — your picks here apply to rooms you host and do nothing in rooms you join. JOINING? Everything you control — your team and your trainer model — is set in the NEXT window (Submit Team, inside the room). HOSTING? Your trainer name is set inside the room (or in the team editor).</string>
     <string name="xd_style_your_model">Your model</string>
     <string name="xd_style_guest_model">Guest model</string>
     <string name="xd_style_guest_model_hint">Used only if they don\'t pick one themselves</string>
@@ -1157,6 +1157,12 @@ It can efficiently compress both junk data and encrypted Wii data.
          mode. Refusal messages (FireRed/LeafGreen save, empty party, ...) come
          from the shared core and are not duplicated here. -->
     <string name="xd_submit_use_save">Use my save</string>
+    <string name="xd_host_name_title">Your trainer name (host)</string>
+    <string name="xd_host_name_hint">What your opponent sees in battle. Written into the GBA port 2 save this room syncs (with an imported save it applies to this session only) — up to 7 characters. Joiners set theirs in Submit Team.</string>
+    <string name="xd_host_name_label">Trainer name</string>
+    <string name="xd_host_name_set">Set name</string>
+    <string name="xd_submit_raise_100">Raise my team to Lv. 100</string>
+    <string name="xd_submit_raise_100_hint">The host raises any Pokémon below Lv. 100 — only in a level-100 format, and never lowers one.</string>
     <string name="xd_submit_use_save_hint">Submit your save\'s party as-is, under your save\'s own trainer name and ID. This sends the Team Editor\'s "Host (GBA 2)" team.</string>
     <string name="xd_submit_privacy_note">Your save\'s party is sent exactly as it is, and the host\'s machine receives everything in those bytes: exact moves, held items, stats, EVs, IVs, natures, nicknames, met information, ribbons, and your OT name and BOTH trainer IDs, including the secret one. Your opponent would see most of this by battling you — but not the secret ID, so only send your save to hosts you trust.</string>
     <string name="xd_submit_name_ignored">Your save\'s real trainer name is used instead.</string>

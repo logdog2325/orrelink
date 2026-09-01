@@ -125,6 +125,8 @@ import java.util.Locale
 fun NetplayScreen(
     onBackClicked: () -> Unit,
     isHosting: Boolean,
+    onSetHostName: (String) -> Unit = {},
+    hostTrainerName: String = "",
     connectionLost: Flow<Unit>,
     fatalTraversalError: Flow<TraversalState.Failure>,
     messages: List<NetplayMessage>,
@@ -148,8 +150,8 @@ fun NetplayScreen(
     saveTransferProgress: SaveTransferProgress?,
     gameDigestProgress: GameDigestProgress?,
     joinAddresses: Map<JoinInfoType, JoinAddress>,
-    onSubmitTeam: (String, String, Int) -> Unit,
-    onSubmitSaveBundle: (Int) -> Unit,
+    onSubmitTeam: (String, String, Int, Boolean) -> Unit,
+    onSubmitSaveBundle: (Int, Boolean) -> Unit,
     initialTeamText: String,
     initialTrainerName: String,
     initialModelId: Int,
@@ -191,6 +193,9 @@ fun NetplayScreen(
     // save's real trainer name always wins; see NetplaySession), so both grey
     // out. The model pick stays meaningful either way.
     var useMySave by rememberSaveable { mutableStateOf(initialUseMySave) }
+    // Opt-in: ask the host to raise every under-level mon to Lv. 100 (host
+    // applies it only in a level-100 format; only ever raises).
+    var raiseTo100 by rememberSaveable { mutableStateOf(false) }
     if (showSubmitTeam) {
         AlertDialog(
             title = { Text("Submit Team") },
@@ -254,6 +259,21 @@ fun NetplayScreen(
                         modifier = Modifier.fillMaxWidth(),
                         supportingText = stringResource(R.string.xd_style_submit_model_hint)
                     )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(R.string.xd_submit_raise_100))
+                            Text(
+                                stringResource(R.string.xd_submit_raise_100_hint),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = raiseTo100, onCheckedChange = { raiseTo100 = it })
+                    }
                     // Caption under the model control: what "(no portrait)"
                     // costs (nothing but the close-up), so nobody reads it as
                     // "broken".
@@ -298,9 +318,9 @@ fun NetplayScreen(
                 TextButton(
                     onClick = {
                         if (useMySave) {
-                            onSubmitSaveBundle(modelDraft)
+                            onSubmitSaveBundle(modelDraft, raiseTo100)
                         } else {
-                            onSubmitTeam(teamDraft.trim(), nameDraft.trim(), modelDraft)
+                            onSubmitTeam(teamDraft.trim(), nameDraft.trim(), modelDraft, raiseTo100)
                         }
                         showSubmitTeam = false
                     },
@@ -365,6 +385,8 @@ fun NetplayScreen(
         if (useWideLayout) {
             LandscapeContent(
                 isHosting = isHosting,
+                onSetHostName = onSetHostName,
+                hostTrainerName = hostTrainerName,
                 messages = messages,
                 onSendMessage = onSendMessage,
                 showChat = showChat,
@@ -394,6 +416,8 @@ fun NetplayScreen(
         } else {
             PortraitContent(
                 isHosting = isHosting,
+                onSetHostName = onSetHostName,
+                hostTrainerName = hostTrainerName,
                 messages = messages,
                 onSendMessage = onSendMessage,
                 showChat = showChat,
@@ -515,6 +539,8 @@ fun NetplayScreen(
 @Composable
 private fun PortraitContent(
     isHosting: Boolean,
+    onSetHostName: (String) -> Unit = {},
+    hostTrainerName: String = "",
     messages: List<NetplayMessage>,
     onSendMessage: (String) -> Unit,
     showChat: Boolean,
@@ -576,6 +602,8 @@ private fun PortraitContent(
             clientBuffer = clientBuffer,
             onClientBufferChanged = onClientBufferChanged,
             isHosting = isHosting,
+            onSetHostName = onSetHostName,
+            hostTrainerName = hostTrainerName,
             joinAddresses = joinAddresses,
             selectedJoinInfoType = selectedJoinInfoType,
             onSelectedJoinInfoTypeChanged = onSelectedJoinInfoTypeChanged,
@@ -592,6 +620,8 @@ private fun PortraitContent(
 @Composable
 private fun LandscapeContent(
     isHosting: Boolean,
+    onSetHostName: (String) -> Unit = {},
+    hostTrainerName: String = "",
     messages: List<NetplayMessage>,
     onSendMessage: (String) -> Unit,
     showChat: Boolean,
@@ -665,6 +695,8 @@ private fun LandscapeContent(
                 clientBuffer = clientBuffer,
                 onClientBufferChanged = onClientBufferChanged,
                 isHosting = isHosting,
+                onSetHostName = onSetHostName,
+                hostTrainerName = hostTrainerName,
                 joinAddresses = joinAddresses,
                 selectedJoinInfoType = selectedJoinInfoType,
                 onSelectedJoinInfoTypeChanged = onSelectedJoinInfoTypeChanged,
@@ -673,6 +705,52 @@ private fun LandscapeContent(
 
             if (isHosting) {
                 Spacer(modifier = Modifier.height(DolphinTheme.fabClearancePadding))
+            }
+        }
+    }
+}
+
+/**
+ * XD Netplay, host side: the joiner sets its in-game name in the Submit Team
+ * sheet; the host sets its own here. Written straight into the GBA port 2
+ * save the room syncs at start (with the party's OT names re-stamped).
+ */
+@Composable
+private fun HostTrainerNameSection(onSetHostName: (String) -> Unit, hostTrainerName: String) {
+    // Prefilled with the save's current name; re-seeded when that loads or changes.
+    var name by rememberSaveable(hostTrainerName) { mutableStateOf(hostTrainerName) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = DolphinTheme.scaffoldPadding)
+    ) {
+        Text(
+            stringResource(R.string.xd_host_name_title),
+            style = MaterialTheme.typography.titleMedium
+        )
+        Text(
+            stringResource(R.string.xd_host_name_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it.take(7) },
+                singleLine = true,
+                label = { Text(stringResource(R.string.xd_host_name_label)) },
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(
+                onClick = { onSetHostName(name.trim()) },
+                enabled = name.isNotBlank()
+            ) {
+                Text(stringResource(R.string.xd_host_name_set))
             }
         }
     }
@@ -696,6 +774,8 @@ private fun PlayersAndSettings(
     clientBuffer: Int,
     onClientBufferChanged: (Int) -> Unit,
     isHosting: Boolean,
+    onSetHostName: (String) -> Unit = {},
+    hostTrainerName: String = "",
     joinAddresses: Map<JoinInfoType, JoinAddress>,
     selectedJoinInfoType: JoinInfoType,
     onSelectedJoinInfoTypeChanged: (JoinInfoType) -> Unit,
@@ -714,6 +794,13 @@ private fun PlayersAndSettings(
         )
 
         if (isHosting) {
+            MenuSpacer()
+
+            HostTrainerNameSection(
+                onSetHostName = onSetHostName,
+                hostTrainerName = hostTrainerName
+            )
+
             MenuSpacer()
 
             JoinAddressSection(
@@ -1592,8 +1679,8 @@ private fun PreviewNetplayScreen() {
             JoinInfoType.EXTERNAL to JoinAddress.Loaded("203.0.113.1:2626"),
             JoinInfoType.LOCAL to JoinAddress.Loaded("192.168.1.5:2626"),
         ),
-        onSubmitTeam = { _, _, _ -> },
-        onSubmitSaveBundle = {},
+        onSubmitTeam = { _, _, _, _ -> },
+        onSubmitSaveBundle = { _, _ -> },
         initialTeamText = "",
         initialTrainerName = "PLAYER",
         initialModelId = 0,

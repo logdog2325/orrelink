@@ -87,6 +87,14 @@ bool IsOrreColosseum(int format_key_value);
 // True only for the exact OU value -- same unknown-behaves-as-Free rule.
 bool IsOu(int format_key_value);
 
+// The fixed battle level a format pins, or 0 for none. Standard/Unlimited
+// (Orre Colosseum, Orre Unlimited, Hoenn Stadium, Hoenn Unlimited) pin 100;
+// the two Limited formats pin 50; Free/OU and unknown values pin nothing (0).
+// Used to decide whether a "raise team to the format level" convenience is
+// offered -- it is ONLY offered for the level-100 formats, and only ever
+// raises (never lowers, which would break legality).
+int FormatFixedLevel(int format_key_value);
+
 // True for every format that carries a party-legality layer (the six
 // community formats -- Unlimited included, since Species and Item Clause
 // still apply there). False for Free, OU and every unknown value: those

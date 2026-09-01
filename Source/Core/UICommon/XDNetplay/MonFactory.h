@@ -4,6 +4,7 @@
 #pragma once
 
 #include <optional>
+#include <span>
 #include <string>
 
 #include "Common/CommonTypes.h"
@@ -36,4 +37,18 @@ namespace XDNetplay::MonFactory
 std::optional<Gen3Mon> Build(const ShowdownSet& set, const Gen3Data& data,
                              const std::string& trainer_name, u32 trainer_id,
                              std::string* error = nullptr);
+
+// Raise ONE built mon to level 100, in place, keeping its IVs, EVs, nature,
+// moves, item and identity -- only the level, experience and the six party
+// stats are recomputed (exactly as Build does at construction). RAISE ONLY:
+// a mon already at level 100 (or above) is left untouched, and a mon is
+// NEVER lowered -- lowering past where a move was learned would make it
+// illegal. Empty slots and species the data cannot resolve are skipped.
+// Returns true if the mon was changed. This is the level-100-format
+// convenience ("Level 100 or lower" is legal, so raising is opt-in, never
+// automatic).
+bool RaiseMonToLevel100(Gen3Mon& mon, const Gen3Data& data);
+
+// RaiseMonToLevel100 across a party span; returns the number of mons raised.
+int RaisePartyToLevel100(std::span<Gen3Mon> party, const Gen3Data& data);
 }  // namespace XDNetplay::MonFactory
