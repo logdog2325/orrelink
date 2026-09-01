@@ -181,6 +181,32 @@ object MonFactory {
      * with nature plus/minus indices 0=atk 1=def 2=speed 3=spatk 4=spdef.
      * Arrays are in Gen 3 order: hp, atk, def, speed, spatk, spdef.
      */
+    /**
+     * Raise ONE built mon to level 100 in place, keeping IVs, EVs, nature,
+     * moves, item and identity — only level, experience and the six party
+     * stats are recomputed (exactly as [build] does). RAISE ONLY: a mon at
+     * level 100 or above is untouched, and a mon is NEVER lowered (lowering
+     * past where a move was learned breaks legality). Empty slots and species
+     * the data cannot resolve are skipped. Mirrors MonFactory::RaiseMonToLevel100.
+     * @return true if the mon changed
+     */
+    fun raiseToLevel100(mon: Gen3Mon, data: Gen3Data): Boolean {
+        if (mon.isEmpty() || mon.level >= 100) return false
+        val species = data.species.values.firstOrNull { it.id == mon.species } ?: return false
+        val nature = data.nature(mon.natureName) ?: data.nature("hardy") ?: return false
+        val stats = computeStats(species, 100, mon.ivs(), mon.evs, nature)
+        mon.level = 100
+        mon.experience = data.expForLevel(species.expGroup, 100)
+        mon.maxHp = stats[0]
+        mon.currentHp = stats[0]
+        mon.attack = stats[1]
+        mon.defense = stats[2]
+        mon.speed = stats[3]
+        mon.spAttack = stats[4]
+        mon.spDefense = stats[5]
+        return true
+    }
+
     private fun computeStats(
         species: Gen3Data.Species,
         level: Int,

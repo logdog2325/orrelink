@@ -81,6 +81,11 @@ struct TeamSubmission
 {
   std::string trainer_name;  // "" when the payload carried no Name header
   std::optional<int> model;  // "Model:" header; nullopt = no preference
+  // "RaiseLevel100: 1" header: the guest asked the host to raise every
+  // under-level mon to Lv. 100 before injecting. Honored ONLY when the host's
+  // format is a level-100 format, and only ever RAISES (never lowers -- that
+  // would break legality). Opt-in: "Level 100 or lower" is legal.
+  bool raise_to_level_100 = false;
   std::string showdown_text;
   // Decoded "SaveBundle:" bytes; nullopt when the payload carried no such
   // header or its base64 was malformed. When set, this payload is a bundle
@@ -97,7 +102,8 @@ struct TeamSubmission
 // cannot forge framing; a model without a value (or <= 0) emits no line.
 std::string BuildTeamSubmissionPayload(const std::string& showdown_text,
                                        const std::string& trainer_name,
-                                       std::optional<int> model = std::nullopt);
+                                       std::optional<int> model = std::nullopt,
+                                       bool raise_to_level_100 = false);
 
 // Joiner side, "Use my save": wrap a party bundle (PartyBundle::Extract's
 // output) as a bundle payload -- the SaveBundle header, an optional Model
@@ -105,7 +111,8 @@ std::string BuildTeamSubmissionPayload(const std::string& showdown_text,
 // bundle's own trainer identity is authoritative. Base64 contains no newline,
 // so a bundle cannot forge framing.
 std::string BuildBundleSubmissionPayload(const std::vector<u8>& bundle,
-                                         std::optional<int> model = std::nullopt);
+                                         std::optional<int> model = std::nullopt,
+                                         bool raise_to_level_100 = false);
 
 // Host side: split a received payload. Never fails -- an unparseable header
 // block is simply treated as part of the team text.
@@ -136,7 +143,7 @@ TeamSubmission ParseTeamSubmissionPayload(const std::string& payload);
 // rejecting the whole team -- the status line always reports the name actually
 // written, so both players can see it before the battle.
 bool InjectGuestTeam(const std::string& showdown_text, const std::string& trainer_name, int device,
-                     std::string* status);
+                     std::string* status, bool raise_to_level_100 = false);
 
 // Host side, bundle counterpart of InjectGuestTeam: validate an untrusted
 // remote party bundle strictly (PartyBundle::Validate -- exact length, party
@@ -150,7 +157,22 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
 // RestoreHostTeam takes it back out the same way. Refuses when the guest
 // slot currently holds an FRLG save, for the same reason InjectGuestTeam
 // does: that socket's ROM cannot run the Emerald-template disposable save.
-bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* status);
+bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* status,
+                       bool raise_to_level_100 = false);
+
+// The HOST's in-room counterpart of the joiner's "Name:" header: rename the
+// trainer in the GBA port 2 save (the host's own socket -- the one the room
+// syncs at start) and re-stamp every party mon's OT name to match, through
+// the same verified write as every injection. The bundled templates ship as
+// "Player1"/"Player2", and until this existed the only place a host could
+// change that was the team editor's name field, which nobody found -- the
+// field report was "the host is always Player 1". Refuses while a game runs
+// (the mGBA core owns the file). *status always gets a human-readable line.
+bool RenameHostTrainer(const std::string& name, std::string* status);
+
+// Current trainer name of the GBA port 2 save, or "" when unreadable. For
+// prefilling the host's name field.
+std::string HostTrainerName();
 
 // HOST gate for the one-tap FORMAT feature (FormatRules.h): when the host's
 // MAIN_XD_FORMAT key is Orre Colosseum, validate the parties the HOST brings
