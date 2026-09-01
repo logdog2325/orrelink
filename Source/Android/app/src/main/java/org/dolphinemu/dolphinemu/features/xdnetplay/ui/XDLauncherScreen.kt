@@ -383,13 +383,6 @@ private fun BattleStyleCard(
                 modifier = Modifier.fillMaxWidth(),
                 supportingText = stringResource(R.string.xd_style_guest_model_hint)
             )
-            // One line under the model rows: what "(no portrait)" costs
-            // (nothing but the close-up), so nobody reads it as "broken".
-            Text(
-                text = stringResource(R.string.xd_style_no_portrait_note),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
             BattleStyleDropdown(
                 label = stringResource(R.string.xd_style_music),
                 options = musicOptions,

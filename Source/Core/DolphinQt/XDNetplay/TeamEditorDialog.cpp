@@ -47,6 +47,21 @@ using namespace XDNetplay;
 
 namespace
 {
+// A word-wrapped explanatory line that can never be squashed below its text.
+// QLabel::minimumSizeHint() for a wrapping label is ONE line tall, so with the
+// default Preferred policy a window shorter than the layout's preferred height
+// shrinks the note's row and the text paints clipped (the field report: "have
+// to stretch the window to read it"). Minimum/Minimum -- the pattern upstream
+// uses in ConvertDialog and AchievementBox -- makes the layout's minimum equal
+// the wrapped sizeHint instead, so it wraps correctly at any window size.
+QLabel* MakeNoteLabel(const QString& text)
+{
+  auto* label = new QLabel(text);
+  label->setWordWrap(true);
+  label->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
+  return label;
+}
+
 // Read a whole binary file; empty vector + false on failure.
 bool ReadFileBytes(const std::string& path, std::vector<u8>* out)
 {
@@ -86,13 +101,10 @@ void TeamEditorDialog::CreateMainLayout()
   // is said right under the selector: JOINING a room only ever sends the
   // HOST slot's party (the Submit Team sheet's "Use my save" reads GBA port
   // 2); the Guest slot is the fallback team for rooms YOU host, plus solo.
-  auto* role_note = new QLabel(
-      tr("Host — GBA port 2 is YOUR team: it plays when you host, and it is what\n"
-         "\"Use my save\" submits when you join someone else's room.\n"
-         "Guest — GBA port 3 only matters in rooms YOU host (the fallback team a\n"
-         "joining guest plays if they never submit one) and in solo play — editing\n"
-         "it does not affect rooms you join."));
-  role_note->setWordWrap(true);
+  auto* role_note = MakeNoteLabel(
+      tr("Host — GBA port 2: your team when you host, and what \"Use my save\" sends when you "
+         "join.\nGuest — GBA port 3: played by a joiner who submits no team, and in solo play. "
+         "Not used when you join."));
   top_layout->addWidget(new QLabel(tr("Editing team for:")), 0, 0);
   top_layout->addWidget(m_role_combo, 0, 1);
   top_layout->addWidget(role_note, 1, 0, 1, 2);
@@ -112,6 +124,8 @@ void TeamEditorDialog::CreateMainLayout()
   // (ReloadForRole updates it); "Level 100 or lower" is legal, so this is
   // opt-in and never automatic.
   m_raise_button = new NonDefaultQPushButton(tr("Raise all to Lv. 100"));
+  m_raise_button->setToolTip(tr("Lv. 100 formats only. Raises every Pokémon below Lv. 100 in "
+                                "this team and never lowers one."));
   auto* party_buttons = new QHBoxLayout;
   party_buttons->addWidget(m_remove_button);
   party_buttons->addWidget(m_raise_button);
@@ -144,7 +158,8 @@ void TeamEditorDialog::CreateMainLayout()
   layout->addWidget(m_log_label);
 
   setLayout(layout);
-  resize(520, 640);
+  // Never narrower than the wrapped notes' minimum width (MakeNoteLabel).
+  resize(std::max(520, minimumSizeHint().width()), 640);
 }
 
 void TeamEditorDialog::ConnectWidgets()

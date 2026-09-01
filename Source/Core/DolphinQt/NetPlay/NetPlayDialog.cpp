@@ -323,9 +323,7 @@ void NetPlayDialog::CreateChatLayout()
   m_host_name_edit = new QLineEdit;
   m_host_name_edit->setPlaceholderText(tr("Your trainer name (what your opponent sees)"));
   m_host_name_edit->setMaxLength(7);
-  m_host_name_edit->setToolTip(tr("Up to 7 characters. Written into the GBA port 2 save this room syncs, "
-                                  "so the next battle shows it (with an imported save it applies to "
-                                  "this session only). Joiners set theirs in Submit Team."));
+  m_host_name_edit->setToolTip(tr("Up to 7 characters. Your opponent sees this name in battle."));
   m_host_name_edit->hide();
   m_host_name_button = new QPushButton(tr("Set Name"));
   m_host_name_button->setDefault(false);
@@ -1017,6 +1015,8 @@ void NetPlayDialog::OnSubmitTeam()
   // the caption under the combo.
   auto* model_layout = new QHBoxLayout;
   auto* model_combo = new QComboBox(&dialog);
+  model_combo->setToolTip(tr("How you appear in battle. Your pick here overrides the host's "
+                             "Guest model choice."));
   model_combo->addItem(tr("No preference"), 0);
   for (const XDNetplay::BattleCustomizer::StyleOption& option :
        XDNetplay::BattleCustomizer::ModelTable())
@@ -1030,12 +1030,6 @@ void NetPlayDialog::OnSubmitTeam()
   model_layout->addWidget(new QLabel(tr("Trainer model:"), &dialog));
   model_layout->addWidget(model_combo, 1);
   dialog_layout->addLayout(model_layout);
-  auto* portrait_note = new QLabel(
-      tr("Models marked \"(no portrait)\" show no close-up on the connection and team "
-         "screens — the battle model still changes."),
-      &dialog);
-  portrait_note->setWordWrap(true);
-  dialog_layout->addWidget(portrait_note);
 
   // "Use my save": submit the party from the player's OWN local save (the
   // port-2 slot the Team Editor's "Host" role edits -- their slot regardless
@@ -1056,9 +1050,9 @@ void NetPlayDialog::OnSubmitTeam()
   // a level-100 format, and it only ever raises (never lowers -- legality).
   // "Level 100 or lower" is legal, so this is never automatic.
   auto* raise_check =
-      new QCheckBox(tr("Raise my team to Lv. 100 (host applies this only in a level-100 "
-                       "format; never lowers a Pokémon)"),
-                    &dialog);
+      new QCheckBox(tr("Raise my team to Lv. 100 (Lv. 100 formats only, never lowers)"), &dialog);
+  raise_check->setToolTip(
+      tr("Only in Lv. 100 formats. The host applies it and never lowers a Pokémon."));
   dialog_layout->addWidget(raise_check);
 
   // Shown only while the box is ticked. The disclosure list is deliberately
