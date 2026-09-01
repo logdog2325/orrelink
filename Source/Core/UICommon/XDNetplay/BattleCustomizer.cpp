@@ -177,6 +177,27 @@ constexpr u32 PreviewPanelWhAddr(u32 record)
 constexpr u32 PREVIEW_PANEL_IMG_TYPE_LINE = 0x0030AC60;  // 8-bit write @ 0x8030AC60
 constexpr u32 PREVIEW_PANEL_IMG_TYPE_VALUE = 0x00000080;  // type bits cleared, bit7 kept
 
+// THE path that actually draws the preview mugshots (found third, the hard
+// way): dispatcher case 31 of the preview screen's element engine -- element
+// ids 0x419/0x446/0x473/0x4A0, one per player-slot corner -- re-images its
+// element EVERY FRAME (0x8007214C: reads the side's art index from the VS
+// slot struct +0x1A, indexes the flat 19-entry art table 0x802EB670 = 5
+// empty-side plates + 7 small busts + 7 large busts, then SetElementImage
+// 0x80049EA4, which sizes from the chosen entry's LANGUAGE-VARIANT W/H).
+// That is why every earlier patch missed: the record/panel kills cover a
+// different element, and the variant zeroes only cover the classes a given
+// session hides -- the dynamic pick reaches any of the 19 entries. The kill
+// is the dispatcher's own jump table (0x803C5E34 + (id-1018)*4): retarget
+// the four cases at the engine's bare-epilogue no-op 0x8007227C. The table
+// is compiler switch data with NO writer anywhere in the DOL (verified), so
+// the patch cannot be raced by the menu-fsys record reload. Post-patch the
+// element keeps its STATIC record image -- the vanilla 68x24 empty-side
+// plate -- so the corner shows exactly what an empty side shows, and no
+// path to bust art exists on this screen. Originals: all four words are
+// 0x8007214C (restore value).
+constexpr u32 PREVIEW_FACE_CASE_LINES[4] = {0x043C5EB0, 0x043C5F64, 0x043C6018, 0x043C60CC};
+constexpr u32 PREVIEW_FACE_CASE_NOOP = 0x8007227C;
+
 // Model id -> bust class (1 FRLG-m, 2 FRLG-f, 3 RS-m, 4 RS-f, 5 E-m, 6 E-f).
 // Only the six GBA player models have bust widgets in the connection menu;
 // anything else returns 0 = no bust remap (battle model still changes).
@@ -747,6 +768,8 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
       for (const u32 record : PREVIEW_TRAINER_PANEL_RECORDS)
         AppendLine(&block, PreviewPanelWhAddr(record), 0x00010000);
       AppendLine(&block, PREVIEW_PANEL_IMG_TYPE_LINE, PREVIEW_PANEL_IMG_TYPE_VALUE);
+      for (const u32 line : PREVIEW_FACE_CASE_LINES)
+        AppendLine(&block, line, PREVIEW_FACE_CASE_NOOP);
     }
   }
   if (music)
