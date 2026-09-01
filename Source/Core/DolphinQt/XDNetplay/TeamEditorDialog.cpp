@@ -81,11 +81,23 @@ void TeamEditorDialog::CreateMainLayout()
   m_trainer_name_edit->setPlaceholderText(tr("Trainer name"));
 
   m_trainer_label = new QLabel(QString());
+  // Which slot matters where is the #1 point of confusion for joiners, so it
+  // is said right under the selector: JOINING a room only ever sends the
+  // HOST slot's party (the Submit Team sheet's "Use my save" reads GBA port
+  // 2); the Guest slot is the fallback team for rooms YOU host, plus solo.
+  auto* role_note = new QLabel(
+      tr("Host — GBA port 2 is YOUR team: it plays when you host, and it is what\n"
+         "\"Use my save\" submits when you join someone else's room.\n"
+         "Guest — GBA port 3 only matters in rooms YOU host (the fallback team a\n"
+         "joining guest plays if they never submit one) and in solo play — editing\n"
+         "it does not affect rooms you join."));
+  role_note->setWordWrap(true);
   top_layout->addWidget(new QLabel(tr("Editing team for:")), 0, 0);
   top_layout->addWidget(m_role_combo, 0, 1);
-  top_layout->addWidget(new QLabel(tr("Trainer name (max 7):")), 1, 0);
-  top_layout->addWidget(m_trainer_name_edit, 1, 1);
-  top_layout->addWidget(m_trainer_label, 2, 0, 1, 2);
+  top_layout->addWidget(role_note, 1, 0, 1, 2);
+  top_layout->addWidget(new QLabel(tr("Trainer name (max 7):")), 2, 0);
+  top_layout->addWidget(m_trainer_name_edit, 2, 1);
+  top_layout->addWidget(m_trainer_label, 3, 0, 1, 2);
   top_layout->setColumnStretch(1, 1);
   layout->addLayout(top_layout);
 
