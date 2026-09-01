@@ -28,7 +28,6 @@
 #include "Core/NetPlayProto.h"
 #include "Core/PowerPC/MMU.h"
 #include "Core/System.h"
-#include "VideoCommon/OnScreenDisplay.h"
 
 namespace SerialInterface
 {
@@ -548,17 +547,17 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
       diag->locked.store(m_battle_locked, std::memory_order_relaxed);
       diag->last_cmd.store(static_cast<u8>(m_last_cmd), std::memory_order_relaxed);
 
-      // On-screen link progress. The wait players feel is XD's own fixed
+      // Link progress. The wait players feel is XD's own fixed
       // multiboot ladder per GBA -- ~4 s of key exchange, then a ~26,900-write
       // upload of the ~108 KB client, then ~1.4 s of client boot -- run for one
       // socket and then the other, back to back. Nothing is stuck during it,
       // but with no feedback people back out mid-upload (the field's "GBA
-      // failed to connect"). So say what is happening: display only, on the
-      // local OSD, one line per phase and one per 10% of the upload. Reads
-      // only this device's own synced state; never a control input.
+      // failed to connect"). So record what is happening: one gba_detect log
+      // line per phase and one per 10% of the upload (the field asked for no
+      // on-screen text here). Reads only this device's own synced state; never
+      // a control input.
       {
         constexpr u32 UPLOAD_WRITES = 26900;  // measured, bit-identical across sessions
-        const int port = m_device_number + 1;
         // m_diag_wr_count is a session-lifetime counter (never reset across a
         // rematch), so this upload is counted from the lock edge, not from 0.
         if (m_battle_locked && m_osd_phase < 2)
@@ -571,16 +570,20 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
           phase = 2;
         else if (m_battle_locked)
           phase = 3;
+        // Logged, not shown: the field asked for no on-screen text during the
+        // connection screen (the link now succeeds every time); the log keeps
+        // the same phase/percent trail for diagnosing a slow or stuck socket.
         if (phase != m_osd_phase)
         {
           m_osd_phase = phase;
           m_osd_bucket = -1;
           if (phase == 1)
-            OSD::AddMessage(fmt::format("GBA port {}: link found, negotiating (~4 s)", port),
-                            OSD::Duration::NORMAL);
+            GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "link-progress",
+                                   "negotiating (key exchange, ~4 s)");
           else if (phase == 3)
-            OSD::AddMessage(fmt::format("GBA port {}: upload done, client starting", port),
-                            OSD::Duration::NORMAL);
+            GBADetectLog::LogEvent(
+                m_device_number, m_timestamp_sent, "link-progress",
+                fmt::format("upload done ({} writes), client starting", uploaded));
         }
         if (phase == 2)
         {
@@ -588,9 +591,9 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
           if (bucket != m_osd_bucket)
           {
             m_osd_bucket = bucket;
-            OSD::AddMessage(fmt::format("GBA port {}: uploading client {}% (~{} s left)", port,
-                                        bucket * 10, (10 - bucket) * 3 / 2),
-                            OSD::Duration::NORMAL);
+            GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "link-progress",
+                                   fmt::format("uploading client {}% ({} writes, ~{} s left)",
+                                               bucket * 10, uploaded, (10 - bucket) * 3 / 2));
           }
         }
       }
