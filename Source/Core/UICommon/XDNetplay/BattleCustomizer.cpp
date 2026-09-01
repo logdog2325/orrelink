@@ -137,88 +137,26 @@ constexpr u32 BustWhWordAddr(u32 widget_id, u32 language_slot)
   return 0x04000000u | ((0x803001A8u + widget_id * 72 + 8 + 12 * language_slot + 4) & 0x01FFFFFFu);
 }
 
-// The PICK/TEAM-PREVIEW screen's trainer-picture panels -- a different system
-// from the bust widgets above. That screen is built from 28-byte element
-// records in DOL .data ({handler u32, id u16, pad u16, color u32, img u16,
-// x u16, y u16, w u16, h u16, ...}); the trainer picture is the img-0x25F
-// 306x168 panel, one record per player-slot position (2x2 grid of layout
-// variants, one handler each -- exhaustive scan of the data section found
-// exactly these four). In GBA-vs-GBA that picture is ALWAYS the baked GC
-// protagonist -- the wrong head for both players (the community's OU code
-// kills it too, by nopping the whole element handler's frame setup, which
-// corrupts the dispatcher stack and takes the Pokemon pictures with it; this
-// zeroes just the panels' w/h instead, one 16-bit AR write covering w and h
-// per record via the repeat count, leaving the mon pictures and the rest of
-// the element pass intact). Vanilla value at +0x12: 0x0132 0x00A8.
-constexpr u32 PREVIEW_TRAINER_PANEL_RECORDS[4] = {0x80329D88, 0x8032A274, 0x8032A760,
-                                                  0x8032AC4C};
-constexpr u32 PreviewPanelWhAddr(u32 record)
-{
-  return 0x02000000u | ((record + 0x12) & 0x01FFFFFFu);  // 16-bit write at &w
-}
-// The record w/h zeroing above CANNOT close the brief flash on its own: the
-// game RELOADS the record bank from the menu fsys at battle-mode entry and
-// can build the screen in that same frame, before the once-per-frame AR
-// write reapplies -- a build that races the reload copies the restored
-// 306x168 and the face shows until the next rebuild. The race-immune kill is
-// one byte in the IMG ENTRY for the panels' image (entry 0x25F of the
-// 72-byte img-entry table at 0x803001A8; entry base 0x8030AC60): clearing
-// byte0's type bits (stock 0x90 -> 0x80, bit7 = chain-terminator preserved)
-// makes screen CONSTRUCTION match no image-type branch, so the element's
-// draw flag is never set and nothing is ever emitted for it -- independent
-// of whatever the raced records contain. Verified: the entry table has no
-// runtime writer anywhere in the DOL (patches to it cannot lose a reload
-// race), the four panel records are the only consumers of entry 0x25F, and
-// type-0 entries are a natively supported state (entry 0 ships as 0x80).
-// (Zeroing the entry's texkeys instead was PROVEN WRONG: the renderer's
-// null-texture guard only skips the texture BIND and UV math, then still
-// emits the 306x168 quad sampling whatever texture the previous element
-// left bound -- and texkey 0 can even match a genuine key-0 registration.)
-constexpr u32 PREVIEW_PANEL_IMG_TYPE_LINE = 0x0030AC60;  // 8-bit write @ 0x8030AC60
-constexpr u32 PREVIEW_PANEL_IMG_TYPE_VALUE = 0x00000080;  // type bits cleared, bit7 kept
-
-// THE path that actually draws the preview mugshots (found third, the hard
-// way): dispatcher case 31 of the preview screen's element engine -- element
-// ids 0x419/0x446/0x473/0x4A0, one per player-slot corner -- re-images its
-// element EVERY FRAME (0x8007214C: reads the side's art index from the VS
-// slot struct +0x1A, indexes the flat 19-entry art table 0x802EB670 = 5
-// empty-side plates + 7 small busts + 7 large busts, then SetElementImage
-// 0x80049EA4, which sizes from the chosen entry's LANGUAGE-VARIANT W/H).
-// That is why every earlier patch missed: the record/panel kills cover a
-// different element, and the variant zeroes only cover the classes a given
-// session hides -- the dynamic pick reaches any of the 19 entries. The kill
-// is the dispatcher's own jump table (0x803C5E34 + (id-1018)*4): retarget
-// the four cases at the engine's bare-epilogue no-op 0x8007227C. The table
-// is compiler switch data with NO writer anywhere in the DOL (verified), so
-// the patch cannot be raced by the menu-fsys record reload. Post-patch the
-// element keeps its STATIC record image -- the vanilla 68x24 empty-side
-// plate -- so the corner shows exactly what an empty side shows, and no
-// path to bust art exists on this screen. Originals: all four words are
-// 0x8007214C (restore value).
-constexpr u32 PREVIEW_FACE_CASE_LINES[4] = {0x043C5EB0, 0x043C5F64, 0x043C6018, 0x043C60CC};
-constexpr u32 PREVIEW_FACE_CASE_NOOP = 0x8007227C;
-
-// THE FIFTH AND FINAL LAYER -- and the reason the previous four missed. XD's
-// element engine has a FAMILY of near-identical dispatchers, one per screen
-// family, each with its own jump table; every patch above targeted context
-// 198's dispatcher (0x80071EA0), which turned out to be a DIFFERENT VS intro.
-// The GBA-vs-GBA preview the players actually see runs dispatcher #3
-// (0x80078794, jump table 0x803C6EEC, ids 1531+), whose class-indexed bust
-// cases call GetPlayerTrainerClass (0x80085BB0 -- called from 35 sites, all
-// inside this dispatcher), index the class->bust tables, and hand the img to
-// SetElementImage (0x80049EA4). The kill: nop every one of that dispatcher's
-// fifteen `bl 0x80049EA4` bust-image assignments -- pure TEXT-SECTION writes
-// (never reloaded, never raced), each byte-verified against a clean main.dol
-// as a bl to 0x80049EA4 before shipping. The class getter and table lookups
-// still run harmlessly; only the image assignment disappears, so the
-// preview's mugshot boxes simply stay empty. Mon pictures, names, icons and
-// every other screen (the connection screen's busts included) are untouched.
-constexpr u32 PREVIEW_MUGSHOT_NOP_LINES[15] = {
-    0x04078814, 0x04078840, 0x0407886C, 0x04078898, 0x040790C4,
-    0x040790F0, 0x0407910C, 0x0407915C, 0x04079374, 0x040793C4,
-    0x040793F0, 0x04079694, 0x040796E4, 0x04079720, 0x04079948,
-};
-constexpr u32 PPC_NOP = 0x60000000;
+// THE preview mugshot drawer -- found on the sixth attempt, and the reason
+// the five before it failed: the mugshot never goes through the element/
+// image system at all. It is drawn by a raw-GX quad writer at 0x800845AC
+// that reads a PRE-RESOLVED texture-object pointer from a per-side BSS slot
+// ([0x80435050 + side*8 + 0xC], filled by an async loader callback at
+// 0x800475B8) and pushes a textured quad directly. Every earlier patch
+// (element records, img entries, dispatcher jump tables, SetElementImage
+// call sites -- all applied and verified on device) targeted machinery this
+// drawer never touches. Eight bl callers, byte-verified: the 6v6 preview
+// sides (0x8007644C/58), the 3v3 sides (0x80075D64/70) and the 4-slot
+// layout (0x80076C9C/A8/B4/C0).
+//
+// The kill reuses the drawer's OWN control flow: at 0x800845F8 it does
+// `beq 0x80084738` -- skip straight to the epilogue when the texobj is NULL
+// (vanilla takes this branch for empty sides). Patching that beq
+// (0x41820140) to an unconditional b (0x48000140) makes EVERY call take the
+// game's own no-draw path: stack-balanced by construction, covers all three
+// preview layouts and any caller, in text (never reloaded, never raced).
+constexpr u32 PREVIEW_DRAWER_SKIP_LINE = 0x040845F8;
+constexpr u32 PREVIEW_DRAWER_SKIP_VALUE = 0x48000140;  // vanilla 0x41820140 (beq -> b)
 
 // Model id -> bust class (1 FRLG-m, 2 FRLG-f, 3 RS-m, 4 RS-f, 5 E-m, 6 E-f).
 // Only the six GBA player models have bust widgets in the connection menu;
@@ -782,18 +720,9 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
     if (any_hide || hide_default_busts)
     {
       emit_hide(0);
-      // Same trigger, different screen: blank the pick/preview screen's four
-      // trainer-picture panels (see PREVIEW_TRAINER_PANEL_RECORDS). Value:
-      // repeat count 1 in the high half makes the one 16-bit write cover both
-      // w (+0x12) and h (+0x14). Steady-state only -- the reload race is
-      // closed by the img-entry type byte below.
-      for (const u32 record : PREVIEW_TRAINER_PANEL_RECORDS)
-        AppendLine(&block, PreviewPanelWhAddr(record), 0x00010000);
-      AppendLine(&block, PREVIEW_PANEL_IMG_TYPE_LINE, PREVIEW_PANEL_IMG_TYPE_VALUE);
-      for (const u32 line : PREVIEW_FACE_CASE_LINES)
-        AppendLine(&block, line, PREVIEW_FACE_CASE_NOOP);
-      for (const u32 line : PREVIEW_MUGSHOT_NOP_LINES)
-        AppendLine(&block, line, PPC_NOP);
+      // Same trigger, one line: skip the preview mugshot drawer entirely (see
+      // PREVIEW_DRAWER_SKIP_LINE above).
+      AppendLine(&block, PREVIEW_DRAWER_SKIP_LINE, PREVIEW_DRAWER_SKIP_VALUE);
     }
   }
   if (music)
