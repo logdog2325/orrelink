@@ -198,6 +198,28 @@ constexpr u32 PREVIEW_PANEL_IMG_TYPE_VALUE = 0x00000080;  // type bits cleared, 
 constexpr u32 PREVIEW_FACE_CASE_LINES[4] = {0x043C5EB0, 0x043C5F64, 0x043C6018, 0x043C60CC};
 constexpr u32 PREVIEW_FACE_CASE_NOOP = 0x8007227C;
 
+// THE FIFTH AND FINAL LAYER -- and the reason the previous four missed. XD's
+// element engine has a FAMILY of near-identical dispatchers, one per screen
+// family, each with its own jump table; every patch above targeted context
+// 198's dispatcher (0x80071EA0), which turned out to be a DIFFERENT VS intro.
+// The GBA-vs-GBA preview the players actually see runs dispatcher #3
+// (0x80078794, jump table 0x803C6EEC, ids 1531+), whose class-indexed bust
+// cases call GetPlayerTrainerClass (0x80085BB0 -- called from 35 sites, all
+// inside this dispatcher), index the class->bust tables, and hand the img to
+// SetElementImage (0x80049EA4). The kill: nop every one of that dispatcher's
+// fifteen `bl 0x80049EA4` bust-image assignments -- pure TEXT-SECTION writes
+// (never reloaded, never raced), each byte-verified against a clean main.dol
+// as a bl to 0x80049EA4 before shipping. The class getter and table lookups
+// still run harmlessly; only the image assignment disappears, so the
+// preview's mugshot boxes simply stay empty. Mon pictures, names, icons and
+// every other screen (the connection screen's busts included) are untouched.
+constexpr u32 PREVIEW_MUGSHOT_NOP_LINES[15] = {
+    0x04078814, 0x04078840, 0x0407886C, 0x04078898, 0x040790C4,
+    0x040790F0, 0x0407910C, 0x0407915C, 0x04079374, 0x040793C4,
+    0x040793F0, 0x04079694, 0x040796E4, 0x04079720, 0x04079948,
+};
+constexpr u32 PPC_NOP = 0x60000000;
+
 // Model id -> bust class (1 FRLG-m, 2 FRLG-f, 3 RS-m, 4 RS-f, 5 E-m, 6 E-f).
 // Only the six GBA player models have bust widgets in the connection menu;
 // anything else returns 0 = no bust remap (battle model still changes).
@@ -770,6 +792,8 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
       AppendLine(&block, PREVIEW_PANEL_IMG_TYPE_LINE, PREVIEW_PANEL_IMG_TYPE_VALUE);
       for (const u32 line : PREVIEW_FACE_CASE_LINES)
         AppendLine(&block, line, PREVIEW_FACE_CASE_NOOP);
+      for (const u32 line : PREVIEW_MUGSHOT_NOP_LINES)
+        AppendLine(&block, line, PPC_NOP);
     }
   }
   if (music)
