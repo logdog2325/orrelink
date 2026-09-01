@@ -308,4 +308,62 @@ std::optional<Gen3Mon> Build(const ShowdownSet& set, const Gen3Data& data,
   mon.sp_defense = static_cast<u32>(stats[5]);
   return mon;
 }
+
+bool RaiseMonToLevel100(Gen3Mon& mon, const Gen3Data& data)
+{
+  if (mon.IsEmpty() || mon.level >= 100)
+    return false;  // raise only -- never lower, never touch a level-100 mon
+
+  // Resolve the mon's INTERNAL (Hoenn) species id to its data entry.
+  const Gen3Data::Species* species = nullptr;
+  for (const auto& [name, sp] : data.GetSpecies())
+  {
+    if (static_cast<u32>(sp.id) == mon.species)
+    {
+      species = &sp;
+      break;
+    }
+  }
+  if (species == nullptr)
+    return false;  // unknown species: leave it exactly as-is
+
+  const std::optional<int> experience = data.ExpForLevel(species->exp_group, 100);
+  if (!experience)
+    return false;
+
+  std::array<int, 6> ivs{};
+  std::array<int, 6> evs{};
+  const auto iv = mon.GetIvs();
+  for (int i = 0; i < 6; i++)
+  {
+    ivs[i] = static_cast<int>(iv[i]);
+    evs[i] = static_cast<int>(mon.evs[i]);
+  }
+  // Nature from the PID (index -> name -> data entry), Hardy-neutral if the
+  // data cannot resolve it -- exactly Build's fallback.
+  Gen3Data::Nature nature{"hardy", 0, -1, -1};
+  if (const Gen3Data::Nature* found = data.FindNature(mon.GetNatureName()))
+    nature = *found;
+  const std::array<int, 6> stats = ComputeStats(*species, 100, ivs, evs, nature);
+
+  mon.level = 100;
+  mon.experience = static_cast<u32>(*experience);
+  mon.max_hp = static_cast<u32>(stats[0]);
+  mon.current_hp = mon.max_hp;  // full, matching Build
+  mon.attack = static_cast<u32>(stats[1]);
+  mon.defense = static_cast<u32>(stats[2]);
+  mon.speed = static_cast<u32>(stats[3]);
+  mon.sp_attack = static_cast<u32>(stats[4]);
+  mon.sp_defense = static_cast<u32>(stats[5]);
+  return true;
+}
+
+int RaisePartyToLevel100(std::span<Gen3Mon> party, const Gen3Data& data)
+{
+  int raised = 0;
+  for (Gen3Mon& mon : party)
+    raised += RaiseMonToLevel100(mon, data) ? 1 : 0;
+  return raised;
+}
+
 }  // namespace XDNetplay::MonFactory

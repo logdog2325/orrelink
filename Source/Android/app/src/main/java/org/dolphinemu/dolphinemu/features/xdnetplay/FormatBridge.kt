@@ -47,6 +47,16 @@ object FormatBridge {
     /** True only for the exact OU value — same unknown-behaves-as-Free rule. */
     fun isOu(formatKeyValue: Int): Boolean = formatKeyValue == FORMAT_OU
 
+    /** The fixed battle level a format pins: 100 for the Standard/Unlimited
+     *  formats, 50 for the Limited ones, 0 for Free/OU/unknown. Mirrors
+     *  FormatRules::FormatFixedLevel — keep in sync. */
+    fun fixedLevel(formatKeyValue: Int): Int = when (formatKeyValue) {
+        FORMAT_ORRE_COLOSSEUM, FORMAT_ORRE_UNLIMITED,
+        FORMAT_HOENN_STADIUM, FORMAT_HOENN_UNLIMITED -> 100
+        FORMAT_ORRE_LIMITED, FORMAT_HOENN_LIMITED -> 50
+        else -> 0
+    }
+
     /** The Orre community's six settled formats: three rulesets (Standard =
      *  Orre Colosseum's rules; Unlimited = everything allowed, Soul Dew
      *  legal, clauses still apply; Limited = level 50 with ALL legendaries

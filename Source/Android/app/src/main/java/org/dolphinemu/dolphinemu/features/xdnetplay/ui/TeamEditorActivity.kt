@@ -68,6 +68,8 @@ class TeamEditorActivity : AppCompatActivity(), ThemeProvider {
                     onTrainerNameChange = { setTrainerName(it) },
                     onImport = { importShowdown(it) },
                     onRemoveSelected = { removeSelected() },
+                    onRaiseToLevel100 = { raiseToLevel100() },
+                    raiseAvailable = FormatBridge.fixedLevel(IntSetting.MAIN_XD_FORMAT.int) == 100,
                     onSave = { saveTeam() },
                     onShare = { shareSave() },
                     onBack = { finish() }
@@ -181,6 +183,20 @@ class TeamEditorActivity : AppCompatActivity(), ThemeProvider {
         // the Save button live so the user can fix it and try again.
         val failed = messages.any { it.startsWith("NOT saved") }
         uiState = uiState.copy(dirty = failed, messages = messages)
+    }
+
+    private fun raiseToLevel100() {
+        // Level-100 formats only, and never a level-down: the repo helper
+        // raises under-level mons and leaves everything else exactly as-is.
+        if (FormatBridge.fixedLevel(IntSetting.MAIN_XD_FORMAT.int) != 100) return
+        val raised = repo.raiseToLevel100()
+        uiState = uiState.copy(
+            party = repo.party.toList(),
+            dirty = uiState.dirty || raised > 0,
+            messages = listOf(
+                if (raised > 0) "Raised $raised Pokémon to Lv. 100" else "Every Pokémon is already Lv. 100"
+            )
+        )
     }
 
     private fun removeSelected() {
@@ -414,6 +430,9 @@ class TeamRepo(private val context: Context) {
     fun removeAt(index: Int) {
         if (index in party.indices) party.removeAt(index)
     }
+
+    /** Raise every under-level mon to Lv. 100 (raise only). Returns how many changed. */
+    fun raiseToLevel100(): Int = party.count { MonFactory.raiseToLevel100(it, data) }
 
     fun saveToDisk(trainerName: String): List<String> {
         val s = save ?: return listOf("No save loaded")
