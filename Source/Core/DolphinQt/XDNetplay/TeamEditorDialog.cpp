@@ -20,6 +20,7 @@
 #include <QRegularExpression>
 #include <QShowEvent>
 #include <QUrl>
+#include <QHBoxLayout>
 #include <QVBoxLayout>
 
 #include "Common/Config/Config.h"
@@ -105,8 +106,17 @@ void TeamEditorDialog::CreateMainLayout()
   auto* party_layout = new QVBoxLayout;
   m_party_list = new QListWidget;
   m_remove_button = new NonDefaultQPushButton(tr("Remove Selected"));
+  // Optional convenience for the level-100 formats: bump every under-level
+  // mon to Lv 100 (RAISE only -- never lowers, which would break legality).
+  // Shown/enabled only when the local Format pick is a level-100 format
+  // (ReloadForRole updates it); "Level 100 or lower" is legal, so this is
+  // opt-in and never automatic.
+  m_raise_button = new NonDefaultQPushButton(tr("Raise all to Lv. 100"));
+  auto* party_buttons = new QHBoxLayout;
+  party_buttons->addWidget(m_remove_button);
+  party_buttons->addWidget(m_raise_button);
   party_layout->addWidget(m_party_list);
-  party_layout->addWidget(m_remove_button);
+  party_layout->addLayout(party_buttons);
   party_box->setLayout(party_layout);
   layout->addWidget(party_box);
 
@@ -143,6 +153,7 @@ void TeamEditorDialog::ConnectWidgets()
           [this](int) { ReloadForRole(); });
   connect(m_import_button, &QPushButton::clicked, this, &TeamEditorDialog::OnImport);
   connect(m_remove_button, &QPushButton::clicked, this, &TeamEditorDialog::OnRemoveSelected);
+  connect(m_raise_button, &QPushButton::clicked, this, &TeamEditorDialog::OnRaiseToLevel100);
   connect(m_save_button, &QPushButton::clicked, this, &TeamEditorDialog::OnSave);
   connect(m_show_folder_button, &QPushButton::clicked, this, &TeamEditorDialog::OnShowInFolder);
 }
@@ -361,6 +372,14 @@ void TeamEditorDialog::RefreshPartyList()
                               .arg(mon.level)
                               .arg(QString::fromUtf8(mon.GetNatureName())));
   }
+  // The raise-to-100 action only makes sense for a level-100 format, and only
+  // when at least one mon is actually below 100 (never a level-DOWN).
+  const int format = Config::Get(Config::MAIN_XD_FORMAT);
+  const bool level100_format = FormatRules::FormatFixedLevel(format) == 100;
+  const bool any_below = std::any_of(m_party.begin(), m_party.end(),
+                                     [](const Gen3Mon& m) { return !m.IsEmpty() && m.level < 100; });
+  m_raise_button->setVisible(level100_format);
+  m_raise_button->setEnabled(level100_format && any_below);
 }
 
 void TeamEditorDialog::SetMessages(const QStringList& messages)
@@ -554,6 +573,20 @@ void TeamEditorDialog::OnRemoveSelected()
     return;
   m_party.erase(m_party.begin() + row);
   SetMessages({tr("Removed from party")});
+  RefreshPartyList();
+}
+
+void TeamEditorDialog::OnRaiseToLevel100()
+{
+  if (!m_data)
+    return;
+  const int format = Config::Get(Config::MAIN_XD_FORMAT);
+  if (FormatRules::FormatFixedLevel(format) != 100)
+    return;  // level-100 formats only; never touch a Lv50 (Limited) team
+  const int raised = MonFactory::RaisePartyToLevel100(m_party, *m_data);
+  SetMessages({raised > 0 ?
+                   tr("Raised %1 Pokémon to Lv. 100.").arg(raised) :
+                   tr("Every Pokémon is already Lv. 100.")});
   RefreshPartyList();
 }
 

@@ -59,6 +59,7 @@ private:
   void OnImport();
   void ApplyImportText(const std::string& text);
   void OnRemoveSelected();
+  void OnRaiseToLevel100();
   void OnSave();
   void OnShowInFolder();
 
@@ -90,6 +91,7 @@ private:
   QPlainTextEdit* m_paste_edit;
   QPushButton* m_import_button;
   QPushButton* m_remove_button;
+  QPushButton* m_raise_button;
   QPushButton* m_save_button;
   QPushButton* m_show_folder_button;
   QLabel* m_log_label;

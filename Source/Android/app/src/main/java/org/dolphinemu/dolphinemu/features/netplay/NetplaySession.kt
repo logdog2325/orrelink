@@ -182,8 +182,18 @@ class NetplaySession(
      * a "Model:" header in the same message; <= 0 means "no preference" (no
      * header at all -- the host's fallback dropdown decides).
      */
-    fun submitTeam(showdownText: String, trainerName: String, modelId: Int) =
-        nativeSubmitTeam(showdownText, trainerName, modelId)
+    fun submitTeam(
+        showdownText: String,
+        trainerName: String,
+        modelId: Int,
+        raiseToLevel100: Boolean = false
+    ) = nativeSubmitTeam(showdownText, trainerName, modelId, raiseToLevel100)
+
+    /** Host only: rename the trainer in the GBA port 2 save. Returns a status line. */
+    fun setHostTrainerName(name: String): String = nativeSetHostTrainerName(name)
+
+    /** Current trainer name of the GBA port 2 save, or "" when unreadable. */
+    fun hostTrainerName(): String = nativeHostTrainerName()
 
     /**
      * "Use my save": submit the party from this player's OWN local save (their
@@ -200,7 +210,8 @@ class NetplaySession(
      * @return "" when the bundle was sent, else a user-displayable reason why
      * nothing was sent (no save, empty party, FireRed/LeafGreen save, ...).
      */
-    fun submitSaveBundle(modelId: Int): String = nativeSubmitSaveBundle(modelId)
+    fun submitSaveBundle(modelId: Int, raiseToLevel100: Boolean = false): String =
+        nativeSubmitSaveBundle(modelId, raiseToLevel100)
 
     /** Show a line in this player's own chat log; nothing is sent over the wire. */
     fun showLocalMessage(message: String) {
@@ -300,9 +311,18 @@ class NetplaySession(
 
     private external fun nativeSendMessage(message: String)
 
-    private external fun nativeSubmitTeam(showdownText: String, trainerName: String, modelId: Int)
+    private external fun nativeSubmitTeam(
+        showdownText: String,
+        trainerName: String,
+        modelId: Int,
+        raiseToLevel100: Boolean
+    )
 
-    private external fun nativeSubmitSaveBundle(modelId: Int): String
+    private external fun nativeSubmitSaveBundle(modelId: Int, raiseToLevel100: Boolean): String
+
+    private external fun nativeSetHostTrainerName(name: String): String
+
+    private external fun nativeHostTrainerName(): String
 
     private external fun nativeSetHostInputAuthority(enable: Boolean)
 

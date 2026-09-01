@@ -133,6 +133,11 @@ private:
   u32 m_diag_cmd_burst = 0;       // extra command lines emitted after a transition
   u32 m_diag_rd_count = 0;        // I4: ungated READ count (ground truth in sum)
   u32 m_diag_wr_count = 0;        // I4: ungated WRITE count (ground truth in sum)
+  // On-screen link progress (display only, never a control input): last phase
+  // and last upload-percent bucket announced, so the OSD says each step once.
+  int m_osd_phase = 0;   // 0 idle, 1 negotiating, 2 uploading, 3 client starting
+  int m_osd_bucket = -1;
+  u32 m_osd_upload_base = 0;  // m_diag_wr_count at the moment the port locked // last 10% bucket announced during the upload
   u64 m_diag_last_summary_tick = 0;
   u64 m_diag_window_open_tick = 0;   // rising-edge tick, for window-close dur_ms=
   u64 m_diag_window_close_tick = 0;  // falling-edge tick, for window-open gap_ms=

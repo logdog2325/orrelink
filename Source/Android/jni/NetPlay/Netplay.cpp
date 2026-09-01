@@ -87,7 +87,8 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitTeam(
                                                                                 jobject obj,
                                                                                 jstring jteam,
                                                                                 jstring jname,
-                                                                                jint jmodel)
+                                                                                jint jmodel,
+                                                                                jboolean jraise)
 {
   // XD Netplay: hand this player's Showdown team -- plus the in-game trainer
   // name they want to play under and their cosmetic trainer-model pick -- to
@@ -101,13 +102,29 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitTeam(
   {
     client->SendTeamSubmission(XDNetplay::BuildTeamSubmissionPayload(
         GetJString(env, jteam), GetJString(env, jname),
-        jmodel > 0 ? std::optional<int>(jmodel) : std::nullopt));
+        jmodel > 0 ? std::optional<int>(jmodel) : std::nullopt, jraise == JNI_TRUE));
   }
 }
 
 JNIEXPORT jstring JNICALL
+Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeHostTrainerName(JNIEnv* env,
+                                                                                     jobject)
+{
+  return ToJString(env, XDNetplay::HostTrainerName());
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetHostTrainerName(
+    JNIEnv* env, jobject, jstring jname)
+{
+  std::string status;
+  XDNetplay::RenameHostTrainer(GetJString(env, jname), &status);
+  return ToJString(env, status);
+}
+
+JNIEXPORT jstring JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitSaveBundle(
-    JNIEnv* env, jobject obj, jint jmodel)
+    JNIEnv* env, jobject obj, jint jmodel, jboolean jraise)
 {
   // XD Netplay "Use my save": submit the party FROM THIS PLAYER'S OWN SAVE --
   // real mon bytes, real trainer identity -- instead of a Showdown paste.
@@ -146,7 +163,7 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitSaveB
     return ToJString(env, error);
 
   client->SendTeamSubmission(XDNetplay::BuildBundleSubmissionPayload(
-      *bundle, jmodel > 0 ? std::optional<int>(jmodel) : std::nullopt));
+      *bundle, jmodel > 0 ? std::optional<int>(jmodel) : std::nullopt, jraise == JNI_TRUE));
   return ToJString(env, "");
 }
 
