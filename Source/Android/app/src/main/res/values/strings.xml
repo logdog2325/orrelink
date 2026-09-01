@@ -1116,7 +1116,7 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_update_no_browser">No app on this device can open the release page.</string>
 
     <string name="xd_style_section_title">Battle Style</string>
-    <string name="xd_style_section_hint">HOST-ONLY on this screen: Format, music and battle location come from whoever hosts — your picks here apply to rooms you host and do nothing in rooms you join. JOINING? Everything you control — your team and your trainer model — is set in the NEXT window (Submit Team, inside the room). HOSTING? Your trainer name is set inside the room (or in the team editor).</string>
+    <string name="xd_style_section_hint">The host picks format, music and location. Joiners set team, name and model in Submit Team; hosts set their name in the room or Team Editor.</string>
     <string name="xd_style_your_model">Your model</string>
     <string name="xd_style_guest_model">Guest model</string>
     <string name="xd_style_guest_model_hint">Used only if they don\'t pick one themselves</string>
@@ -1126,9 +1126,8 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_style_no_preference">No preference</string>
     <string name="xd_style_experimental">Experimental</string>
     <string name="xd_style_no_portrait_suffix">%1$s (no portrait)</string>
-    <string name="xd_style_no_portrait_note">Models marked “(no portrait)” show no close-up on the connection and team screens — the battle model still changes.</string>
     <string name="xd_style_submit_model_label">Trainer model</string>
-    <string name="xd_style_submit_model_hint">Cosmetic — how you\'ll appear in the battle.</string>
+    <string name="xd_style_submit_model_hint">How you appear in battle. Your pick here overrides the host\'s Guest model choice.</string>
 
     <!-- One-tap battle Format pick (Free / Orre Colosseum). The option names
          match FormatRules::FormatDisplayName in shared core so dropdowns and
@@ -1158,11 +1157,11 @@ It can efficiently compress both junk data and encrypted Wii data.
          from the shared core and are not duplicated here. -->
     <string name="xd_submit_use_save">Use my save</string>
     <string name="xd_host_name_title">Your trainer name (host)</string>
-    <string name="xd_host_name_hint">What your opponent sees in battle. Written into the GBA port 2 save this room syncs (with an imported save it applies to this session only) — up to 7 characters. Joiners set theirs in Submit Team.</string>
+    <string name="xd_host_name_hint">Up to 7 characters. Your opponent sees this name in battle.</string>
     <string name="xd_host_name_label">Trainer name</string>
     <string name="xd_host_name_set">Set name</string>
     <string name="xd_submit_raise_100">Raise my team to Lv. 100</string>
-    <string name="xd_submit_raise_100_hint">The host raises any Pokémon below Lv. 100 — only in a level-100 format, and never lowers one.</string>
+    <string name="xd_submit_raise_100_hint">Only in Lv. 100 formats. The host applies it and never lowers a Pokémon.</string>
     <string name="xd_submit_use_save_hint">Submit your save\'s party as-is, under your save\'s own trainer name and ID. This sends the Team Editor\'s "Host (GBA 2)" team.</string>
     <string name="xd_submit_privacy_note">Your save\'s party is sent exactly as it is, and the host\'s machine receives everything in those bytes: exact moves, held items, stats, EVs, IVs, natures, nicknames, met information, ribbons, and your OT name and BOTH trainer IDs, including the secret one. Your opponent would see most of this by battling you — but not the secret ID, so only send your save to hosts you trust.</string>
     <string name="xd_submit_name_ignored">Your save\'s real trainer name is used instead.</string>
