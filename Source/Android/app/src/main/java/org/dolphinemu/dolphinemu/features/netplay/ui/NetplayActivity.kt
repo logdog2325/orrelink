@@ -75,6 +75,8 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
                     onSendMessage = viewModel::sendMessage,
                     onSubmitTeam = viewModel::submitTeam,
                     onSubmitSaveBundle = viewModel::submitSaveBundle,
+                    onSetHostName = viewModel::setHostTrainerName,
+                    hostTrainerName = viewModel.hostTrainerName.collectAsState().value,
                     initialTeamText = submitPrefill.teamText,
                     initialTrainerName = submitPrefill.trainerName,
                     initialModelId = submitPrefill.modelId,

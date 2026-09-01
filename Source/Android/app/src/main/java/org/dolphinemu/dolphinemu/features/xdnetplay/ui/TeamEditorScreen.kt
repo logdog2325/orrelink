@@ -51,7 +51,9 @@ fun TeamEditorScreen(
     onRemoveSelected: () -> Unit,
     onSave: () -> Unit,
     onShare: () -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onRaiseToLevel100: () -> Unit = {},
+    raiseAvailable: Boolean = false
 ) {
     var showImport by remember { mutableStateOf(false) }
 
@@ -207,6 +209,24 @@ fun TeamEditorScreen(
                     ),
                     modifier = Modifier.weight(1f)
                 ) { Text("Share") }
+            }
+            // Optional convenience for the level-100 formats: bump every
+            // under-level mon to Lv. 100. RAISE only — never lowers (that
+            // would break legality) — and only offered when the local Format
+            // pick is a level-100 format. "Level 100 or lower" is legal, so
+            // this is opt-in, never automatic.
+            if (raiseAvailable) {
+                val anyBelow = state.party.any { !it.isEmpty() && it.level < 100 }
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = onRaiseToLevel100,
+                    enabled = anyBelow,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = XDColors.PanelLight,
+                        contentColor = XDColors.ChipText
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text(if (anyBelow) "Raise all to Lv. 100" else "All Pokémon are Lv. 100") }
             }
             Spacer(Modifier.height(12.dp))
 

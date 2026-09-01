@@ -36,6 +36,7 @@
 #include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Data.h"
+#include "UICommon/XDNetplay/Gen3Text.h"
 #include "UICommon/XDNetplay/Gen3Mon.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
 #include "UICommon/XDNetplay/MonFactory.h"
@@ -62,6 +63,7 @@ constexpr const char* TMP_SUFFIX = ".tmp";
 constexpr std::string_view NAME_HEADER_KEY = "Name";
 constexpr std::string_view MODEL_HEADER_KEY = "Model";
 constexpr std::string_view SAVE_BUNDLE_HEADER_KEY = "SaveBundle";
+constexpr std::string_view RAISE_HEADER_KEY = "RaiseLevel100";
 // Headers are framing, not a payload channel: every value line stays bounded.
 constexpr size_t MAX_NAME_LINE = 64;
 constexpr size_t MAX_MODEL_VALUE = 32;
@@ -384,7 +386,8 @@ void WriteGuestMark(const std::string& save_path)
 #endif
 
 std::string BuildTeamSubmissionPayload(const std::string& showdown_text,
-                                       const std::string& trainer_name, std::optional<int> model)
+                                       const std::string& trainer_name, std::optional<int> model,
+                                       bool raise_to_level_100)
 {
   // A newline in the name would forge extra header/blank lines, so flatten
   // any line break to a space before it goes on the wire. The 7-character Gen 3
@@ -405,6 +408,8 @@ std::string BuildTeamSubmissionPayload(const std::string& showdown_text,
   // host's own fallback dropdown then decides.
   if (model && *model > 0)
     headers += std::string(MODEL_HEADER_KEY) + ": " + std::to_string(*model) + "\n";
+  if (raise_to_level_100)
+    headers += std::string(RAISE_HEADER_KEY) + ": 1\n";
 
   if (headers.empty())
     return showdown_text;  // nothing to say -- emit the old bare format
@@ -412,7 +417,8 @@ std::string BuildTeamSubmissionPayload(const std::string& showdown_text,
   return headers + "\n" + showdown_text;
 }
 
-std::string BuildBundleSubmissionPayload(const std::vector<u8>& bundle, std::optional<int> model)
+std::string BuildBundleSubmissionPayload(const std::vector<u8>& bundle, std::optional<int> model,
+                                         bool raise_to_level_100)
 {
   // A bundle payload is headers plus an EMPTY body: SaveBundle (base64 never
   // contains a newline, so it cannot forge framing), the optional Model pick
@@ -423,6 +429,8 @@ std::string BuildBundleSubmissionPayload(const std::vector<u8>& bundle, std::opt
       std::string(SAVE_BUNDLE_HEADER_KEY) + ": " + PartyBundle::Base64Encode(bundle) + "\n";
   if (model && *model > 0)
     headers += std::string(MODEL_HEADER_KEY) + ": " + std::to_string(*model) + "\n";
+  if (raise_to_level_100)
+    headers += std::string(RAISE_HEADER_KEY) + ": 1\n";
   return headers + "\n";
 }
 
@@ -466,6 +474,8 @@ TeamSubmission ParseTeamSubmissionPayload(const std::string& payload)
       name = std::string(value);
     else if (key == MODEL_HEADER_KEY)
       model = ParseModelValue(value);
+    else if (key == RAISE_HEADER_KEY)
+      out.raise_to_level_100 = StripWhitespace(value) == "1";
     else if (key == SAVE_BUNDLE_HEADER_KEY)
     {
       // Untrusted remote text: bounded, and it must base64-decode cleanly or
@@ -484,7 +494,7 @@ TeamSubmission ParseTeamSubmissionPayload(const std::string& payload)
 }
 
 bool InjectGuestTeam(const std::string& showdown_text, const std::string& trainer_name, int device,
-                     std::string* status)
+                     std::string* status, bool raise_to_level_100)
 {
   const auto fail = [status](std::string message) {
     if (status)
@@ -611,6 +621,15 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
   if (built.empty())
     return fail("no usable Pokemon in that team");
 
+  // Guest opted in to "raise to Lv. 100": honored only under a level-100
+  // format (the HOST's pick governs the room) and only ever raises.
+  int raised = 0;
+  if (raise_to_level_100 &&
+      FormatRules::FormatFixedLevel(Config::Get(Config::MAIN_XD_FORMAT)) == 100)
+  {
+    raised = MonFactory::RaisePartyToLevel100(built, *data);
+  }
+
   const size_t count = built.size();
   if (!save->WriteParty(built))
     return fail("party too large");
@@ -629,14 +648,82 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
     // will see across the link, and it may not be what was asked for.
     if (!applied_name.empty())
       *status += fmt::format(", playing as {}", applied_name);
-    else if (!dropped_name_note.empty())
+    if (!dropped_name_note.empty())
       *status += fmt::format(" ({})", dropped_name_note);
+    if (raised > 0)
+      *status += fmt::format(", {} raised to Lv. 100", raised);
   }
   return true;
 #endif
 }
 
-bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* status)
+bool RenameHostTrainer(const std::string& name, std::string* status)
+{
+  const auto fail = [status](std::string message) {
+    if (status)
+      *status = std::move(message);
+    return false;
+  };
+#ifndef HAS_LIBMGBA
+  return fail("this build has no GBA support");
+#else
+  if (!Core::IsUninitialized(Core::System::GetInstance()))
+    return fail("stop the game first -- the emulated GBA owns its save while it runs");
+  const std::string typed = EmeraldSave::SanitizeTrainerName(name);
+  if (typed.empty())
+    return fail("trainer name cannot be empty");
+
+  const std::string save_path = SavePathForDevice(1);
+  if (save_path.empty() || !File::Exists(save_path))
+    return fail("no save on GBA port 2 -- set up the Emerald ROM in the launcher first");
+
+  std::string error;
+  auto save = LoadSaveFile(save_path, &error);
+  if (!save)
+    return fail(fmt::format("could not read the GBA port 2 save ({})", error));
+  if (!save->SetTrainerName(typed, &error))
+    return fail(error);
+
+  // Every Pokemon stores its OWN copy of the OT name; without the re-stamp
+  // the party reads as traded outsiders (disobedience above the badge cap).
+  // The OT *ID* is untouched, so they stay this save's Pokemon.
+  auto party = save->ReadParty(&error);
+  if (!party)
+    return fail(fmt::format("could not read the party ({})", error));
+  const auto ot_bytes = Gen3Text::Encode(save->GetTrainerName(), EmeraldSave::TRAINER_NAME_LEN, &error);
+  if (!ot_bytes)
+    return fail(error);
+  for (Gen3Mon& mon : *party)
+    std::copy(ot_bytes->begin(), ot_bytes->end(), mon.ot_name_raw.begin());
+  if (!save->WriteParty(*party))
+    return fail("party too large");
+  if (!VerifiedWriteSaveFile(save_path, *save, &error))
+    return fail(fmt::format("save NOT written ({})", error));
+
+  if (status)
+  {
+    *status = fmt::format("trainer name set to {} on GBA port 2 -- that is what your opponent sees",
+                          save->GetTrainerName());
+  }
+  return true;
+#endif
+}
+
+std::string HostTrainerName()
+{
+#ifndef HAS_LIBMGBA
+  return {};
+#else
+  const std::string save_path = SavePathForDevice(1);
+  if (save_path.empty() || !File::Exists(save_path))
+    return {};
+  const auto save = LoadSaveFile(save_path);
+  return save ? save->GetTrainerName() : std::string{};
+#endif
+}
+
+bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* status,
+                       bool raise_to_level_100)
 {
   const auto fail = [status](std::string message) {
     if (status)
@@ -657,6 +744,31 @@ bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* s
   const auto decoded = PartyBundle::Validate(bundle, &error);
   if (!decoded)
     return fail(fmt::format("save bundle rejected ({})", error));
+
+  // Guest opted in to "raise to Lv. 100": honored only under a level-100
+  // format (the HOST's pick governs the room), only ever raises, and is done
+  // on the ALREADY-VALIDATED mons: each raised mon is re-encoded straight over
+  // its own 100-byte slot in a private copy of the bundle (layout: +4, six
+  // 100-byte party structs -- PartyBundle.h), so BuildSave below writes the
+  // raised party with the identity bytes untouched.
+  std::vector<u8> bundle_to_write = bundle;
+  int raised = 0;
+  if (raise_to_level_100 &&
+      FormatRules::FormatFixedLevel(Config::Get(Config::MAIN_XD_FORMAT)) == 100)
+  {
+    if (const auto raise_data = Gen3Data::LoadBundled())
+    {
+      std::vector<Gen3Mon> mons = decoded->mons;
+      raised = MonFactory::RaisePartyToLevel100(mons, *raise_data);
+      for (size_t i = 0;
+           i < mons.size() && PartyBundle::PARTY_OFFSET + (i + 1) * Gen3Mon::SIZE <= bundle_to_write.size(); i++)
+      {
+        const auto bytes = mons[i].Encode();
+        std::copy(bytes.begin(), bytes.end(),
+                  bundle_to_write.begin() + PartyBundle::PARTY_OFFSET + i * Gen3Mon::SIZE);
+      }
+    }
+  }
 
   // FORMAT gate (guest submission, bundle form): same contract as the Showdown
   // gate in InjectGuestTeam -- the HOST's format key governs, the check runs
@@ -719,7 +831,7 @@ bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* s
   if (!ReadFileBytes(GuestTemplatePath(device), &template_bytes))
     return fail("bundled template missing on the host");
 
-  const auto save = PartyBundle::BuildSave(std::move(template_bytes), bundle, &error);
+  const auto save = PartyBundle::BuildSave(std::move(template_bytes), bundle_to_write, &error);
   if (!save)
     return fail(fmt::format("save bundle rejected ({})", error));
 
@@ -738,6 +850,8 @@ bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* s
     *status = fmt::format("{} Pokemon from the guest's own save written to the guest slot, "
                           "playing as {}",
                           decoded->mons.size(), decoded->trainer_name);
+    if (raised > 0)
+      *status += fmt::format(", {} raised to Lv. 100", raised);
   }
   return true;
 #endif

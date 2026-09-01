@@ -317,10 +317,27 @@ void NetPlayDialog::CreateChatLayout()
   m_submit_team_button->setAutoDefault(false);
   m_submit_team_button->hide();
 
+  // XD Netplay, host side: the joiner sets its in-game name in the Submit Team
+  // sheet; the host sets its own here (written into the GBA port 2 save the
+  // room syncs). Shown only while hosting.
+  m_host_name_edit = new QLineEdit;
+  m_host_name_edit->setPlaceholderText(tr("Your trainer name (what your opponent sees)"));
+  m_host_name_edit->setMaxLength(7);
+  m_host_name_edit->setToolTip(tr("Up to 7 characters. Written into the GBA port 2 save this room syncs, "
+                                  "so the next battle shows it (with an imported save it applies to "
+                                  "this session only). Joiners set theirs in Submit Team."));
+  m_host_name_edit->hide();
+  m_host_name_button = new QPushButton(tr("Set Name"));
+  m_host_name_button->setDefault(false);
+  m_host_name_button->setAutoDefault(false);
+  m_host_name_button->hide();
+
   layout->addWidget(m_chat_edit, 0, 0, 1, -1);
   layout->addWidget(m_chat_type_edit, 1, 0);
   layout->addWidget(m_chat_send_button, 1, 1);
   layout->addWidget(m_submit_team_button, 2, 0, 1, -1);
+  layout->addWidget(m_host_name_edit, 3, 0);
+  layout->addWidget(m_host_name_button, 3, 1);
 
   m_chat_box->setLayout(layout);
 }
@@ -388,6 +405,8 @@ void NetPlayDialog::ConnectWidgets()
   connect(m_chat_send_button, &QPushButton::clicked, this, &NetPlayDialog::OnChat);
   connect(m_chat_type_edit, &QLineEdit::returnPressed, this, &NetPlayDialog::OnChat);
   connect(m_submit_team_button, &QPushButton::clicked, this, &NetPlayDialog::OnSubmitTeam);
+  connect(m_host_name_button, &QPushButton::clicked, this, &NetPlayDialog::OnSetHostName);
+  connect(m_host_name_edit, &QLineEdit::returnPressed, this, &NetPlayDialog::OnSetHostName);
   connect(m_chat_type_edit, &QLineEdit::textChanged, this,
           [this] { m_chat_send_button->setEnabled(!m_chat_type_edit->text().isEmpty()); });
 
@@ -610,6 +629,10 @@ void NetPlayDialog::show(std::string nickname, bool use_traversal)
 #endif
   // Only a joiner submits a team; the host edits its own saves directly.
   m_submit_team_button->setHidden(is_hosting);
+  m_host_name_edit->setHidden(!is_hosting);
+  m_host_name_button->setHidden(!is_hosting);
+  if (is_hosting)
+    m_host_name_edit->setText(QString::fromStdString(XDNetplay::HostTrainerName()));
   m_start_button->setHidden(!is_hosting);
   // Only the host owns the session buffer, so only the host gets the Auto box.
   // OnHostInputAuthorityChanged refines this once the mode is known.
@@ -913,8 +936,10 @@ std::string NetPlayDialog::OnTeamSubmission(const std::string& player, const std
   std::string status;
   const bool applied =
       submission.save_bundle ?
-          XDNetplay::InjectGuestBundle(*submission.save_bundle, 2, &status) :
-          XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status);
+          XDNetplay::InjectGuestBundle(*submission.save_bundle, 2, &status,
+                                       submission.raise_to_level_100) :
+          XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status,
+                                     submission.raise_to_level_100);
   if (!applied)
     return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
   return status;
@@ -940,6 +965,16 @@ void NetPlayDialog::OnRoomClosed()
   // same deferred-until-Uninitialized event (DisposableSave.h). Idempotent
   // and harmless on joiners and non-imported hosts.
   XDNetplay::DisposableSave::EndNetplaySession();
+}
+
+void NetPlayDialog::OnSetHostName()
+{
+  std::string status;
+  const bool ok =
+      XDNetplay::RenameHostTrainer(m_host_name_edit->text().trimmed().toStdString(), &status);
+  DisplayMessage(QString::fromStdString(status), ok ? "green" : "red");
+  if (ok)
+    m_host_name_edit->setText(QString::fromStdString(XDNetplay::HostTrainerName()));
 }
 
 void NetPlayDialog::OnSubmitTeam()
@@ -1015,6 +1050,16 @@ void NetPlayDialog::OnSubmitTeam()
                        "\"Host — GBA port 2\" team)"),
                     &dialog);
   dialog_layout->addWidget(use_save_check);
+
+  // Opt-in level-100 convenience: asks the HOST to raise every under-level mon
+  // to Lv. 100 before injecting. The host applies it only when its format is
+  // a level-100 format, and it only ever raises (never lowers -- legality).
+  // "Level 100 or lower" is legal, so this is never automatic.
+  auto* raise_check =
+      new QCheckBox(tr("Raise my team to Lv. 100 (host applies this only in a level-100 "
+                       "format; never lowers a Pokémon)"),
+                    &dialog);
+  dialog_layout->addWidget(raise_check);
 
   // Shown only while the box is ticked. The disclosure list is deliberately
   // exhaustive (community review): the bundle carries the real party bytes and
@@ -1214,6 +1259,7 @@ void NetPlayDialog::OnSubmitTeam()
   const int model_id = model_combo->currentData().toInt();
   const std::optional<int> model =
       model_id > 0 ? std::optional<int>(model_id) : std::nullopt;
+  const bool raise = raise_check->isChecked();
 
   // Persist what was submitted so the next open prefills (read back above).
   // Called only once a submission actually goes out -- an empty paste or a
@@ -1273,7 +1319,7 @@ void NetPlayDialog::OnSubmitTeam()
     // No Name header rides with a bundle -- the save's own identity wins
     // (BuildBundleSubmissionPayload never emits one). Model still does.
     Settings::Instance().GetNetPlayClient()->SendTeamSubmission(
-        XDNetplay::BuildBundleSubmissionPayload(*bundle, model));
+        XDNetplay::BuildBundleSubmissionPayload(*bundle, model, raise));
     persist_submission();
     DisplayMessage(tr("Your save's team was sent to the host."), "");
 #endif
@@ -1286,7 +1332,7 @@ void NetPlayDialog::OnSubmitTeam()
   if (!match.hasMatch())
   {
     Settings::Instance().GetNetPlayClient()->SendTeamSubmission(
-        XDNetplay::BuildTeamSubmissionPayload(text.toStdString(), trainer_name, model));
+        XDNetplay::BuildTeamSubmissionPayload(text.toStdString(), trainer_name, model, raise));
     persist_submission();
     DisplayMessage(tr("Team sent to the host."), "");
     return;
@@ -1300,13 +1346,13 @@ void NetPlayDialog::OnSubmitTeam()
   // exactly what the retry wants.
   persist_submission();
   QPointer<NetPlayDialog> self(this);
-  std::thread([self, url, trainer_name, model] {
+  std::thread([self, url, trainer_name, model, raise] {
     Common::HttpRequest request;
     request.FollowRedirects();
     Common::HttpRequest::Response response = request.Get(url);
     if (!self)
       return;
-    QueueOnObject(self.data(), [self, trainer_name, model, response = std::move(response)] {
+    QueueOnObject(self.data(), [self, trainer_name, model, raise, response = std::move(response)] {
       if (!self)
         return;
       if (!response)
@@ -1317,7 +1363,7 @@ void NetPlayDialog::OnSubmitTeam()
       if (auto client = Settings::Instance().GetNetPlayClient())
       {
         client->SendTeamSubmission(XDNetplay::BuildTeamSubmissionPayload(
-            std::string(response->begin(), response->end()), trainer_name, model));
+            std::string(response->begin(), response->end()), trainer_name, model, raise));
         self->DisplayMessage(tr("Team sent to the host."), "");
       }
     });
