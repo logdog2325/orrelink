@@ -55,6 +55,21 @@
 
 namespace
 {
+// A word-wrapped explanatory line that can never be squashed below its text.
+// QLabel::minimumSizeHint() for a wrapping label is ONE line tall, so with the
+// default Preferred policy a window shorter than the layout's preferred height
+// shrinks the note's row and the text paints clipped (the field report: "have
+// to stretch the window to read it"). Minimum/Minimum -- the pattern upstream
+// uses in ConvertDialog and AchievementBox -- makes the layout's minimum equal
+// the wrapped sizeHint instead, so it wraps correctly at any window size.
+QLabel* MakeNoteLabel(const QString& text)
+{
+  auto* label = new QLabel(text);
+  label->setWordWrap(true);
+  label->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
+  return label;
+}
+
 constexpr size_t GBA_HEADER_TITLE_OFFSET = 0xA0;
 constexpr size_t GBA_HEADER_FIXED_OFFSET = 0xB2;
 constexpr u8 GBA_HEADER_FIXED_VALUE = 0x96;
@@ -308,17 +323,15 @@ void XDLauncherDialog::CreateMainLayout()
   // DisposableSave swaps in for the room's duration.
   auto* saves_box = new QGroupBox(tr("Save Files"));
   auto* saves_layout = new QGridLayout;
-  auto* saves_caption = new QLabel(
+  auto* saves_caption = MakeNoteLabel(
       tr("Solo play uses an imported save exactly as it is. Hosting a netplay room does NOT "
          "share the file: the session runs on a rebuilt save carrying only your party and "
          "trainer identity, and your own save returns when the room closes. When you join "
          "someone else's room, use Submit Team instead."));
-  saves_caption->setWordWrap(true);
   saves_layout->addWidget(saves_caption, 0, 0, 1, 4);
   int save_row = 1;
   const auto add_save_row = [&](SaveSlotRow* target, const QString& label) {
-    target->state = new QLabel;
-    target->state->setWordWrap(true);
+    target->state = MakeNoteLabel(QString());
     target->import_button = new NonDefaultQPushButton(tr("Import my save..."));
     target->restore_button = new NonDefaultQPushButton(tr("Restore default"));
     target->restore_button->setToolTip(
@@ -356,8 +369,7 @@ void XDLauncherDialog::CreateMainLayout()
   m_team_editor_button = new NonDefaultQPushButton(tr("Team Editor..."));
   // Empty until a search runs, so the dialog does not grow a permanently blank
   // row; word wrap because the "hosting and waiting" line is a sentence.
-  m_match_status = new QLabel;
-  m_match_status->setWordWrap(true);
+  m_match_status = MakeNoteLabel(QString());
   m_match_status->hide();
   battle_layout->addWidget(m_boot_button, 0, 0);
   battle_layout->addWidget(m_practice_dummy_check, 0, 1);
@@ -379,8 +391,8 @@ void XDLauncherDialog::CreateMainLayout()
   // their labels say so; venues whose terrain changes a few moves carry that
   // in the label too, no extra dialogs. MODELS are field-proven, so their
   // lists carry no tier presentation at all: instead, models without a
-  // pre-rendered bust say "(no portrait)" and a one-line note under the model
-  // rows explains what that means.
+  // pre-rendered bust say "(no portrait)" in their label -- that suffix is the
+  // whole explanation (a separate note was removed on community feedback).
   //
   // The first row is the battle FORMAT (v1.4.0) -- the one pick that is not
   // cosmetic. It is persisted in MAIN_XD_FORMAT exactly like the style keys;
@@ -394,12 +406,9 @@ void XDLauncherDialog::CreateMainLayout()
     // picks (they ship in the host-assembled session code both players run);
     // models are PER PLAYER (a joiner picks theirs in the Submit Team
     // sheet, and that pick beats the host's fallback dropdown).
-    auto* who_note = new QLabel(
-        tr("HOST-ONLY on this screen: Format, music and battle location come from whoever "
-           "hosts — your picks here apply to rooms you host and do nothing in rooms you join. "
-           "JOINING? Everything you control — your team and your trainer model — is set in "
-           "the NEXT window (Submit Team, inside the room). HOSTING? Your trainer name is set inside the room (or in the team editor)."));
-    who_note->setWordWrap(true);
+    auto* who_note = MakeNoteLabel(
+        tr("The host picks format, music and location. Joiners set team, name and model in "
+           "Submit Team; hosts set their name in the room or Team Editor."));
     style_layout->addWidget(who_note, style_row, 0, 1, 2);
     style_row++;
   }
@@ -498,14 +507,6 @@ void XDLauncherDialog::CreateMainLayout()
       tr("Guest model (used only if they don't pick):"),
       tr("Fallback only: a model the guest picks when submitting\n"
          "their team always wins over this."));
-  // One line under the model rows: what "(no portrait)" costs (nothing but the
-  // close-up), so nobody reads it as "broken".
-  auto* portrait_note = new QLabel(
-      tr("Models marked \"(no portrait)\" show no close-up on the connection and team "
-         "screens — the battle model still changes."));
-  portrait_note->setWordWrap(true);
-  style_layout->addWidget(portrait_note, style_row, 0, 1, 2);
-  style_row++;
   m_style_music_combo = add_style_combo(tr("Battle music:"), QString());
   m_style_venue_combo = add_style_combo(
       tr("Battle location:"), tr("Locations that alter Nature Power, Camouflage or Secret Power\n"
