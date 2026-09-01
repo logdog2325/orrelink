@@ -212,6 +212,12 @@ bool IsOu(int format_key_value)
   return format_key_value == FORMAT_OU;
 }
 
+int FormatFixedLevel(int format_key_value)
+{
+  return ProfileFor(format_key_value).max_level == 50 ? 50 :
+         (HasTeamRules(format_key_value) ? 100 : 0);
+}
+
 bool HasTeamRules(int format_key_value)
 {
   switch (format_key_value)

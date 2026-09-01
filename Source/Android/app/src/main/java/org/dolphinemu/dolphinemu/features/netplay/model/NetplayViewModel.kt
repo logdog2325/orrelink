@@ -190,7 +190,7 @@ class NetplayViewModel(
      * validates the id against its own table, so a stale pick can never be
      * applied, and it can never reject the team.
      */
-    fun submitTeam(text: String, trainerName: String, modelId: Int) {
+    fun submitTeam(text: String, trainerName: String, modelId: Int, raiseToLevel100: Boolean = false) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) {
             return
@@ -204,7 +204,7 @@ class NetplayViewModel(
         val pokepaste = Regex("^https?://pokepast\\.es/[A-Za-z0-9]+").find(trimmed)?.value
         if (pokepaste == null) {
             storeSubmitDrafts(trimmed, name, modelId, useMySave = false)
-            netplaySession.submitTeam(trimmed, name, modelId)
+            netplaySession.submitTeam(trimmed, name, modelId, raiseToLevel100)
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -222,8 +222,30 @@ class NetplayViewModel(
                     // Store what the user typed (the link, not the fetched
                     // body) so next session's sheet prefills the same way.
                     storeSubmitDrafts(trimmed, name, modelId, useMySave = false)
-                    netplaySession.submitTeam(body, name, modelId)
+                    netplaySession.submitTeam(body, name, modelId, raiseToLevel100)
                 }
+            }
+        }
+    }
+
+    /** The host's current in-game trainer name (GBA port 2 save), for prefilling. */
+    val hostTrainerName = MutableStateFlow("")
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            val current = netplaySession.hostTrainerName()
+            withContext(Dispatchers.Main) { hostTrainerName.value = current }
+        }
+    }
+
+    /** Host only: rename the trainer in the GBA port 2 save (the one the room syncs). */
+    fun setHostTrainerName(name: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val status = netplaySession.setHostTrainerName(name)
+            val current = netplaySession.hostTrainerName()
+            withContext(Dispatchers.Main) {
+                hostTrainerName.value = current
+                netplaySession.showLocalMessage(status)
             }
         }
     }
@@ -237,9 +259,9 @@ class NetplayViewModel(
      * here (the save's real trainer name always wins; see NetplaySession), so
      * only [modelId] rides along.
      */
-    fun submitSaveBundle(modelId: Int) {
+    fun submitSaveBundle(modelId: Int, raiseToLevel100: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
-            val error = netplaySession.submitSaveBundle(modelId)
+            val error = netplaySession.submitSaveBundle(modelId, raiseToLevel100)
             withContext(Dispatchers.Main) {
                 if (error.isEmpty()) {
                     // The team/name drafts were not part of this submission;
