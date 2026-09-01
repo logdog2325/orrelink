@@ -1011,7 +1011,9 @@ void NetPlayDialog::OnSubmitTeam()
   // IGNORED in this mode and greyed out below to say so. The model pick stays
   // meaningful either way: it rides the payload as its own header.
   auto* use_save_check =
-      new QCheckBox(tr("Use my save (send the party from my own save file)"), &dialog);
+      new QCheckBox(tr("Use my save (send the party from my own save file — the Team Editor's "
+                       "\"Host — GBA port 2\" team)"),
+                    &dialog);
   dialog_layout->addWidget(use_save_check);
 
   // Shown only while the box is ticked. The disclosure list is deliberately
