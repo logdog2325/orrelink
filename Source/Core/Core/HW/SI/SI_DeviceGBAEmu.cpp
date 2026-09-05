@@ -13,6 +13,7 @@
 
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
+#include "Common/Hash.h"
 #include "Common/Logging/Log.h"
 #include "Common/Config/Config.h"
 #include "Core/Config/MainSettings.h"
@@ -21,6 +22,7 @@
 #include "Core/HW/GBACore.h"
 #include "Core/HW/GBADetectLog.h"
 #include "Core/HW/GBAPad.h"
+#include "Core/HW/Memmap.h"
 #include "Core/HW/SI/SI.h"
 #include "Core/HW/SI/SI_DeviceGCController.h"
 #include "Core/HW/SystemTimers.h"
@@ -93,6 +95,159 @@ CSIDevice_GBAEmu::~CSIDevice_GBAEmu()
   m_gbahost.reset();
   m_core.reset();
   GBADetectLog::OnDeviceDestroyed();
+}
+
+namespace
+{
+// Pokemon XD (GXXE01 USA, main.dol sha256 c8659341...78f15) battle state that
+// decides a link battle, reverse-engineered from the binary and cross-checked
+// adversarially. Every fixed address is a .bss/.sbss/.sdata location in MEM1
+// (BAT identity mapping: read directly, no MMU). ~1.6 KB per hook.
+struct XdRange
+{
+  u32 addr;
+  u32 len;
+};
+constexpr u32 XD_DISC_ID_GXXE = 0x47585845;  // "GXXE" at 0x80000000; anything else: no line
+// Main PRNG (the game's own LCG): seed = seed * 0x343FD + 0x269EC3, stepped by
+// every rand_u16 (407 callers) / rand_float (238) call; written once at boot from
+// OSGetTime's low word (0x800efa58). The pointer cell at +4 always reads
+// 0x804E8610 (its only setter has no callers).
+constexpr u32 XD_RNG_SEED = 0x804E8610;
+// SDK JoyBoot LCG state (ANSI LCG, global 0x804e81e0), RE-SEEDED FROM OSGetTick
+// at every GBA key exchange -- the value behind the first divergent JoyBus byte
+// in the v1.5.9 field logs (c7 vs c3). Logged raw; a difference here with equal
+// seed/crcs is the time-base-drift signature.
+constexpr u32 XD_JOYBOOT_LCG = 0x804E81E0;
+constexpr u32 XD_BATTLE_FLAGS = 0x804EB938;  // u32 bit flags, 263 refs in the engine
+// crcA: battle-engine scalars (.sbss: flags, command-ring indices, turn counters,
+// scratch-block pointer) + the .sdata battle event struct.
+constexpr XdRange XD_CRC_A[] = {{0x804EB8D0, 0xB0}, {0x804E85C0, 0x20}};
+// crcB: party state of the LIVE battle context. The context is a runtime
+// pointer (cell 0x804af528) to one of two 0x6ef0-byte objects (ctx[0]=0x804a1744,
+// ctx[1]=0x804a8634); trainer = ctx+0x64+t*0x3744; party entry =
+// trainer+0x97c+i*0x300 (record at +4: species u16, +4 current HP u16, +0x11
+// level, +0x28 status, +0x80 moves/PP, +0x90 max HP); active slot =
+// trainer+0x1b7c+s*0x894. Skipped (crcB=0) when the pointer is not one of the
+// two objects; the pointer is logged as ctx=.
+constexpr u32 XD_CTX_PTR = 0x804AF528;
+constexpr u32 XD_CTX_A = 0x804A1744;
+constexpr u32 XD_CTX_B = 0x804A8634;
+constexpr u32 XD_TRAINER_OFF = 0x64;
+constexpr u32 XD_TRAINER_STRIDE = 0x3744;
+constexpr u32 XD_PARTY_OFF = 0x97C;
+constexpr u32 XD_PARTY_STRIDE = 0x300;
+constexpr u32 XD_SLOT_OFF = 0x1B7C;
+constexpr u32 XD_SLOT_STRIDE = 0x894;
+// crcC (informational, never gates a line): GBA driver per-channel state, .sbss
+// link state, battle mode word, and the ruleset table entry the format pin
+// writes (0x804334C0 = BattleCustomizer's ORRE_RULESET_BASE).
+constexpr XdRange XD_CRC_C[] = {
+    {0x80428338, 0x20}, {0x804EA768, 0x28}, {0x80429A00, 0x04}, {0x804334C0, 0x90}};
+constexpr u32 XD_UPLOAD_WRITES = 26900;  // multiboot client upload, same as the OSD phase logic
+constexpr u32 XD_MAX_LINES_PER_SOCKET = 80000;  // ~6 MB worst case, under the file cap
+
+size_t AppendEmu(const Memory::MemoryManager& memory, u8* dst, size_t at, u32 addr, u32 len)
+{
+  memory.CopyFromEmu(dst + at, addr, len);
+  return at + len;
+}
+}  // namespace
+
+// One gba_detect 'xd' line: RNG seed + CRC32s of the battle state, keyed by
+// wseq = m_diag_wr_count (this socket's session-lifetime GC->GBA WRITE ordinal,
+// identical on every client up to the divergence, unlike the emulated tick).
+// Written on the forced events (link-established, battle-locked, upload-done)
+// and otherwise at a battle-phase WRITE only when seed/crcA/crcB changed since
+// the last line on this socket, at most ~60 lines/s, never during the multiboot
+// upload (26,900 WRITEs that never touch battle state). Two players' logs then
+// carry identical lines at identical wseq until the first divergence:
+//   diff <(grep ' xd ' a.log | sed -E 's/^t=[0-9]+ //') <(... b.log ...)
+// seed equal + crcB different = arithmetic diverged; seed different first = RNG
+// consumption diverged earlier; seed different on the very first line = boot-
+// time time-base divergence (compare the t= of the first 'joy >' lines).
+void CSIDevice_GBAEmu::LogXdState(const u8* request, const char* why, bool forced)
+{
+  if (!Core::IsCPUThread() || m_xd_lines >= XD_MAX_LINES_PER_SOCKET)
+    return;
+  const auto& memory = m_system.GetMemory();
+  if (memory.Read_U32(0x80000000) != XD_DISC_ID_GXXE)
+    return;
+  const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
+  if (!forced)
+  {
+    // Not during the client upload (battle-locked but the ~27k-WRITE stream is
+    // the multiboot image, not battle traffic), and never faster than one line
+    // per emulated frame.
+    const bool uploading =
+        m_battle_locked && (m_diag_wr_count - m_osd_upload_base) < XD_UPLOAD_WRITES;
+    if (uploading)
+      return;
+    if (m_xd_last_tick != 0 && m_timestamp_sent - m_xd_last_tick < tps / 60)
+      return;
+  }
+
+  const u32 seed = memory.Read_U32(XD_RNG_SEED);
+  const u32 joyboot = memory.Read_U32(XD_JOYBOOT_LCG);
+  const u32 flags = memory.Read_U32(XD_BATTLE_FLAGS);
+  const u32 ctx = memory.Read_U32(XD_CTX_PTR);
+
+  u8 buf[2048];
+  size_t n = 0;
+  for (const XdRange& r : XD_CRC_A)
+    n = AppendEmu(memory, buf, n, r.addr, r.len);
+  const u32 crc_a = Common::ComputeCRC32(buf, n);
+
+  u32 crc_b = 0;
+  if (ctx == XD_CTX_A || ctx == XD_CTX_B)
+  {
+    n = 0;
+    for (u32 t = 0; t < 2; t++)
+    {
+      const u32 trainer = ctx + XD_TRAINER_OFF + t * XD_TRAINER_STRIDE;
+      for (u32 i = 0; i < 6; i++)
+      {
+        const u32 record = trainer + XD_PARTY_OFF + i * XD_PARTY_STRIDE + 4;
+        n = AppendEmu(memory, buf, n, record, 0x30);
+        n = AppendEmu(memory, buf, n, record + 0x80, 0x20);
+      }
+      for (u32 sl = 0; sl < 2; sl++)
+        n = AppendEmu(memory, buf, n, trainer + XD_SLOT_OFF + sl * XD_SLOT_STRIDE, 0x40);
+    }
+    crc_b = Common::ComputeCRC32(buf, n);
+  }
+
+  n = 0;
+  for (const XdRange& r : XD_CRC_C)
+    n = AppendEmu(memory, buf, n, r.addr, r.len);
+  const u32 crc_c = Common::ComputeCRC32(buf, n);
+
+  // jb (the JoyBoot LCG) participates: it is the very word the v1.5.9 evidence
+  // points at, and both sockets' key exchanges share it.
+  const bool changed = !m_xd_have_last || seed != m_xd_last_seed || joyboot != m_xd_last_jb ||
+                       crc_a != m_xd_last_crc[0] || crc_b != m_xd_last_crc[1];
+  if (!changed && !forced)
+    return;
+  m_xd_have_last = true;
+  m_xd_last_seed = seed;
+  m_xd_last_jb = joyboot;
+  m_xd_last_crc[0] = crc_a;
+  m_xd_last_crc[1] = crc_b;
+  m_xd_last_tick = m_timestamp_sent;
+  ++m_xd_lines;
+
+  std::string data;
+  if (request != nullptr && m_last_cmd == EBufferCommands::CMD_WRITE_GBA)
+  {
+    data = fmt::format(" data={:02x}{:02x}{:02x}{:02x}", request[1], request[2], request[3],
+                       request[4]);
+  }
+  GBADetectLog::LogEvent(
+      m_device_number, m_timestamp_sent, "xd",
+      fmt::format("wseq={} why={}{} seed={:08x} jb={:08x} ctx={:08x} flags={:08x} crcA={:08x} "
+                  "crcB={:08x} crcC={:08x}",
+                  m_diag_wr_count, why, data, seed, joyboot, ctx, flags, crc_a, crc_b, crc_c),
+      false);  // bounded; the <=1/s summary line flushes
 }
 
 int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
@@ -584,6 +739,8 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
             GBADetectLog::LogEvent(
                 m_device_number, m_timestamp_sent, "link-progress",
                 fmt::format("upload done ({} writes), client starting", uploaded));
+          if (phase == 3)
+            LogXdState(buffer, "upload-done", /*forced=*/true);
         }
         if (phase == 2)
         {
@@ -605,12 +762,16 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
       {
         GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "link-established",
                                fmt::format("data_cmd_count={}", m_data_cmd_count));
+        LogXdState(buffer, "link-established", /*forced=*/true);
         if (m_diag_cmd_burst < 16)
           m_diag_cmd_burst = 16;
       }
       if (m_battle_locked && !m_diag_prev_locked)
+      {
         GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "battle-locked",
                                fmt::format("data_cmd_count={}", m_data_cmd_count));
+        LogXdState(buffer, "battle-locked", /*forced=*/true);
+      }
       m_diag_prev_established = m_link_established;
       m_diag_prev_locked = m_battle_locked;
 
@@ -676,6 +837,12 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
         --m_diag_cmd_burst;
       m_diag_log_this_response = true;  // pair the response in ReceiveResponse
     }
+
+    // 'xd' battle-state checksum at battle-phase GC->GBA WRITEs (the command
+    // whose payload first differed between machines in the v1.5.9 report).
+    // Gated inside LogXdState: upload suppressed, changed-state only, <=60/s.
+    if (m_link_established && m_last_cmd == EBufferCommands::CMD_WRITE_GBA)
+      LogXdState(buffer, "write", /*forced=*/false);
 
     auto& si = m_system.GetSerialInterface();
     si.RemoveEvent(m_device_number);

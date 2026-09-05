@@ -36,7 +36,7 @@ static void SetFPCR(u64 fpcr)
 static const u64 default_fpcr = GetFPCR();
 static u64 saved_fpcr = default_fpcr;
 
-void SetSIMDMode(RoundMode rounding_mode, bool non_ieee_mode)
+void SetSIMDMode(RoundMode rounding_mode, bool non_ieee_mode, bool software_output_flush)
 {
   // When AH is disabled, FZ controls flush-to-zero for both inputs and outputs. When AH is enabled,
   // FZ controls flush-to-zero for outputs, and FIZ controls flush-to-zero for inputs.
@@ -49,7 +49,12 @@ void SetSIMDMode(RoundMode rounding_mode, bool non_ieee_mode)
   // "non-IEEE mode". Unfortunately, FEAT_AFP didn't exist until 2020, so we can't count on setting
   // AH actually doing anything. But flushing both inputs and outputs seems to cause less problems
   // than flushing nothing, so let's just set FZ and AH and roll with whatever behavior we get.
-  const u32 flush_to_zero_bits = (non_ieee_mode ? FZ | AH : 0);
+  // OrreLink: when the running core does its own output flushing (interpreter
+  // cores, see FPURoundMode.h) and this host lacks FEAT_AFP, leave FZ clear:
+  // FZ without AH would flush inputs too, which neither the Gekko nor an
+  // x86-64 peer (FTZ only) does. With FEAT_AFP the hardware mode is exact.
+  const bool hardware_flush = non_ieee_mode && (cpu_info.bAFP || !software_output_flush);
+  const u32 flush_to_zero_bits = (hardware_flush ? FZ | AH : 0);
   static bool afp_warning_shown = false;
   if (!afp_warning_shown && !cpu_info.bAFP && non_ieee_mode)
   {

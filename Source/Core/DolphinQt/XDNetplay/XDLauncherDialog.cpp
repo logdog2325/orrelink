@@ -4,6 +4,7 @@
 #include "DolphinQt/XDNetplay/XDLauncherDialog.h"
 
 #include <array>
+#include <algorithm>
 #include <initializer_list>
 #include <map>
 #include <optional>
@@ -19,14 +20,19 @@
 #include <QComboBox>
 #include <QFileDialog>
 #include <QGridLayout>
+#include <QGuiApplication>
 #include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QScreen>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
+#include <QWidget>
 
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
@@ -69,6 +75,50 @@ QLabel* MakeNoteLabel(const QString& text)
   label->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
   return label;
 }
+
+// Frameless, vertical-only scroll area whose size hints come from its content:
+// preferred = content + one scrollbar width (so the bar never steals width from
+// the wrapped notes), minimum WIDTH = content minimum + scrollbar (the horizontal
+// bar is off, so a narrower viewport would clip), minimum HEIGHT stays tiny so
+// the window can always be shrunk to fit a short screen (the field report: a
+// 768-px laptop could not show the bottom of the launcher, and Windows will not
+// let a title bar be dragged above the screen edge).
+class LauncherScrollArea final : public QScrollArea
+{
+public:
+  LauncherScrollArea()
+  {
+    setWidgetResizable(true);
+    setFrameStyle(QFrame::NoFrame);
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    // Paint the dialog's Window colour, not QPalette::Base (white on Windows).
+    viewport()->setAutoFillBackground(false);
+  }
+
+  QSize sizeHint() const override
+  {
+    if (!widget())
+      return QScrollArea::sizeHint();
+    return widget()->sizeHint() + QSize(verticalScrollBar()->sizeHint().width(), 0) +
+           QSize(2 * frameWidth(), 2 * frameWidth());
+  }
+
+  QSize minimumSizeHint() const override
+  {
+    const QSize base = QScrollArea::minimumSizeHint();
+    if (!widget())
+      return base;
+    return QSize(widget()->minimumSizeHint().width() + verticalScrollBar()->sizeHint().width() +
+                     2 * frameWidth(),
+                 base.height());
+  }
+};
+
+// Windows 11 frame: ~31-39 px title bar + 8 px bottom border (logical px);
+// macOS/Linux are smaller. Pre-show, frameGeometry() is unreliable, so reserve.
+constexpr int WINDOW_CHROME_HEIGHT = 48;
 
 constexpr size_t GBA_HEADER_TITLE_OFFSET = 0xA0;
 constexpr size_t GBA_HEADER_FIXED_OFFSET = 0xB2;
@@ -522,14 +572,58 @@ void XDLauncherDialog::CreateMainLayout()
   style_box->setLayout(style_layout);
   layout->addWidget(style_box);
 
+  // The group boxes live inside a scroll area so the window can be shorter than
+  // its content on small (768-px) laptop screens; the startup checkbox stays
+  // outside as a fixed footer so the bottom edge always reads as "end of window".
+  auto* content = new QWidget;
+  content->setAutoFillBackground(false);
+  content->setLayout(layout);
+
+  auto* scroll = new LauncherScrollArea;
+  scroll->setWidget(content);
+
   // Same setting the hub's own checkbox writes. Reworded because the hub, not
   // this launcher, is what actually opens at startup now -- a checkbox that
   // names the wrong window is worse than no checkbox.
   m_show_on_startup_check = new QCheckBox(tr("Show the Pokémon Hub at startup"));
   m_show_on_startup_check->setChecked(ShowOnStartup());
-  layout->addWidget(m_show_on_startup_check);
+  auto* footer = new QVBoxLayout;
+  const QMargins m = layout->contentsMargins();
+  footer->setContentsMargins(m.left(), 0, m.right(), m.bottom());
+  footer->addWidget(m_show_on_startup_check);
 
-  setLayout(layout);
+  auto* outer = new QVBoxLayout;
+  outer->setContentsMargins(0, 0, 0, 0);
+  outer->setSpacing(0);
+  outer->addWidget(scroll, 1);
+  outer->addLayout(footer);
+  setLayout(outer);
+}
+
+// First-show sizing: preferred width, preferred height capped to the screen's
+// working area minus window chrome, recentred on the main window and clamped
+// on-screen. On a large screen this is exactly the layout's own size (no
+// scrollbar); on a short one the content scrolls. showEvent precedes the
+// system show, so there is no flicker, and resize() sets WA_Resized so later
+// opens keep the user's size.
+void XDLauncherDialog::FitToScreen()
+{
+  QScreen* scr = screen();
+  if (scr == nullptr)
+    scr = QGuiApplication::primaryScreen();
+  const QRect avail = scr->availableGeometry();
+
+  const QSize preferred = sizeHint();
+  const int max_height =
+      std::max(minimumSizeHint().height(), avail.height() - WINDOW_CHROME_HEIGHT);
+  resize(preferred.width(), std::min(preferred.height(), max_height));
+
+  QRect r(QPoint(), size());
+  r.moveCenter(parentWidget() ? parentWidget()->frameGeometry().center() : avail.center());
+  const int top_min = avail.top() + (WINDOW_CHROME_HEIGHT - 8);
+  r.moveLeft(std::clamp(r.left(), avail.left(), std::max(avail.left(), avail.right() - r.width())));
+  r.moveTop(std::clamp(r.top(), top_min, std::max(top_min, avail.bottom() - 8 - r.height())));
+  move(r.topLeft());
 }
 
 void XDLauncherDialog::ConnectWidgets()
@@ -626,6 +720,11 @@ bool XDLauncherDialog::ShowOnStartup()
 void XDLauncherDialog::showEvent(QShowEvent* event)
 {
   QDialog::showEvent(event);
+  if (!m_first_show_sized)
+  {
+    m_first_show_sized = true;
+    FitToScreen();
+  }
   // Boundary heal for a killed session's leftovers (an opponent's team in a
   // socket save, a disposable over an import): the launcher opening is the
   // first thing a player does after a crash, and everything it leads to --

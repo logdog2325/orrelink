@@ -192,6 +192,13 @@ struct PowerPCState
   InstructionCache iCache;
   Cache dCache;
 
+  // OrreLink: true when the running core flushes denormal outputs in software
+  // (interpreter cores on an ARM64 host without FEAT_AFP); RoundingModeUpdated
+  // then keeps the host FPU from flushing inputs. Not saved in state. Kept LAST:
+  // never JIT-addressed, and anything placed before `ps` pushes
+  // above_fits_in_first_0x100 past 0x100 on x86-64 (static_assert below).
+  bool software_fpu_flush = false;
+
   void UpdateCR1()
   {
     cr.SetField(1, (fpscr.FX << 3) | (fpscr.FEX << 2) | (fpscr.VX << 1) | fpscr.OX);
