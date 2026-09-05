@@ -318,6 +318,11 @@ else()
 
   # gcc uses some optimizations which might break stuff without this flag
   check_and_add_flag(NO_STRICT_ALIASING -fno-strict-aliasing)
+  # The interpreter cores must produce identical bits on x86_64 and arm64. Apple
+  # and NDK clang default to -ffp-contract=on and FMA is baseline on arm64, so any
+  # a*b+c written as one expression would fuse there and not on x86. Audited
+  # contraction-free today; keep it that way. MSVC /fp:precise never contracts.
+  check_and_add_flag(NO_FP_CONTRACT -ffp-contract=off)
   check_and_add_flag(NO_EXCEPTIONS -fno-exceptions)
 
   check_and_add_flag(VISIBILITY_INLINES_HIDDEN -fvisibility-inlines-hidden)

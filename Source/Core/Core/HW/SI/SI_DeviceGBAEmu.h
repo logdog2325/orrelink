@@ -145,6 +145,15 @@ private:
   u64 m_diag_last_window_dur_ms = 0; // last completed window's duration
   u64 m_diag_last_press_seen = 0;    // last pad-press tick this socket logged roll-state for
   bool m_diag_first_cmd_logged = false;  // first-data emitted for the current window
+  // 'xd' state-checksum lines (LogXdState in the .cpp). Diagnostic only, CPU
+  // thread only, not in DoState, never read by a control path.
+  void LogXdState(const u8* request, const char* why, bool forced);
+  bool m_xd_have_last = false;
+  u32 m_xd_last_seed = 0;
+  u32 m_xd_last_jb = 0;
+  u32 m_xd_last_crc[2]{};
+  u32 m_xd_lines = 0;  // per-socket hard cap
+  u64 m_xd_last_tick = 0;
   u64 m_diag_last_joy_tick = 0;   // Review #1 I4: min-gap rate limit for the H8 class path
 
   std::shared_ptr<HW::GBA::Core> m_core;

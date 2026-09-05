@@ -19,6 +19,7 @@
 #include <fmt/format.h>
 
 #include "Common/Assert.h"
+#include "Common/Hash.h"
 #include "Common/Debug/MemoryPatches.h"
 #include "Common/IniFile.h"
 #include "Common/StringUtil.h"
@@ -31,7 +32,11 @@
 #include "Core/Core.h"
 #include "Core/Debugger/PPCDebugInterface.h"
 #include "Core/GeckoCode.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/GeckoCodeConfig.h"
+#ifdef HAS_LIBMGBA
+#include "Core/HW/GBADetectLog.h"
+#endif
 #include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
@@ -201,6 +206,37 @@ void LoadPatches()
     ActionReplay::LoadAndApplyCodes(globalIni, localIni, sconfig.GetGameID(),
                                     sconfig.GetRevision());
   }
+
+#ifdef HAS_LIBMGBA
+  // OrreLink: the AR set that will actually run this session -- what a guest
+  // received from the host (SESSION_CODE_SYNC_OVERRIDE) or what this machine
+  // loaded from its own INIs. Address/value only, no code names, so the host's
+  // "$OrreLink Battle Style" and the guest's "Synced Codes" diff clean:
+  //   diff <(grep '^t=boot ar op' host.log) <(grep '^t=boot ar op' guest.log)
+  // must be empty and the two 'ar active' crc32= values equal. cheats=0 means
+  // the listed codes never run (ActionReplay::RunAllActive is gated on it).
+  if (GBADetectLog::IsSessionOpen())  // same phantom-line guard as the 'cpu' boot line
+  {
+    const std::vector<ActionReplay::ARCode> active = ActionReplay::GetActiveCodesSnapshot();
+    std::string blob;
+    size_t lines = 0;
+    for (const ActionReplay::ARCode& code : active)
+    {
+      for (const ActionReplay::AREntry& op : code.ops)
+      {
+        blob += fmt::format("{:08X} {:08X}\n", op.cmd_addr, op.value);
+        ++lines;
+      }
+    }
+    GBADetectLog::NoteBoot(fmt::format(
+        "ar active source={} cheats={} codes={} lines={} crc32={:08x}",
+        Config::Get(Config::SESSION_CODE_SYNC_OVERRIDE) ? "synced" : "local",
+        Config::AreCheatsEnabled() ? 1 : 0, active.size(), lines, Common::ComputeCRC32(blob)));
+    for (const ActionReplay::ARCode& code : active)
+      for (const ActionReplay::AREntry& op : code.ops)
+        GBADetectLog::NoteBoot(fmt::format("ar op {:08X} {:08X}", op.cmd_addr, op.value));
+  }
+#endif
 
   const size_t enabled_patch_count =
       std::ranges::count_if(s_on_frame, [](const Patch& patch) { return patch.enabled; });
