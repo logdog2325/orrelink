@@ -46,6 +46,7 @@
 #include "Core/BootManager.h"
 #include "Core/CPUThreadConfigCallback.h"
 #include "Core/Config/MainSettings.h"
+#include "Core/Config/SessionSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/CoreTiming.h"
 #include "Core/DSPEmulator.h"
@@ -57,6 +58,9 @@
 #include "Core/HW/DSP.h"
 #include "Core/HW/EXI/EXI.h"
 #include "Core/HW/GBAPad.h"
+#ifdef HAS_LIBMGBA
+#include "Core/HW/GBADetectLog.h"
+#endif
 #include "Core/HW/GCKeyboard.h"
 #include "Core/HW/GCPad.h"
 #include "Core/HW/HW.h"
@@ -685,6 +689,49 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
     system.GetPowerPC().SetMode(PowerPC::CoreMode::Interpreter);
   }
 
+#ifdef HAS_LIBMGBA
+  // OrreLink: the EFFECTIVE core -- the instantiated object, not the config enum
+  // (PowerPC.cpp falls back silently when the enum names a JIT this architecture
+  // cannot build) -- plus every determinism-relevant knob, one line under the
+  // gba_detect banner. `grep '^t=boot cpu ' gba_detect_*.log` on each side and
+  // diff: any field but arch/hw_*/rev that differs is a desync in waiting. Note
+  // the Cached Interpreter dispatches as "jit" (it is a JitBase); core_eff is the
+  // field that matters.
+  // Only when this boot opened a GBA log: a NoteBoot with no session parks the
+  // line in the pre-boot ring and it would surface under the NEXT session's
+  // banner as a phantom 'cpu' line from an unrelated game.
+  if (GBADetectLog::IsSessionOpen())
+  {
+    const auto& ppc = system.GetPowerPC();
+    GBADetectLog::NoteBoot(fmt::format(
+        "cpu arch={} core_cfg={} core_eff=\"{}\" dispatch={} hw_fma={} hw_afp={} use_fma={} "
+        "accurate_fmadds={} accurate_nans={} fprf={} float_exc={} div0_exc={} disable_icache={} "
+        "accurate_dcache={} fastmem={} follow_branch={} mmu={} cpu_thread={} oc={} "
+        "sync_on_skip_idle={} cheats={} gpu_det={} dsp_hle={} dsp_thread={} practice_dummy={} "
+        "debug={} soft_flush={} netplay={} rev={}",
+        NetPlay::LocalCpuArch(), static_cast<int>(Config::Get(Config::MAIN_CPU_CORE)),
+        ppc.GetCPUName(), ppc.GetMode() == PowerPC::CoreMode::JIT ? "jit" : "interp",
+        cpu_info.bFMA ? 1 : 0, cpu_info.bAFP ? 1 : 0, Config::Get(Config::SESSION_USE_FMA) ? 1 : 0,
+        Config::Get(Config::MAIN_ACCURATE_FMADDS) ? 1 : 0,
+        Config::Get(Config::MAIN_ACCURATE_NANS) ? 1 : 0, Config::Get(Config::MAIN_FPRF) ? 1 : 0,
+        Config::Get(Config::MAIN_FLOAT_EXCEPTIONS) ? 1 : 0,
+        Config::Get(Config::MAIN_DIVIDE_BY_ZERO_EXCEPTIONS) ? 1 : 0,
+        Config::Get(Config::MAIN_DISABLE_ICACHE) ? 1 : 0,
+        Config::Get(Config::MAIN_ACCURATE_CPU_CACHE) ? 1 : 0,
+        Config::Get(Config::MAIN_FASTMEM) ? 1 : 0,
+        Config::Get(Config::MAIN_JIT_FOLLOW_BRANCH) ? 1 : 0,
+        Config::Get(Config::MAIN_MMU) ? 1 : 0, Config::Get(Config::MAIN_CPU_THREAD) ? 1 : 0,
+        Config::Get(Config::MAIN_OVERCLOCK_ENABLE) ? Config::Get(Config::MAIN_OVERCLOCK) : 1.0f,
+        Config::Get(Config::MAIN_SYNC_ON_SKIP_IDLE) ? 1 : 0, Config::AreCheatsEnabled() ? 1 : 0,
+        Config::Get(Config::MAIN_GPU_DETERMINISM_MODE), Config::Get(Config::MAIN_DSP_HLE) ? 1 : 0,
+        Config::Get(Config::MAIN_DSP_THREAD) ? 1 : 0,
+        Config::Get(Config::MAIN_GBA_PRACTICE_DUMMY) ? 1 : 0,
+        Config::Get(Config::MAIN_ENABLE_DEBUGGING) ? 1 : 0,
+        ppc.GetPPCState().software_fpu_flush ? 1 : 0,
+        NetPlay::IsNetPlayRunning() ? 1 : 0,
+        Common::GetScmRevGitStr()));
+  }
+#endif
   UpdateTitle(system);
 
   // Become the CPU thread.

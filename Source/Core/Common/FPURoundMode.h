@@ -15,7 +15,14 @@ enum RoundMode : u32
   ROUND_DOWN = 3
 };
 
-void SetSIMDMode(RoundMode rounding_mode, bool non_ieee_mode);
+// software_output_flush: the running core flushes denormal OUTPUTS itself
+// (interpreter cores on an ARM64 host without FEAT_AFP), so the host FPU must
+// not flush at all -- hardware FZ there would also flush INPUTS, which the
+// Gekko never does and x86-64 (FTZ only) does not either. Keeps the Cached
+// Interpreter bit-identical between x86-64 and Apple M1-M3 class hosts
+// (residual: the FMA tie-correction intermediates in NI_madd_msub are raw host
+// results and can differ for denormal intermediates -- contrived for GC titles).
+void SetSIMDMode(RoundMode rounding_mode, bool non_ieee_mode, bool software_output_flush = false);
 
 /*
  * There are two different flavors of float to int conversion:

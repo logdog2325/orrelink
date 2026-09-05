@@ -172,6 +172,12 @@ void OnDeviceDestroyed()
   }
 }
 
+bool IsSessionOpen()
+{
+  std::lock_guard lock(s_mutex);
+  return s_file.is_open();
+}
+
 void NoteBoot(const std::string& line)
 {
   std::lock_guard lock(s_mutex);

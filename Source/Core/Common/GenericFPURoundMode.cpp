@@ -8,7 +8,7 @@
 // Generic, do nothing
 namespace Common::FPU
 {
-void SetSIMDMode(RoundMode rounding_mode, bool non_ieee_mode)
+void SetSIMDMode(RoundMode rounding_mode, bool non_ieee_mode, bool /*software_output_flush*/)
 {
 }
 void SaveSIMDState()

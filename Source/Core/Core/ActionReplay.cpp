@@ -160,6 +160,12 @@ std::vector<ARCode> ApplyAndReturnCodes(std::span<const ARCode> codes)
   return s_active_codes;
 }
 
+std::vector<ARCode> GetActiveCodesSnapshot()
+{
+  std::lock_guard guard(s_lock);
+  return s_active_codes;
+}
+
 void AddCode(ARCode code)
 {
   if (!Config::AreCheatsEnabled())

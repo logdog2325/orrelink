@@ -28,6 +28,7 @@
 #include "Common/CommonPaths.h"
 #include "Common/ENet.h"
 #include "Common/FileUtil.h"
+#include "Common/Hash.h"
 #include "Common/Logging/Log.h"
 #include "Common/MsgHandler.h"
 #include "Common/SFMLHelper.h"
@@ -65,6 +66,7 @@
 #include "Core/IOS/Uids.h"
 #include "Core/NetPlayClient.h"  //for NetPlayUI
 #include "Core/NetPlayCommon.h"
+#include "Core/PowerPC/PowerPC.h"
 #include "Core/SyncIdentifier.h"
 
 #include "DiscIO/Enums.h"
@@ -548,6 +550,7 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
 
   received_packet >> new_player.revision;
   received_packet >> new_player.name;
+  received_packet >> new_player.arch;  // absent -> stays "" -> treated as "other"
 
   if (StringUTF8CodePointCount(new_player.name) > MAX_NAME_LENGTH)
     return ConnectionError::NameTooLong;
@@ -1704,6 +1707,41 @@ bool NetPlayServer::SetupNetSettings()
   // Copy all relevant settings
   settings.cpu_thread = Config::Get(Config::MAIN_CPU_THREAD);
   settings.cpu_core = Config::Get(Config::MAIN_CPU_CORE);
+  // OrreLink cross-architecture determinism. The enum above is only portable
+  // between machines of the same architecture: an x86_64 build cannot construct
+  // JITARM64 (JitInterface.cpp), PowerPC.cpp then silently substitutes JIT64,
+  // and two different recompilers split blocks differently -- so the emulated
+  // tick a time-base read sees differs by a few dozen cycles, XD's link key and
+  // battle RNG are time-base derived, and the two games drift apart from the
+  // first GBA link (the v1.5.9 macOS-vs-Windows desync, proven from both logs).
+  // Same-arch rooms keep the host's core untouched: macOS arm64 and Android
+  // arm64 both run JITARM64, and the AYN Thor cannot afford anything slower.
+  {
+    const bool mixed = RoomMixesCpuArchitectures();
+    const bool override_on = Config::Get(Config::NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH);
+    const std::string archs = DescribeRoomArchitectures();
+    std::string line;
+    if (mixed && override_on && settings.cpu_core != PowerPC::CPUCore::Interpreter)
+    {
+      settings.cpu_core = PowerPC::CPUCore::CachedInterpreter;
+      line = fmt::format("Mixed CPU architectures ({}): all players use the Cached Interpreter "
+                         "this battle so both sides compute identical results (slower than JIT).",
+                         archs);
+    }
+    else if (mixed && !override_on)
+    {
+      line = fmt::format("Mixed CPU architectures ({}) with the common-core override OFF: the "
+                         "two recompilers are not identical, a desync is likely.",
+                         archs);
+    }
+    if (!line.empty())
+      SendChatMessage(line);  // pid 0 notice; the host's own loopback client shows it too
+#ifdef HAS_LIBMGBA
+    GBADetectLog::NoteBoot(
+        fmt::format("netplay corepolicy archs=\"{}\" mixed={} override={} cpu_core={}", archs,
+                    mixed ? 1 : 0, override_on ? 1 : 0, static_cast<int>(settings.cpu_core)));
+#endif
+  }
   settings.enable_cheats = Config::AreCheatsEnabled();
   settings.enable_hardcore = AchievementManager::GetInstance().IsHardcoreModeActive();
   settings.selected_language = Config::Get(Config::MAIN_GC_LANGUAGE);
@@ -1762,7 +1800,11 @@ bool NetPlayServer::SetupNetSettings()
   settings.divide_by_zero_exceptions = Config::Get(Config::MAIN_DIVIDE_BY_ZERO_EXCEPTIONS);
   settings.fprf = Config::Get(Config::MAIN_FPRF);
   settings.accurate_nans = Config::Get(Config::MAIN_ACCURATE_NANS);
-  settings.accurate_fmadds = Config::Get(Config::MAIN_ACCURATE_FMADDS);
+  // Forced, not synced: true is Dolphin's default and makes both JITs and the
+  // interpreter agree on single-precision fused ops. It was silently false on
+  // every netplay client until v1.5.10 because the field was never serialized
+  // (see StartGame / OnStartGame).
+  settings.accurate_fmadds = true;
   settings.disable_icache = Config::Get(Config::MAIN_DISABLE_ICACHE);
   settings.sync_on_skip_idle = Config::Get(Config::MAIN_SYNC_ON_SKIP_IDLE);
   settings.sync_gpu = Config::Get(Config::MAIN_SYNC_GPU);
@@ -1822,6 +1864,36 @@ bool NetPlayServer::DoAllPlayersHaveIPLDump() const
 bool NetPlayServer::DoAllPlayersHaveHardwareFMA() const
 {
   return std::ranges::all_of(m_players, [](const auto& p) { return p.second.has_hardware_fma; });
+}
+
+// The room's distinct CPU-architecture classes in join order. The host is pid 1
+// and is included: it connects through OnConnect like everyone else.
+std::string NetPlayServer::DescribeRoomArchitectures()
+{
+  std::lock_guard lkp(m_crit.players);
+  std::vector<std::string> seen;
+  for (const auto& p : std::views::values(m_players))
+  {
+    const std::string a = p.arch.empty() ? "other" : p.arch;
+    if (std::ranges::find(seen, a) == seen.end())
+      seen.push_back(a);
+  }
+  return fmt::format("{}", fmt::join(seen, " + "));
+}
+
+bool NetPlayServer::RoomMixesCpuArchitectures()
+{
+  std::lock_guard lkp(m_crit.players);
+  std::optional<std::string> first;
+  for (const auto& p : std::views::values(m_players))
+  {
+    const std::string a = p.arch.empty() ? "other" : p.arch;
+    if (!first)
+      first = a;
+    else if (*first != a)
+      return true;
+  }
+  return false;
 }
 
 struct SaveSyncInfo
@@ -1972,6 +2044,7 @@ bool NetPlayServer::StartGame()
   spac << m_settings.divide_by_zero_exceptions;
   spac << m_settings.fprf;
   spac << m_settings.accurate_nans;
+  spac << m_settings.accurate_fmadds;  // v1.5.10: was never serialized (always false on clients)
   spac << m_settings.disable_icache;
   spac << m_settings.sync_on_skip_idle;
   spac << m_settings.sync_gpu;
@@ -2480,6 +2553,22 @@ bool NetPlayServer::SyncCodes()
 #endif  // USE_RETRO_ACHIEVEMENTS
     // Create an AR Code Vector with just the active codes
     std::vector<ActionReplay::ARCode> active_codes = ActionReplay::ApplyAndReturnCodes(codes);
+#ifdef HAS_LIBMGBA
+    {
+      std::string blob;
+      size_t lines = 0;
+      for (const ActionReplay::ARCode& active_code : active_codes)
+      {
+        for (const ActionReplay::AREntry& op : active_code.ops)
+        {
+          blob += fmt::format("{:08X} {:08X}\n", op.cmd_addr, op.value);
+          ++lines;
+        }
+      }
+      GBADetectLog::NoteBoot(
+          fmt::format("ar synced-send lines={} crc32={:08x}", lines, Common::ComputeCRC32(blob)));
+    }
+#endif
 
     // Determine Codelist Size
     u16 codelines = 0;

@@ -52,5 +52,9 @@ extern const Info<bool> NETPLAY_STRICT_SETTINGS_SYNC;
 extern const Info<std::string> NETPLAY_NETWORK_MODE;
 extern const Info<bool> NETPLAY_GOLF_MODE_OVERLAY;
 extern const Info<bool> NETPLAY_HIDE_REMOTE_GBAS;
+// OrreLink: when the room mixes x86_64 and arm64 players, put every player on the
+// Cached Interpreter (the one core all platforms build identically, with identical
+// block-boundary timing). Same-arch rooms are never touched.
+extern const Info<bool> NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH;
 
 }  // namespace Config
