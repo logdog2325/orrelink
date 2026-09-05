@@ -50,6 +50,10 @@ public:
 
   bool DoAllPlayersHaveIPLDump() const;
   bool DoAllPlayersHaveHardwareFMA() const;
+  // OrreLink cross-architecture policy (see SetupNetSettings). Non-const: they
+  // take m_crit.players, which the const helper above does not.
+  bool RoomMixesCpuArchitectures();
+  std::string DescribeRoomArchitectures();
   bool StartGame();
   bool RequestStartGame();
   void AbortGameStart();
@@ -96,6 +100,7 @@ private:
     PlayerId pid{};
     std::string name;
     std::string revision;
+    std::string arch;  // "x86_64" | "arm64" | "other" (empty if a peer ever omits it)
     SyncIdentifierComparison game_status = SyncIdentifierComparison::Unknown;
     bool has_ipl_dump = false;
     bool has_hardware_fma = false;

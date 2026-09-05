@@ -49,6 +49,9 @@ void ApplyCodes(std::span<const ARCode> codes, const std::string& game_id, u16 r
 void SetSyncedCodesAsActive();
 void UpdateSyncedCodes(std::span<const ARCode> codes);
 std::vector<ARCode> ApplyAndReturnCodes(std::span<const ARCode> codes);
+// OrreLink: the codes that will run this session (synced set on a guest, INI set
+// on the host/solo), for the per-session gba_detect log.
+std::vector<ARCode> GetActiveCodesSnapshot();
 void AddCode(ARCode new_code);
 size_t CountEnabledCodes();
 void LoadAndApplyCodes(const Common::IniFile& global_ini, const Common::IniFile& local_ini,
