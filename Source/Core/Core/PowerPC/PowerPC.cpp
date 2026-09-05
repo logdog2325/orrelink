@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "Common/Assert.h"
+#include "Common/CPUDetect.h"
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/FPURoundMode.h"
@@ -205,6 +206,7 @@ void PowerPCManager::InitializeCPUCore(CPUCore cpu_core)
   auto& interpreter = m_system.GetInterpreter();
   interpreter.Init();
 
+  [[maybe_unused]] CPUCore effective = cpu_core;  // what actually got instantiated
   switch (cpu_core)
   {
   case CPUCore::Interpreter:
@@ -217,12 +219,33 @@ void PowerPCManager::InitializeCPUCore(CPUCore cpu_core)
     {
       WARN_LOG_FMT(POWERPC, "CPU core {} not available. Falling back to default.",
                    static_cast<int>(cpu_core));
-      m_cpu_core_base = m_system.GetJitInterface().InitJitCore(DefaultCPUCore());
+      effective = DefaultCPUCore();
+      m_cpu_core_base = m_system.GetJitInterface().InitJitCore(effective);
     }
     break;
   }
 
   m_mode = m_cpu_core_base == &interpreter ? CoreMode::Interpreter : CoreMode::JIT;
+
+  // OrreLink cross-architecture determinism: interpreter cores must produce the
+  // same bits on x86-64 (host FTZ: outputs only) and ARM64. Hosts without
+  // FEAT_AFP (Apple M1-M3, Snapdragon 8 Gen 2) can only flush inputs+outputs in
+  // hardware, so for those cores switch to the interpreter's software output
+  // flush (ForceSingle/ForceDouble consult cpu_info.bFlushToZero) and keep the
+  // host FPU from flushing (see SetSIMDMode). The JITs never read
+  // bFlushToZero, so a later JIT session is unaffected; the detected value is
+  // restored anyway.
+  {
+    static const bool detected_flush_to_zero = cpu_info.bFlushToZero;
+#ifdef _M_ARM_64
+    const bool interpreter_core =
+        m_cpu_core_base == &interpreter || effective == CPUCore::CachedInterpreter;
+    m_ppc_state.software_fpu_flush = interpreter_core && !cpu_info.bAFP;
+#else
+    m_ppc_state.software_fpu_flush = false;
+#endif
+    cpu_info.bFlushToZero = m_ppc_state.software_fpu_flush ? false : detected_flush_to_zero;
+  }
 }
 
 std::span<const CPUCore> AvailableCPUCores()
@@ -701,7 +724,7 @@ void RoundingModeUpdated(PowerPCState& ppc_state)
   // The rounding mode is separate for each thread, so this must run on the CPU thread
   ASSERT(Core::IsCPUThread());
 
-  Common::FPU::SetSIMDMode(ppc_state.fpscr.RN, ppc_state.fpscr.NI);
+  Common::FPU::SetSIMDMode(ppc_state.fpscr.RN, ppc_state.fpscr.NI, ppc_state.software_fpu_flush);
 }
 
 void MMCRUpdated(PowerPCState& ppc_state)

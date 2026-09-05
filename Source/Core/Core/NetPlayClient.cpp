@@ -31,6 +31,7 @@
 #include "Common/Crypto/SHA1.h"
 #include "Common/ENet.h"
 #include "Common/FileUtil.h"
+#include "Common/Hash.h"
 #include "Common/Logging/Log.h"
 #include "Common/MsgHandler.h"
 #include "Common/NandPaths.h"
@@ -70,6 +71,7 @@
 #include "Core/IOS/Uids.h"
 #include "Core/Movie.h"
 #include "Core/NetPlayCommon.h"
+#include "Core/PowerPC/PowerPC.h"
 #include "Core/SyncIdentifier.h"
 #include "Core/System.h"
 #include "DiscIO/Blob.h"
@@ -362,8 +364,12 @@ bool NetPlayClient::Connect()
   // send connect message
   sf::Packet packet;
   packet << Common::GetScmRevGitStr();
-  packet << Common::GetNetplayDolphinVer();
+  // The Revision column in every room UI then reads e.g. "... Mac arm64" /
+  // "... Win x86_64" with no UI change; the separate arch field below is what
+  // the host's cross-architecture policy uses (NetPlayServer::SetupNetSettings).
+  packet << Common::GetNetplayDolphinVer() + " " + LocalCpuArch();
   packet << m_player_name;
+  packet << std::string(LocalCpuArch());
   Send(packet);
   enet_host_flush(m_client);
   sf::Packet rpac;
@@ -421,7 +427,7 @@ bool NetPlayClient::Connect()
     Player player;
     player.name = m_player_name;
     player.pid = m_pid;
-    player.revision = Common::GetNetplayDolphinVer();
+    player.revision = Common::GetNetplayDolphinVer() + " " + LocalCpuArch();
 
     // add self to player list
     m_players[m_pid] = player;
@@ -963,6 +969,18 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     packet >> m_current_game;
     packet >> m_net_settings.cpu_thread;
     packet >> m_net_settings.cpu_core;
+    // Never let PowerPC.cpp's silent fallback pick this machine's native JIT when
+    // the host named a core this build cannot construct. Unreachable under the
+    // host's mixed-arch policy; if it ever fires, use the one core every platform
+    // has and say so, so a JIT-vs-JIT mismatch can never hide again.
+    if (std::ranges::find(PowerPC::AvailableCPUCores(), m_net_settings.cpu_core) ==
+        PowerPC::AvailableCPUCores().end())
+    {
+      m_dialog->AppendChat(fmt::format(
+          "Host asked for CPU core {} which this build cannot run; using the Cached Interpreter.",
+          static_cast<int>(m_net_settings.cpu_core)));
+      m_net_settings.cpu_core = PowerPC::CPUCore::CachedInterpreter;
+    }
     packet >> m_net_settings.enable_cheats;
     packet >> m_net_settings.enable_hardcore;
     packet >> m_net_settings.selected_language;
@@ -1001,6 +1019,7 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     packet >> m_net_settings.divide_by_zero_exceptions;
     packet >> m_net_settings.fprf;
     packet >> m_net_settings.accurate_nans;
+    packet >> m_net_settings.accurate_fmadds;
     packet >> m_net_settings.disable_icache;
     packet >> m_net_settings.sync_on_skip_idle;
     packet >> m_net_settings.sync_gpu;
@@ -1585,6 +1604,17 @@ void NetPlayClient::OnSyncCodesDataAR(sf::Packet& packet)
     }
   }
 
+#ifdef HAS_LIBMGBA
+  // OrreLink: what this guest received, so the host's 'ar synced-send' and this
+  // 'ar synced-recv' can be compared crc-for-crc in the two gba_detect logs.
+  {
+    std::string blob;
+    for (const ActionReplay::AREntry& op : arcode.ops)
+      blob += fmt::format("{:08X} {:08X}\n", op.cmd_addr, op.value);
+    GBADetectLog::NoteBoot(fmt::format("ar synced-recv lines={} crc32={:08x}", arcode.ops.size(),
+                                       Common::ComputeCRC32(blob)));
+  }
+#endif
   // Add arcode containing all codes to AR Code vector
   synced_codes.push_back(std::move(arcode));
 

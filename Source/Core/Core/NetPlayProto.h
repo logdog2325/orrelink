@@ -43,6 +43,24 @@ using PadIndex = s8;
 using PadMappingArray = std::array<PlayerId, 4>;
 using GBAConfigArray = std::array<GBAConfig, 4>;
 
+// OrreLink: this build's CPU-architecture class, sent at connect so the host can
+// refuse to hand an x86_64 guest a JITARM64 core enum (or an arm64 guest JIT64):
+// PowerPC.cpp's InitializeCPUCore would otherwise fall back to the platform JIT in
+// silence, and two different recompilers are neither timing- nor FP-identical
+// (the v1.5.9 macOS-vs-Windows desync). _M_X86_64 / _M_ARM_64 come from the root
+// CMakeLists.txt (the Android NDK aarch64 build takes the same branch) and from
+// Source/VSProps/Base.Dolphin.props.
+constexpr const char* LocalCpuArch()
+{
+#if defined(_M_X86_64)
+  return "x86_64";
+#elif defined(_M_ARM_64)
+  return "arm64";
+#else
+  return "other";
+#endif
+}
+
 struct NetSettings
 {
   bool cpu_thread = false;

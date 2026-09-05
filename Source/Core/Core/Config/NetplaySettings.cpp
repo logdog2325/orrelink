@@ -60,5 +60,7 @@ const Info<std::string> NETPLAY_NETWORK_MODE{{System::Main, "NetPlay", "NetworkM
                                              "fixeddelay"};
 const Info<bool> NETPLAY_GOLF_MODE_OVERLAY{{System::Main, "NetPlay", "GolfModeOverlay"}, true};
 const Info<bool> NETPLAY_HIDE_REMOTE_GBAS{{System::Main, "NetPlay", "HideRemoteGBAs"}, false};
+const Info<bool> NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH{
+    {System::Main, "NetPlay", "ForceCommonCoreOnMixedArch"}, true};
 
 }  // namespace Config

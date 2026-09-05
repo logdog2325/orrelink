@@ -12,7 +12,7 @@ namespace Common::FPU
 static u32 saved_sse_state = _mm_getcsr();
 static const u32 default_sse_state = _mm_getcsr();
 
-void SetSIMDMode(RoundMode rounding_mode, bool non_ieee_mode)
+void SetSIMDMode(RoundMode rounding_mode, bool non_ieee_mode, bool /*software_output_flush*/)
 {
   // OR-mask for disabling FPU exceptions (bits 7-12 in the MXCSR register)
   const u32 EXCEPTION_MASK = 0x1F80;
