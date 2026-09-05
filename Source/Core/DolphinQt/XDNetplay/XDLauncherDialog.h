@@ -75,6 +75,7 @@ private:
   void RefreshChecklist();
   void RefreshSaveSlots();
   void AutoDiscoverFromGameFolder();
+  void FitToScreen();
 
   std::shared_ptr<const UICommon::GameFile> FindXdGame() const;
 
@@ -144,5 +145,6 @@ private:
   // The worker thread is detached and only ever touches the GUI through
   // QueueOnObject, so this flag lives on the GUI thread alone.
   bool m_searching = false;
+  bool m_first_show_sized = false;
   TeamEditorDialog* m_team_editor = nullptr;
 };

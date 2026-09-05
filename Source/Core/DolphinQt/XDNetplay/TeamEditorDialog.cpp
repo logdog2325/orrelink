@@ -10,6 +10,7 @@
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QGridLayout>
+#include <QGuiApplication>
 #include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -21,6 +22,7 @@
 #include <QShowEvent>
 #include <QUrl>
 #include <QHBoxLayout>
+#include <QScreen>
 #include <QVBoxLayout>
 
 #include "Common/Config/Config.h"
@@ -158,8 +160,12 @@ void TeamEditorDialog::CreateMainLayout()
   layout->addWidget(m_log_label);
 
   setLayout(layout);
-  // Never narrower than the wrapped notes' minimum width (MakeNoteLabel).
-  resize(std::max(520, minimumSizeHint().width()), 640);
+  // Never narrower than the wrapped notes' minimum width (MakeNoteLabel); never
+  // taller than the screen's working area minus window chrome (720-px displays).
+  const QRect avail =
+      (screen() ? screen() : QGuiApplication::primaryScreen())->availableGeometry();
+  resize(std::max(520, minimumSizeHint().width()),
+         std::max(minimumSizeHint().height(), std::min(640, avail.height() - 48)));
 }
 
 void TeamEditorDialog::ConnectWidgets()

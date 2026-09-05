@@ -234,6 +234,16 @@ void CPUInfo::Detect()
   bSHA1 = true;
   bSHA2 = true;
   bCRC32 = true;
+  // FEAT_AFP (Apple M4 class and later): with it the hardware can flush denormal
+  // outputs only, exactly like the Gekko; without it (M1-M3) FZ also flushes
+  // inputs, which OrreLink's interpreter-core path works around in software.
+  // macOS 12+ exposes it as an int sysctl.
+  {
+    int afp = 0;
+    size_t len = sizeof(afp);
+    if (sysctlbyname("hw.optional.arm.FEAT_AFP", &afp, &len, nullptr, 0) == 0)
+      bAFP = afp != 0;
+  }
 #elif defined(_WIN32)
   // NOTE All this info is from cpu core 0 only.
 
