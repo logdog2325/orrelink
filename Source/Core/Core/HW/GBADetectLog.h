@@ -62,6 +62,11 @@ void LogSummary(int channel, u64 tick, bool rom, bool gba, bool loc, bool lk, u3
 // yet: the line is queued (bounded) and flushed right under the banner of the
 // NEXT session's log, so the log that describes a battle also says what was
 // configured into it. With a session already open it is written immediately.
+// True while a session file is open (a GBA device exists this boot). Emitters
+// that run after HW::Init use it to avoid parking a line in the pre-boot ring,
+// where it would surface under a later, unrelated session's banner.
+bool IsSessionOpen();
+
 void NoteBoot(const std::string& line);
 
 // Append one line AFTER the session's log has already been closed.
