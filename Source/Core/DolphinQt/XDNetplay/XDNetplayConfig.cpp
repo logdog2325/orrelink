@@ -274,10 +274,13 @@ namespace
 {
 // The keyboard device of this platform: DInput "Keyboard Mouse" on Windows, Quartz on
 // macOS, XInput2 on Linux (the same three InputConfig treats as keyboard sources).
-// EmulatedController::LoadDefaults binds to whatever device sorts FIRST, which is a
-// gamepad whenever one is plugged in -- and the GBA defaults are key names ("X", "Z",
-// "RETURN") that do not exist on a gamepad, so the GBA silently reads nothing. That was
-// the field report: a Windows joiner with a controller attached had no GBA input.
+// Keyboards sort first in ControllerInterface (DEFAULT_DEVICE_SORT_PRIORITY), so
+// LoadDefaults normally lands on one already; picking it explicitly guards the cases
+// where it does not (a backend that failed to enumerate the keyboard at startup), since
+// the GBA defaults are key names ("X", "Z", "RETURN") that no gamepad has. The actual
+// field failure (a Windows joiner with no GBA input) came from the older version of this
+// file: it only defaulted slot 0, never called UpdateReferences, and treated a mapping
+// to a device that no longer exists as "mapped".
 std::optional<ciface::Core::DeviceQualifier> KeyboardDevice()
 {
   for (const std::string& device : g_controller_interface.GetAllDeviceStrings())
@@ -344,7 +347,6 @@ bool ApplyDefaultGbaInput()
   config->SaveConfig();
   return GbaInputMapped();
 }
-
 
 bool SeedTeamSaves()
 {
