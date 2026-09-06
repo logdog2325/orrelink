@@ -256,6 +256,7 @@
     <ClInclude Include="Core\HLE\HLE_Misc.h" />
     <ClInclude Include="Core\HLE\HLE_OS.h" />
     <ClInclude Include="Core\HLE\HLE_VarArgs.h" />
+    <ClInclude Include="Core\HLE\HLE_XD.h" />
     <ClInclude Include="Core\HLE\HLE.h" />
     <ClInclude Include="Core\Host.h" />
     <ClInclude Include="Core\HotkeyManager.h" />
@@ -982,6 +983,7 @@
     <ClCompile Include="Core\HLE\HLE_Misc.cpp" />
     <ClCompile Include="Core\HLE\HLE_OS.cpp" />
     <ClCompile Include="Core\HLE\HLE_VarArgs.cpp" />
+    <ClCompile Include="Core\HLE\HLE_XD.cpp" />
     <ClCompile Include="Core\HLE\HLE.cpp" />
     <ClCompile Include="Core\HotkeyManager.cpp" />
     <ClCompile Include="Core\HW\AddressSpace.cpp" />

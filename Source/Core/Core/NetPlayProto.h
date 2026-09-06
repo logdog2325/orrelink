@@ -140,6 +140,11 @@ struct NetSettings
   bool golf_mode = false;
   bool use_fma = false;
   bool hide_remote_gbas = false;
+  // OrreLink v1.5.11: XD deterministic clock (Core/HLE/HLE_XD.cpp). Serialized LAST in the
+  // StartGame packet, after the SRAM bytes, in this order.
+  bool xd_deterministic_clock = false;
+  u32 xd_clock_salt = 0;
+  u32 xd_rng_seed = 0;
 
   Sram sram;
 
