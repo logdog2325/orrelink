@@ -17,8 +17,11 @@
 
 #include <QAbstractItemModel>
 #include <QCheckBox>
+#include <QDesktopServices>
+#include <QDir>
 #include <QComboBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QGridLayout>
 #include <QGuiApplication>
 #include <QGroupBox>
@@ -29,9 +32,11 @@
 #include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QStandardPaths>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
+#include <QUrl>
 #include <QWidget>
 
 #include "Common/Config/Config.h"
@@ -587,10 +592,23 @@ void XDLauncherDialog::CreateMainLayout()
   // names the wrong window is worse than no checkbox.
   m_show_on_startup_check = new QCheckBox(tr("Show the Pokémon Hub at startup"));
   m_show_on_startup_check->setChecked(ShowOnStartup());
+  // Share Log: the desktop counterpart of Android's Share button. Every session
+  // writes GBA/gba_detect_<date>.log under the user folder -- on Windows that is
+  // %APPDATA%\Dolphin Emulator, a hidden folder people cannot find -- so this
+  // saves the newest one where the player picks (Desktop by default) and opens
+  // that folder, ready to drop into Discord.
+  m_share_log_button = new NonDefaultQPushButton(tr("Share Log..."));
+  m_share_log_button->setToolTip(
+      tr("Save the newest session log (gba_detect_*.log) to a place of your choice and open "
+         "that folder, so you can send it. Send the newest one after a problem."));
+  auto* footer_row = new QHBoxLayout;
+  footer_row->addWidget(m_show_on_startup_check);
+  footer_row->addStretch(1);
+  footer_row->addWidget(m_share_log_button);
   auto* footer = new QVBoxLayout;
   const QMargins m = layout->contentsMargins();
   footer->setContentsMargins(m.left(), 0, m.right(), m.bottom());
-  footer->addWidget(m_show_on_startup_check);
+  footer->addLayout(footer_row);
 
   auto* outer = new QVBoxLayout;
   outer->setContentsMargins(0, 0, 0, 0);
@@ -624,6 +642,49 @@ void XDLauncherDialog::FitToScreen()
   r.moveLeft(std::clamp(r.left(), avail.left(), std::max(avail.left(), avail.right() - r.width())));
   r.moveTop(std::clamp(r.top(), top_min, std::max(top_min, avail.bottom() - 8 - r.height())));
   move(r.topLeft());
+}
+
+void XDLauncherDialog::OnShareLog()
+{
+  const QString dir = QString::fromStdString(File::GetUserPath(D_GBAUSER_IDX));
+  const QDir logs(dir);
+  // QDir::Time lists the most recently modified first.
+  const QStringList files =
+      logs.entryList({QStringLiteral("gba_detect_*.log")}, QDir::Files, QDir::Time);
+  if (files.isEmpty())
+  {
+    ModalMessageBox::information(
+        this, tr("Share Log"),
+        tr("No session log yet. One is written every time a game with GBAs runs, under:\n%1")
+            .arg(QDir::toNativeSeparators(dir)));
+    QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+    return;
+  }
+  const QString newest = logs.filePath(files.first());
+  const QString desktop = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
+  const QString suggested = QDir(desktop).filePath(files.first());
+  const QString target = QFileDialog::getSaveFileName(this, tr("Save the newest session log as..."),
+                                                      suggested, tr("Log files (*.log)"));
+  if (target.isEmpty())
+    return;
+  if (QFileInfo(target).absoluteFilePath() == QFileInfo(newest).absoluteFilePath())
+  {
+    // They picked the log itself: nothing to copy, just show it.
+    QDesktopServices::openUrl(QUrl::fromLocalFile(logs.absolutePath()));
+    return;
+  }
+  if (QFile::exists(target) && !QFile::remove(target))
+  {
+    ModalMessageBox::critical(this, tr("Share Log"), tr("Could not replace %1").arg(target));
+    return;
+  }
+  if (!QFile::copy(newest, target))
+  {
+    ModalMessageBox::critical(this, tr("Share Log"),
+                              tr("Could not copy the log to %1").arg(target));
+    return;
+  }
+  QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(target).absolutePath()));
 }
 
 void XDLauncherDialog::ConnectWidgets()
@@ -705,6 +766,7 @@ void XDLauncherDialog::ConnectWidgets()
   connect_style_combo(m_style_music_combo, Config::MAIN_XD_STYLE_MUSIC);
   connect_style_combo(m_style_venue_combo, Config::MAIN_XD_STYLE_VENUE);
 
+  connect(m_share_log_button, &QPushButton::clicked, this, &XDLauncherDialog::OnShareLog);
   connect(m_show_on_startup_check, &QCheckBox::toggled, this, [](bool checked) {
     Settings::GetQSettings().setValue(QStringLiteral("xdnetplay/showlauncheronstartup"), checked);
   });
@@ -788,7 +850,8 @@ void XDLauncherDialog::RefreshChecklist()
   const bool input_mapped = XDNetplay::GbaInputMapped();
   SetRowState(m_gba_input_row.status, input_mapped);
   m_gba_input_row.description->setText(
-      input_mapped ? tr("GBA controls mapped (your GBA is \"GBA 1\" in Controllers)") :
+      input_mapped ?
+          tr("GBA controls mapped (you are \"GBA 1\" when joining, \"GBA 2\" when hosting)") :
                      tr("GBA controls not mapped — your GBA will not respond to input"));
   RefreshSaveSlots();
 }
@@ -974,15 +1037,17 @@ void XDLauncherDialog::OnFixGbaInput()
   {
     ModalMessageBox::warning(
         this, tr("OrreLink"),
-        tr("Could not set default GBA controls. Map them under Controllers > GBA Ports > GBA 1."));
+        tr("Could not set default GBA controls. Map them under Controllers > GBA Ports: GBA 1 "
+           "(joining) and GBA 2 (hosting)."));
     return;
   }
   ModalMessageBox::information(
       this, tr("OrreLink"),
-      tr("Default GBA controls applied to GBA 1:\n\n"
+      tr("Default GBA controls applied to every GBA slot (you are GBA 1 when joining, GBA 2 "
+         "when hosting):\n\n"
          "A = X,  B = Z,  Start = Enter,  Select = Backspace\n"
          "D-Pad = T / G / F / H,  L = Q,  R = W\n\n"
-         "Change them any time under Controllers > GBA Ports > GBA 1."));
+         "Change them any time under Controllers > GBA Ports."));
   RefreshChecklist();
 }
 
