@@ -158,11 +158,18 @@ void EmulatedController::LoadDefaults(const ControllerInterface& ciface)
 
 void ControlGroupContainer::SetInputOverrideFunction(InputOverrideFunction override_func)
 {
+  // Writers ran unlocked while GCPad::GetInput()/GBAPad::GetInput() read the function on the
+  // CPU thread under s_get_state_mutex; libc++'s move-assign nulls the target before cloning
+  // the new one, so a poll landing in that window called an empty std::function and aborted
+  // (Android, bad_function_call at team preview -- the touch overlay re-registered per touch
+  // event). Take the same lock the readers hold.
+  const auto lock = EmulatedController::GetStateLock();
   m_input_override_function = std::move(override_func);
 }
 
 void ControlGroupContainer::ClearInputOverrideFunction()
 {
+  const auto lock = EmulatedController::GetStateLock();
   m_input_override_function = {};
 }
 
