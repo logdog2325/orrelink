@@ -99,7 +99,7 @@ object Bk4Factory {
             0
         }
         mon.exp = Gen4Growth.expFor(level, species.id)
-        mon.friendship = DEFAULT_FRIENDSHIP
+        mon.friendship = set.happiness ?: DEFAULT_FRIENDSHIP
         mon.ability = abilityId
         mon.language = LANGUAGE_ENGLISH
 

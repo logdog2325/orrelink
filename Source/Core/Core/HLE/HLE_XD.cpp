@@ -2,6 +2,7 @@
 
 #include "Core/HLE/HLE_XD.h"
 
+#include <algorithm>
 #include <array>
 
 #include "Common/CommonTypes.h"
@@ -33,6 +34,22 @@ constexpr u32 OP_MFTB_R3 = 0x7C6C42E6;
 // read only by 0x8005c6e4 / 0x80150e54 / 0x80151018. Pure game state: identical on every
 // machine that executes the same instruction stream.
 constexpr u32 ADDR_FRAME_COUNTER = 0x804EA8A8;
+// v1.5.11 used that pass counter as the clock unit; XD runs one pass per TWO VI fields in
+// battle (flip every 2nd retrace, 0x802aebd4(1)), so the game measured half the real frame
+// delta and every delta-scaled system ran at half rate (field-confirmed). It is now only
+// the Ordinal reset key and the pf= log field.
+// v1.5.12 clock unit: the SDK's own VI retrace count (r13-0x51cc). ++ once per DI0/DI1
+// interrupt in __VIRetraceHandler 0x800b8588 (stw 0x800b8688), zeroed once in VIInit
+// (0x800b8b9c), read by the game only in VIWaitForRetrace 0x800b8fe0 / VIGetRetraceCount
+// 0x800ba25c. DI1 = line 1, DI0 = line nhlines/2+1 (__VIInit 0x800b8a94 / 0x800b8ab8):
+// 59.94 Hz in 480i and 480p, independent of what the game does per pass.
+constexpr u32 ADDR_RETRACE_COUNT = 0x804EAC54;
+// The ONLY site that samples it: the main loop's 'now' stamp. From the third pass on it runs
+// thousands of cycles after the render task's end-of-frame wait was released from inside
+// the retrace interrupt path, so the read is program-ordered after the handler on every
+// machine and cannot straddle the block-split skew. Every other site gets the cached value.
+constexpr u32 LR_MAIN_NOW_STAMP = 0x8005c6ac;
+constexpr u32 CLOCK_MODEL = 2;
 
 // Call sites (LR = bl address + 4) with special values; everything else is "Default".
 constexpr u32 LR_RNG_SEEDER = 0x800efaa4;     // bl OSGetTime @0x800efaa0; stw r4 -> RNG 0x804E8610
@@ -88,6 +105,11 @@ u32 s_salt = 0;
 u32 s_seed = 0;
 u64 s_period = 0;
 u64 s_calls = 0;
+u32 s_fields = 0;        // clock unit: fields since the first locked 'now' stamp
+u32 s_retrace_base = 0;  // retraceCount value that corresponds to s_fields == 2
+u32 s_now_samples = 0;   // 'now' stamps seen this boot
+u64 s_last_now_ticks = 0;
+u64 s_last_now_delta = 0;
 std::array<Ordinal, ORDINAL_LRS.size()> s_ordinals{};
 
 Site Classify(u32 lr, size_t* ordinal_index)
@@ -124,6 +146,40 @@ u64 Base(Core::System& system)
   return system.GetCoreTiming().GetFakeTBStartValue() + s_salt;
 }
 
+void SampleFields(Core::System& system)
+{
+  const u64 ticks = system.GetCoreTiming().GetTicks();
+  s_last_now_delta = ticks - s_last_now_ticks;
+  s_last_now_ticks = ticks;
+  // An in-game soft reset reboots through the apploader: VIInit re-zeroes retraceCount and
+  // the main loop re-enters with its pass counter back at 0 while these statics persist
+  // (HLE::Reload keeps them). Re-run the boot anchoring instead of computing a ~2^32 jump.
+  if (s_now_samples > 2 && GetFrame(system) == 0)
+    s_now_samples = 0;
+  ++s_now_samples;
+  if (s_now_samples <= 2)
+  {
+    // Passes 1 and 2 can run before the render pipeline is phase-locked to the retrace
+    // (init leaves a buffer free, so the first end-of-frame waits may not block): don't
+    // read the counter there. Same values v1.5.11 produced on these passes (0, then 1).
+    s_fields = s_now_samples - 1;
+    return;
+  }
+  const u32 rc = system.GetMemory().Read_U32(ADDR_RETRACE_COUNT);
+  if (s_now_samples == 3)
+  {
+    // First locked read (pass 3 waits for pass 2's copy, which is pending on a flip in
+    // either boot ordering). Anchor here.
+    s_retrace_base = rc - 2;
+    s_fields = 2;
+    return;
+  }
+  // Fields really elapsed, never fewer than one per pass: hardware never measures a
+  // 0-field pass, and a loop that outruns the field rate (render task parked) then behaves
+  // exactly like v1.5.11. Catches up after loads and hitches like hardware does.
+  s_fields = std::max(rc - s_retrace_base, s_fields + 1);
+}
+
 u64 Read(Core::System& system, u32 lr)
 {
   size_t ord = 0;
@@ -132,6 +188,8 @@ u64 Read(Core::System& system, u32 lr)
   case Site::Passthrough:
     return system.GetSystemTimers().GetFakeTimeBase();
   case Site::FrameExact:
+    if (lr == LR_MAIN_NOW_STAMP)
+      SampleFields(system);
     return FrameExactTimeBase(system);
   case Site::InitStamp:
     // Hardware follows this stamp with two VIWaitForRetrace before the first swap; give the
@@ -143,14 +201,14 @@ u64 Read(Core::System& system, u32 lr)
     return FrameExactTimeBase(system) - s_period;
   case Site::Ordinal:
   {
-    const u32 frame = GetFrame(system);
+    const u32 frame = GetFrame(system);  // reset key: still the pass counter
     Ordinal& o = s_ordinals[ord];
     if (o.frame != frame)
     {
       o.frame = frame;
       o.count = 0;
     }
-    return Base(system) + s_period * frame + o.count++;
+    return FrameExactTimeBase(system) + o.count++;
   }
   case Site::Default:
   default:
@@ -159,7 +217,7 @@ u64 Read(Core::System& system, u32 lr)
     // game-visible stamp is FrameExact/Ordinal/Seed/Key above, and every Default consumer is
     // an elapsed-time comparison against a threshold of 100 ms or more, or a fixed-count spin.
     s_calls += DEFAULT_INCREMENT;
-    return Base(system) + s_period * GetFrame(system) + s_calls;
+    return FrameExactTimeBase(system) + s_calls;
   }
 }
 
@@ -211,9 +269,29 @@ u32 GetFrame(Core::System& system)
   return system.GetMemory().Read_U32(ADDR_FRAME_COUNTER);
 }
 
+u32 GetFields()
+{
+  return s_fields;
+}
+
+u64 LastNowTicks()
+{
+  return s_last_now_ticks;
+}
+
+u64 LastNowDelta()
+{
+  return s_last_now_delta;
+}
+
+u32 ClockModel()
+{
+  return CLOCK_MODEL;
+}
+
 u64 FrameExactTimeBase(Core::System& system)
 {
-  return Base(system) + s_period * GetFrame(system);
+  return Base(system) + s_period * s_fields;
 }
 
 void Install(Core::System& system)
@@ -239,12 +317,18 @@ void Install(Core::System& system)
     s_period = tb_hz * 1001 / 60000;  // 40,500,000 * 1001 / 60000 = 675,675 = one NTSC field
     s_calls = 0;
     s_ordinals = {};
+    s_fields = 0;
+    s_retrace_base = 0;
+    s_now_samples = 0;
+    s_last_now_ticks = 0;
+    s_last_now_delta = 0;
     s_installed = true;
   }
   HLE::Patch(system, ADDR_OSGETTICK, "XD_OSGetTick");
   HLE::Patch(system, ADDR_OSGETTIME, "XD_OSGetTime");
-  INFO_LOG_FMT(OSHLE, "XD deterministic clock installed: salt={:08x} seed={:08x} period={} inc={}",
-               s_salt, s_seed, s_period, DEFAULT_INCREMENT);
+  INFO_LOG_FMT(OSHLE, "XD deterministic clock installed: model={} salt={:08x} seed={:08x} "
+               "period={} inc={}",
+               CLOCK_MODEL, s_salt, s_seed, s_period, DEFAULT_INCREMENT);
 }
 
 void Shutdown()
@@ -255,6 +339,11 @@ void Shutdown()
   s_period = 0;
   s_calls = 0;
   s_ordinals = {};
+  s_fields = 0;
+  s_retrace_base = 0;
+  s_now_samples = 0;
+  s_last_now_ticks = 0;
+  s_last_now_delta = 0;
 }
 
 void OSGetTick(const Core::CPUThreadGuard& guard)
