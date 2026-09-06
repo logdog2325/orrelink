@@ -682,21 +682,30 @@ void XDLauncherDialog::OnShareLog()
                                                       suggested, tr("Log files (*.log)"));
   if (target.isEmpty())
     return;
-  if (QFileInfo(target).absoluteFilePath() == QFileInfo(newest).absoluteFilePath())
+  // canonicalFilePath resolves symlinks and case (empty for a file that does not exist
+  // yet, which then compares unequal as it should).
+  const QString canonical_target = QFileInfo(target).canonicalFilePath();
+  if (!canonical_target.isEmpty() && canonical_target == QFileInfo(newest).canonicalFilePath())
   {
     // They picked the log itself: nothing to copy, just show it.
     QDesktopServices::openUrl(QUrl::fromLocalFile(logs.absolutePath()));
     return;
   }
-  if (QFile::exists(target) && !QFile::remove(target))
+  // Copy to a sibling first, then swap it in, so a failed copy never removes anything
+  // and the source log is never touched.
+  const QString staging = target + QStringLiteral(".tmp");
+  QFile::remove(staging);
+  if (!QFile::copy(newest, staging))
   {
-    ModalMessageBox::critical(this, tr("Share Log"), tr("Could not replace %1").arg(target));
-    return;
-  }
-  if (!QFile::copy(newest, target))
-  {
+    QFile::remove(staging);
     ModalMessageBox::critical(this, tr("Share Log"),
                               tr("Could not copy the log to %1").arg(target));
+    return;
+  }
+  if ((QFile::exists(target) && !QFile::remove(target)) || !QFile::rename(staging, target))
+  {
+    QFile::remove(staging);
+    ModalMessageBox::critical(this, tr("Share Log"), tr("Could not replace %1").arg(target));
     return;
   }
   QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(target).absolutePath()));
