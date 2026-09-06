@@ -41,6 +41,7 @@
 
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
+#include "Common/IniFile.h"
 #include "Common/IOFile.h"
 #include "Common/StringUtil.h"
 #include "Common/Version.h"
@@ -49,6 +50,11 @@
 #include "Core/Config/NetplaySettings.h"
 #include "Core/HW/GBACore.h"
 
+#include "Core/HW/GBAPad.h"
+#include "InputCommon/ControllerEmu/ControllerEmu.h"
+#include "InputCommon/ControllerInterface/ControllerInterface.h"
+#include "InputCommon/InputConfig.h"
+#include "DolphinQt/Config/Mapping/MappingWindow.h"
 #include "DolphinQt/QtUtils/ModalMessageBox.h"
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 #include "DolphinQt/QtUtils/QueueOnObject.h"
@@ -363,6 +369,15 @@ void XDLauncherDialog::CreateMainLayout()
   add_row(&m_team_saves_row, tr("Team saves installed"), tr("Install"));
   add_row(&m_vs_save_row, tr("XD VS-mode save (memory card)"), tr("Install"));
   add_row(&m_gba_input_row, tr("GBA controls"), tr("Use defaults"));
+  // A real remap for the GBA slot you actually play on. Dolphin's own Controllers window
+  // only exposes a GBA mapping for ports set to "GBA (Integrated)", and the joiner's slot
+  // (GBA 1) sits on port 1, which the launcher keeps as a Standard Controller -- so from
+  // there the mapping was unreachable. This opens the GBA mapping window directly and
+  // then copies the result to every GBA slot, so it holds whether you join or host.
+  m_gba_customize_button = new NonDefaultQPushButton(tr("Customize..."));
+  m_gba_customize_button->setToolTip(tr("Remap the GBA buttons. Applies to every GBA slot, so it "
+                                        "works whether you join or host."));
+  checklist_layout->addWidget(m_gba_customize_button, row - 1, 3);  // beside 'Use defaults'
   checklist_layout->setColumnStretch(1, 1);
   checklist_box->setLayout(checklist_layout);
   layout->addWidget(checklist_box);
@@ -767,6 +782,8 @@ void XDLauncherDialog::ConnectWidgets()
   connect_style_combo(m_style_venue_combo, Config::MAIN_XD_STYLE_VENUE);
 
   connect(m_share_log_button, &QPushButton::clicked, this, &XDLauncherDialog::OnShareLog);
+  connect(m_gba_customize_button, &QPushButton::clicked, this,
+          &XDLauncherDialog::OnCustomizeGbaInput);
   connect(m_show_on_startup_check, &QCheckBox::toggled, this, [](bool checked) {
     Settings::GetQSettings().setValue(QStringLiteral("xdnetplay/showlauncheronstartup"), checked);
   });
@@ -1045,9 +1062,36 @@ void XDLauncherDialog::OnFixGbaInput()
       this, tr("OrreLink"),
       tr("Default GBA controls applied to every GBA slot (you are GBA 1 when joining, GBA 2 "
          "when hosting):\n\n"
-         "A = X,  B = Z,  Start = Enter,  Select = Backspace\n"
-         "D-Pad = T / G / F / H,  L = Q,  R = W\n\n"
-         "Change them any time under Controllers > GBA Ports."));
+         "D-Pad = W / A / S / D,  A = X,  B = Z\n"
+         "L = Q,  R = E,  Start = Enter,  Select = Backspace\n\n"
+         "Change them with Customize... (they apply whether you join or host)."));
+  RefreshChecklist();
+}
+
+void XDLauncherDialog::OnCustomizeGbaInput()
+{
+  if (!Pad::IsGBAInitialized())
+    return;
+  // Slot 0 ("GBA 1") is what a joiner plays on; map it here, then mirror it.
+  MappingWindow window(this, MappingWindow::Type::MAPPING_GC_GBA, 0);
+  window.exec();
+
+  InputConfig* const config = Pad::GetGBAConfig();
+  ControllerEmu::EmulatedController* const source = config->GetController(0);
+  if (source)
+  {
+    Common::IniFile::Section section;
+    source->SaveConfig(&section);
+    for (int slot = 1; slot < 4; ++slot)
+    {
+      ControllerEmu::EmulatedController* const target = config->GetController(slot);
+      if (!target)
+        continue;
+      target->LoadConfig(&section);
+      target->UpdateReferences(g_controller_interface);
+    }
+    config->SaveConfig();
+  }
   RefreshChecklist();
 }
 
