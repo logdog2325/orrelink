@@ -196,6 +196,11 @@ std::optional<ShowdownSet> ParseSet(const std::vector<std::string>& lines)
     {
       ParseStatList(line.substr(4), &set.ivs);
     }
+    else if (StartsWith(line, "Happiness:"))
+    {
+      if (const std::optional<int> h = ToInt(Trim(line.substr(10))))
+        set.happiness = std::clamp(*h, 0, 255);
+    }
     else if (StartsWith(line, "-"))
     {
       if (set.moves.size() < MAX_MOVES)
@@ -211,7 +216,7 @@ std::optional<ShowdownSet> ParseSet(const std::vector<std::string>& lines)
       if (!nature.empty())
         set.nature = nature;
     }
-    // Anything else ("Happiness:", "Tera Type:", ...) is ignored.
+    // Anything else ("Tera Type:", ...) is ignored.
   }
 
   return set;
