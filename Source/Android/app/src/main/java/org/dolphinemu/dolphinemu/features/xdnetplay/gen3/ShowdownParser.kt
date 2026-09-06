@@ -20,12 +20,13 @@ data class ShowdownSet(
     val nature: String? = null,
     val evs: IntArray = IntArray(6),          // hp, atk, def, spa, spd, spe
     val ivs: IntArray = IntArray(6) { 31 },   // hp, atk, def, spa, spd, spe
-    val moves: List<String> = emptyList()     // max 4
+    val moves: List<String> = emptyList(),    // max 4
+    val happiness: Int? = null                // "Happiness: N", 0..255; null = 255
 )
 
 /**
  * Parser for Showdown team-export text. Sets are separated by blank lines;
- * lines that are not recognized (e.g. "Happiness:", "Tera Type:") are
+ * lines that are not recognized (e.g. "Tera Type:") are
  * ignored gracefully.
  */
 object ShowdownParser {
@@ -102,6 +103,7 @@ object ShowdownParser {
         var level = 100
         var shiny = false
         var nature: String? = null
+        var happiness: Int? = null
         val evs = IntArray(6)
         val ivs = IntArray(6) { 31 }
         val moves = ArrayList<String>()
@@ -128,6 +130,11 @@ object ShowdownParser {
                 line.startsWith("IVs:") -> {
                     parseStatList(line.substring("IVs:".length), ivs)
                 }
+                line.startsWith("Happiness:") -> {
+                    line.substring("Happiness:".length).trim().toIntOrNull()?.let {
+                        happiness = it.coerceIn(0, 255)
+                    }
+                }
                 line.startsWith("-") -> {
                     if (moves.size < MAX_MOVES) {
                         val move = line.substring(1).trim()
@@ -142,7 +149,7 @@ object ShowdownParser {
                         nature = n
                     }
                 }
-                // Anything else ("Happiness:", "Tera Type:", ...) is ignored.
+                // Anything else ("Tera Type:", ...) is ignored.
             }
         }
 
@@ -157,7 +164,8 @@ object ShowdownParser {
             nature = nature,
             evs = evs,
             ivs = ivs,
-            moves = moves
+            moves = moves,
+            happiness = happiness
         )
     }
 
