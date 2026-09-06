@@ -14,6 +14,7 @@
 #include "Core/GeckoCode.h"
 #include "Core/HLE/HLE_Misc.h"
 #include "Core/HLE/HLE_OS.h"
+#include "Core/HLE/HLE_XD.h"
 #include "Core/HW/Memmap.h"
 #include "Core/Host.h"
 #include "Core/PowerPC/PPCSymbolDB.h"
@@ -26,7 +27,7 @@ namespace HLE
 static std::map<u32, u32> s_hooked_addresses;
 
 // clang-format off
-constexpr std::array<Hook, 23> os_patches{{
+constexpr std::array<Hook, 25> os_patches{{
     // Placeholder, os_patches[0] is the "non-existent function" index
     {"FAKE_TO_SKIP_0",               HLE_Misc::UnimplementedFunction,       HookType::Replace, HookFlag::Generic},
 
@@ -58,7 +59,12 @@ constexpr std::array<Hook, 23> os_patches{{
 
     {"GeckoCodehandler",             HLE_Misc::GeckoCodeHandlerICacheFlush, HookType::Start,   HookFlag::Fixed},
     {"GeckoHandlerReturnTrampoline", HLE_Misc::GeckoReturnTrampoline,       HookType::Replace, HookFlag::Fixed},
-    {"AppLoaderReport",              HLE_OS::HLE_GeneralDebugPrint,         HookType::Start,   HookFlag::Fixed} // apploader needs OSReport-like function
+    {"AppLoaderReport",              HLE_OS::HLE_GeneralDebugPrint,         HookType::Start,   HookFlag::Fixed}, // apploader needs OSReport-like function
+
+    // OrreLink: Pokemon XD (GXXE01) deterministic clock; installed by HLE_XD::Install from
+    // PatchFixedFunctions only when the netplay-synced session flag is on.
+    {"XD_OSGetTick",                 HLE_XD::OSGetTick,                     HookType::Replace, HookFlag::Fixed},
+    {"XD_OSGetTime",                 HLE_XD::OSGetTime,                     HookType::Replace, HookFlag::Fixed}
 }};
 // clang-format on
 
@@ -104,6 +110,9 @@ void PatchFixedFunctions(Core::System& system)
   // This has to always be installed even if cheats are not enabled because of the possibility of
   // loading a savestate where PC is inside the code handler while cheats are disabled.
   Patch(system, Gecko::HLE_TRAMPOLINE_ADDRESS, "GeckoHandlerReturnTrampoline");
+
+  // OrreLink v1.5.11: XD deterministic clock (no-op unless SESSION_XD_DETERMINISTIC_CLOCK).
+  HLE_XD::Install(system);
 }
 
 void PatchFunctions(Core::System& system)
