@@ -711,7 +711,7 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
         "accurate_dcache={} fastmem={} follow_branch={} mmu={} cpu_thread={} oc={} "
         "sync_on_skip_idle={} cheats={} gpu_det={} dsp_hle={} dsp_thread={} practice_dummy={} "
         "debug={} soft_flush={} netplay={} xd_clock={} xd_clock_cfg={} xd_salt={:08x} "
-        "xd_seed={:08x} xd_period={} xd_inc={} rev={}",
+        "xd_seed={:08x} xd_period={} xd_inc={} xd_clock_v={} rev={}",
         NetPlay::LocalCpuArch(), static_cast<int>(Config::Get(Config::MAIN_CPU_CORE)),
         ppc.GetCPUName(), ppc.GetMode() == PowerPC::CoreMode::JIT ? "jit" : "interp",
         cpu_info.bFMA ? 1 : 0, cpu_info.bAFP ? 1 : 0, Config::Get(Config::SESSION_USE_FMA) ? 1 : 0,
@@ -733,7 +733,7 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
         ppc.GetPPCState().software_fpu_flush ? 1 : 0,
         NetPlay::IsNetPlayRunning() ? 1 : 0, HLE_XD::IsInstalled() ? "on" : "off",
         Config::Get(Config::SESSION_XD_DETERMINISTIC_CLOCK) ? 1 : 0, HLE_XD::GetSalt(),
-        HLE_XD::GetSeed(), HLE_XD::GetPeriod(), HLE_XD::DefaultIncrement(),
+        HLE_XD::GetSeed(), HLE_XD::GetPeriod(), HLE_XD::DefaultIncrement(), HLE_XD::ClockModel(),
         Common::GetScmRevGitStr()));
   }
 #endif

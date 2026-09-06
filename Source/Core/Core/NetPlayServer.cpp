@@ -1743,7 +1743,7 @@ bool NetPlayServer::SetupNetSettings()
       settings.xd_rng_seed = Common::Random::GenerateValue<u32>();
       line = fmt::format("Mixed CPU architectures ({}): recompilers stay on; OrreLink serves XD's "
                          "clock this battle so both sides compute identical results (main menu "
-                         "skipped).",
+                         "skipped, dual core off).",
                          archs);
     }
     else if (mixed)
@@ -1752,13 +1752,20 @@ bool NetPlayServer::SetupNetSettings()
                          "is possible. The host can set ForceCommonCoreOnMixedArch = True.",
                          archs);
     }
+    // v1.5.12: the field clock's game-visible values depend on GPU completion landing in the
+    // same VI field on every client -- deterministic in single core only. cpu_thread is
+    // host-synced (NetPlayConfigLoader), so pinning it here covers every client.
+    if (settings.xd_deterministic_clock)
+      settings.cpu_thread = false;
     if (!line.empty())
       SendChatMessage(line);  // pid 0 notice; the host's own loopback client shows it too
 #ifdef HAS_LIBMGBA
     GBADetectLog::NoteBoot(fmt::format(
-        "netplay corepolicy archs=\"{}\" mixed={} override={} cpu_core={} clock={} salt={:08x} "
+        "netplay corepolicy archs=\"{}\" mixed={} override={} cpu_core={} cpu_thread={} clock={} "
+        "salt={:08x} "
         "seed={:08x}",
         archs, mixed ? 1 : 0, safest ? 1 : 0, static_cast<int>(settings.cpu_core),
+        settings.cpu_thread ? 1 : 0,
         settings.xd_deterministic_clock ? 1 : 0, settings.xd_clock_salt, settings.xd_rng_seed));
 #endif
   }

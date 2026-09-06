@@ -14,7 +14,6 @@ namespace XDNetplay::MonFactory
 namespace
 {
 constexpr u32 LANGUAGE_ENGLISH = 0x0202;
-constexpr u32 DEFAULT_FRIENDSHIP = 70;
 constexpr u32 DEFAULT_PP = 35;  // mirrors the Python injector
 constexpr u32 GAME_EMERALD = 3;
 constexpr u32 BALL_POKE = 4;  // the Python injector's default ball
@@ -284,7 +283,9 @@ std::optional<Gen3Mon> Build(const ShowdownSet& set, const Gen3Data& data,
   mon.held_item = held_item;
   mon.experience = static_cast<u32>(*experience);
   mon.pp_bonuses = 0;
-  mon.friendship = DEFAULT_FRIENDSHIP;
+  // Showdown "Happiness:" when given; otherwise MAX (Return 102 BP), not the species base
+  // value -- competitive sets assume max happiness unless they say otherwise.
+  mon.friendship = static_cast<u32>(set.happiness.value_or(255));
   mon.moves = move_ids;
   for (size_t i = 0; i < 4; i++)
     mon.pp[i] = move_ids[i] != 0 ? DEFAULT_PP : 0;
