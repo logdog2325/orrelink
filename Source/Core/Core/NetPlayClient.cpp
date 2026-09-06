@@ -969,18 +969,6 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     packet >> m_current_game;
     packet >> m_net_settings.cpu_thread;
     packet >> m_net_settings.cpu_core;
-    // Never let PowerPC.cpp's silent fallback pick this machine's native JIT when
-    // the host named a core this build cannot construct. Unreachable under the
-    // host's mixed-arch policy; if it ever fires, use the one core every platform
-    // has and say so, so a JIT-vs-JIT mismatch can never hide again.
-    if (std::ranges::find(PowerPC::AvailableCPUCores(), m_net_settings.cpu_core) ==
-        PowerPC::AvailableCPUCores().end())
-    {
-      m_dialog->AppendChat(fmt::format(
-          "Host asked for CPU core {} which this build cannot run; using the Cached Interpreter.",
-          static_cast<int>(m_net_settings.cpu_core)));
-      m_net_settings.cpu_core = PowerPC::CPUCore::CachedInterpreter;
-    }
     packet >> m_net_settings.enable_cheats;
     packet >> m_net_settings.enable_hardcore;
     packet >> m_net_settings.selected_language;
@@ -1070,6 +1058,27 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
 
     for (size_t i = 0; i < sizeof(m_net_settings.sram); ++i)
       packet >> m_net_settings.sram[i];
+
+    // OrreLink v1.5.11 -- LAST fields, same order as NetPlayServer::StartGame.
+    packet >> m_net_settings.xd_deterministic_clock;
+    packet >> m_net_settings.xd_clock_salt;
+    packet >> m_net_settings.xd_rng_seed;
+
+    // Never let PowerPC.cpp's silent fallback pick a core nobody announced. A host on the
+    // other architecture names a JIT this build cannot construct: with the XD clock on that
+    // is expected and this machine's own recompiler is the right answer; without it, use the
+    // one core every platform has and say so.
+    if (std::ranges::find(PowerPC::AvailableCPUCores(), m_net_settings.cpu_core) ==
+        PowerPC::AvailableCPUCores().end())
+    {
+      const bool clock = m_net_settings.xd_deterministic_clock;
+      m_dialog->AppendChat(fmt::format(
+          "Host asked for CPU core {} which this build cannot run; using {}.",
+          static_cast<int>(m_net_settings.cpu_core),
+          clock ? "this machine's recompiler (XD clock on)" : "the Cached Interpreter"));
+      m_net_settings.cpu_core =
+          clock ? PowerPC::DefaultCPUCore() : PowerPC::CPUCore::CachedInterpreter;
+    }
 
     m_net_settings.is_hosting = m_local_player->IsHost();
   }

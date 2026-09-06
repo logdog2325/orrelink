@@ -21,6 +21,7 @@
 #include "Core/CoreTiming.h"
 #include "Core/HW/GBACore.h"
 #include "Core/HW/GBADetectLog.h"
+#include "Core/HLE/HLE_XD.h"
 #include "Core/HW/GBAPad.h"
 #include "Core/HW/Memmap.h"
 #include "Core/HW/SI/SI.h"
@@ -114,10 +115,10 @@ constexpr u32 XD_DISC_ID_GXXE = 0x47585845;  // "GXXE" at 0x80000000; anything e
 // OSGetTime's low word (0x800efa58). The pointer cell at +4 always reads
 // 0x804E8610 (its only setter has no callers).
 constexpr u32 XD_RNG_SEED = 0x804E8610;
-// SDK JoyBoot LCG state (ANSI LCG, global 0x804e81e0), RE-SEEDED FROM OSGetTick
-// at every GBA key exchange -- the value behind the first divergent JoyBus byte
-// in the v1.5.9 field logs (c7 vs c3). Logged raw; a difference here with equal
-// seed/crcs is the time-base-drift signature.
+// SDK CARD unlock LCG state (ANSI LCG, 0x804e81e0 = r13-31808), seeded from OSGetTick by
+// CARD DummyLen 0x800c0a50 / __CARDUnlock 0x800c0b14 (all 12 references) -- NOT JoyBoot: it
+// only moves on memory-card mount/unlock. Logged raw as jb= (name kept for log compatibility);
+// under the v1.5.11 clock those three reads are per-site ordinals, so it stays identical.
 constexpr u32 XD_JOYBOOT_LCG = 0x804E81E0;
 constexpr u32 XD_BATTLE_FLAGS = 0x804EB938;  // u32 bit flags, 263 refs in the engine
 // crcA: battle-engine scalars (.sbss: flags, command-ring indices, turn counters,
@@ -191,6 +192,12 @@ void CSIDevice_GBAEmu::LogXdState(const u8* request, const char* why, bool force
   const u32 joyboot = memory.Read_U32(XD_JOYBOOT_LCG);
   const u32 flags = memory.Read_U32(XD_BATTLE_FLAGS);
   const u32 ctx = memory.Read_U32(XD_CTX_PTR);
+  // OrreLink v1.5.11: XD's own main-loop frame counter and the frame-exact logical time base
+  // (HLE_XD, no per-call term). Identical on every machine at the same wseq while the games are
+  // in step; lt=00000000 when the clock is not installed (solo, same-arch room).
+  const u32 lf = HLE_XD::GetFrame(m_system);
+  const u32 lt =
+      HLE_XD::IsInstalled() ? static_cast<u32>(HLE_XD::FrameExactTimeBase(m_system)) : 0;
 
   u8 buf[2048];
   size_t n = 0;
@@ -242,11 +249,25 @@ void CSIDevice_GBAEmu::LogXdState(const u8* request, const char* why, bool force
     data = fmt::format(" data={:02x}{:02x}{:02x}{:02x}", request[1], request[2], request[3],
                        request[4]);
   }
+  if (forced)
+  {
+    // Clock state on the forced events only ('xdclk' never matches grep ' xd '). n= is
+    // EXPECTED to differ slightly between machines: it counts jittered poll iterations that
+    // by design reach no game state.
+    GBADetectLog::LogEvent(
+        m_device_number, m_timestamp_sent, "xdclk",
+        fmt::format("why={} mode={} F={} n={} inc={} salt={:08x} seed_cfg={:08x} period={}", why,
+                    HLE_XD::IsInstalled() ? "on" : "off", lf, HLE_XD::CallCount(),
+                    HLE_XD::DefaultIncrement(), HLE_XD::GetSalt(), HLE_XD::GetSeed(),
+                    HLE_XD::GetPeriod()),
+        false);
+  }
   GBADetectLog::LogEvent(
       m_device_number, m_timestamp_sent, "xd",
-      fmt::format("wseq={} why={}{} seed={:08x} jb={:08x} ctx={:08x} flags={:08x} crcA={:08x} "
-                  "crcB={:08x} crcC={:08x}",
-                  m_diag_wr_count, why, data, seed, joyboot, ctx, flags, crc_a, crc_b, crc_c),
+      fmt::format("wseq={} why={}{} lf={} lt={:08x} seed={:08x} jb={:08x} ctx={:08x} "
+                  "flags={:08x} crcA={:08x} crcB={:08x} crcC={:08x}",
+                  m_diag_wr_count, why, data, lf, lt, seed, joyboot, ctx, flags, crc_a, crc_b,
+                  crc_c),
       false);  // bounded; the <=1/s summary line flushes
 }
 

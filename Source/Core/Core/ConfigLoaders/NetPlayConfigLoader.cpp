@@ -116,6 +116,9 @@ public:
     layer->Set(Config::GFX_HACK_EFB_DEFER_INVALIDATION, m_settings.efb_access_defer_invalidation);
 
     layer->Set(Config::SESSION_USE_FMA, m_settings.use_fma);
+    layer->Set(Config::SESSION_XD_DETERMINISTIC_CLOCK, m_settings.xd_deterministic_clock);
+    layer->Set(Config::SESSION_XD_CLOCK_SALT, m_settings.xd_clock_salt);
+    layer->Set(Config::SESSION_XD_RNG_SEED, m_settings.xd_rng_seed);
 
     layer->Set(Config::MAIN_BLUETOOTH_PASSTHROUGH_ENABLED, false);
 
