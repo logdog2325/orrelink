@@ -192,10 +192,13 @@ void CSIDevice_GBAEmu::LogXdState(const u8* request, const char* why, bool force
   const u32 joyboot = memory.Read_U32(XD_JOYBOOT_LCG);
   const u32 flags = memory.Read_U32(XD_BATTLE_FLAGS);
   const u32 ctx = memory.Read_U32(XD_CTX_PTR);
-  // OrreLink v1.5.11: XD's own main-loop frame counter and the frame-exact logical time base
+  // OrreLink v1.5.12: XD's frame counters and the frame-exact logical time base
   // (HLE_XD, no per-call term). Identical on every machine at the same wseq while the games are
   // in step; lt=00000000 when the clock is not installed (solo, same-arch room).
-  const u32 lf = HLE_XD::GetFrame(m_system);
+  // v1.5.12: lf = the clock unit (sampled VI fields, 60/s in menus AND battle); pf = XD's
+  // pass counter (30/s in battle); lt = Base + P*lf. Clock off: lf falls back to pf.
+  const u32 pf = HLE_XD::GetFrame(m_system);
+  const u32 lf = HLE_XD::IsInstalled() ? HLE_XD::GetFields() : pf;
   const u32 lt =
       HLE_XD::IsInstalled() ? static_cast<u32>(HLE_XD::FrameExactTimeBase(m_system)) : 0;
 
@@ -256,17 +259,22 @@ void CSIDevice_GBAEmu::LogXdState(const u8* request, const char* why, bool force
     // by design reach no game state.
     GBADetectLog::LogEvent(
         m_device_number, m_timestamp_sent, "xdclk",
-        fmt::format("why={} mode={} F={} n={} inc={} salt={:08x} seed_cfg={:08x} period={}", why,
-                    HLE_XD::IsInstalled() ? "on" : "off", lf, HLE_XD::CallCount(),
+        // R= is a LIVE read of the SDK retraceCount at this SI event, not at 'now': it may
+        // differ by 1 across machines (xdclk is never in the compare set). dn= is CoreTiming
+        // ticks between the last two 'now' stamps: 8,108,100 per field.
+        fmt::format("why={} mode={} S={} F={} R={} dn={} n={} inc={} salt={:08x} "
+                    "seed_cfg={:08x} period={}",
+                    why, HLE_XD::IsInstalled() ? "on" : "off", lf, pf,
+                    memory.Read_U32(0x804EAC54), HLE_XD::LastNowDelta(), HLE_XD::CallCount(),
                     HLE_XD::DefaultIncrement(), HLE_XD::GetSalt(), HLE_XD::GetSeed(),
                     HLE_XD::GetPeriod()),
         false);
   }
   GBADetectLog::LogEvent(
       m_device_number, m_timestamp_sent, "xd",
-      fmt::format("wseq={} why={}{} lf={} lt={:08x} seed={:08x} jb={:08x} ctx={:08x} "
+      fmt::format("wseq={} why={}{} lf={} pf={} lt={:08x} seed={:08x} jb={:08x} ctx={:08x} "
                   "flags={:08x} crcA={:08x} crcB={:08x} crcC={:08x}",
-                  m_diag_wr_count, why, data, lf, lt, seed, joyboot, ctx, flags, crc_a, crc_b,
+                  m_diag_wr_count, why, data, lf, pf, lt, seed, joyboot, ctx, flags, crc_a, crc_b,
                   crc_c),
       false);  // bounded; the <=1/s summary line flushes
 }

@@ -754,6 +754,23 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
     const u32 value = static_cast<u32>(*venue) & 0xFFFF;
     for (const u32 addr : VENUE_LINES)
       AppendLine(&block, addr, value);
+    // VS-mode setup menu, stage row (menu global idx10 0x804349F4, bounded 0..6 by the
+    // input handler 0x8007B520; >=7 crashes the sprite draw). Pinned to 6 -- the "random"
+    // choice -- so the in-game picker cannot contradict the host's location: the game then
+    // writes rand()%6 into rec+6 once at battle start (0x8004D45C), which the four lines
+    // above overwrite every frame. idx11 (slide-anim "from", 0x804349F8) and the B-cancel
+    // backup (0x80434A74) are pinned too so a left/right press slides and snaps back.
+    // Never touch 0x80434B0C (blocks Start).
+    constexpr u32 STAGE_ROW_RANDOM = 6;
+    AppendLine(&block, 0x044349F4, STAGE_ROW_RANDOM);
+    AppendLine(&block, 0x044349F8, STAGE_ROW_RANDOM);
+    AppendLine(&block, 0x04434A74, STAGE_ROW_RANDOM);
+    // Blank the "random" sprite so the row reads empty, the same signal as the blanked
+    // Custom-1 rules name: sprite id 0x2D7's descriptor at 0x803001A8 + 0x2D7*0x48, five
+    // language sub-records at +8 + lang*0xC, W/H word at +4 -> 0 draws nothing (the same
+    // mechanism as the bust hides above).
+    for (const u32 addr : {0x0430CE2Cu, 0x0430CE38u, 0x0430CE44u, 0x0430CE50u, 0x0430CE5Cu})
+      AppendLine(&block, addr, 0);
   }
   return block;
 }
