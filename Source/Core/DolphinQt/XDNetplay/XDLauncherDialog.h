@@ -76,6 +76,7 @@ private:
   void RefreshSaveSlots();
   void AutoDiscoverFromGameFolder();
   void FitToScreen();
+  void OnShareLog();
 
   std::shared_ptr<const UICommon::GameFile> FindXdGame() const;
 
@@ -146,5 +147,6 @@ private:
   // QueueOnObject, so this flag lives on the GUI thread alone.
   bool m_searching = false;
   bool m_first_show_sized = false;
+  QPushButton* m_share_log_button = nullptr;
   TeamEditorDialog* m_team_editor = nullptr;
 };
