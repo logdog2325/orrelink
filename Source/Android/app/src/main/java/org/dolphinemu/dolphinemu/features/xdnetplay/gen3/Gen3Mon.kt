@@ -39,7 +39,7 @@ class Gen3Mon {
     var heldItem = 0
     var experience = 0
     var ppBonuses = 0
-    var friendship = 0
+    var friendship = 255              // game max; MonFactory/fromBytes overwrite
     var growthUnknown = 0
 
     // Attacks substructure
