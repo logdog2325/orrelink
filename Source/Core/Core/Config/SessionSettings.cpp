@@ -15,4 +15,8 @@ const Info<bool> SESSION_CODE_SYNC_OVERRIDE{{System::Session, "Core", "CheatSync
 const Info<bool> SESSION_SAVE_DATA_WRITABLE{{System::Session, "Core", "SaveDataWritable"}, true};
 const Info<bool> SESSION_SHOULD_FAKE_ERROR_001{{System::Session, "Core", "ShouldFakeError001"},
                                                false};
+const Info<bool> SESSION_XD_DETERMINISTIC_CLOCK{{System::Session, "Core", "XDDeterministicClock"},
+                                                false};
+const Info<u32> SESSION_XD_CLOCK_SALT{{System::Session, "Core", "XDClockSalt"}, 0u};
+const Info<u32> SESSION_XD_RNG_SEED{{System::Session, "Core", "XDRngSeed"}, 0u};
 }  // namespace Config

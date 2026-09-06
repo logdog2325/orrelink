@@ -52,9 +52,11 @@ extern const Info<bool> NETPLAY_STRICT_SETTINGS_SYNC;
 extern const Info<std::string> NETPLAY_NETWORK_MODE;
 extern const Info<bool> NETPLAY_GOLF_MODE_OVERLAY;
 extern const Info<bool> NETPLAY_HIDE_REMOTE_GBAS;
-// OrreLink: when the room mixes x86_64 and arm64 players, put every player on the
-// Cached Interpreter (the one core all platforms build identically, with identical
-// block-boundary timing). Same-arch rooms are never touched.
+// OrreLink: opt-in "safest" override. When the room mixes x86_64 and arm64 players AND
+// this is true, every player runs the Cached Interpreter (the v1.5.10 behaviour; unusably
+// slow on the field's machines). Default (false): recompilers stay on and Pokemon XD gets
+// the HLE deterministic clock (Core/HLE/HLE_XD.cpp) instead. Same-arch rooms are never
+// touched.
 extern const Info<bool> NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH;
 
 }  // namespace Config
