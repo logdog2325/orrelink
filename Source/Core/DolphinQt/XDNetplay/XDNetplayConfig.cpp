@@ -3,6 +3,7 @@
 
 #include "DolphinQt/XDNetplay/XDNetplayConfig.h"
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -17,6 +18,7 @@
 #include "InputCommon/ControllerEmu/ControlGroup/ControlGroup.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
+#include "InputCommon/ControllerInterface/CoreDevice.h"
 #include "InputCommon/ControlReference/ControlReference.h"
 #include "InputCommon/InputConfig.h"
 
@@ -268,21 +270,58 @@ bool AutoImportOfficialBios(const std::string& directory)
   return false;
 }
 
-bool GbaInputMapped()
+namespace
 {
-  if (!Pad::IsGBAInitialized())
-    return false;
+// The keyboard device of this platform: DInput "Keyboard Mouse" on Windows, Quartz on
+// macOS, XInput2 on Linux (the same three InputConfig treats as keyboard sources).
+// EmulatedController::LoadDefaults binds to whatever device sorts FIRST, which is a
+// gamepad whenever one is plugged in -- and the GBA defaults are key names ("X", "Z",
+// "RETURN") that do not exist on a gamepad, so the GBA silently reads nothing. That was
+// the field report: a Windows joiner with a controller attached had no GBA input.
+std::optional<ciface::Core::DeviceQualifier> KeyboardDevice()
+{
+  for (const std::string& device : g_controller_interface.GetAllDeviceStrings())
+  {
+    ciface::Core::DeviceQualifier q;
+    q.FromString(device);
+    if (q.source == "Quartz" || q.source == "XInput2" ||
+        (q.source == "DInput" && q.name == "Keyboard Mouse"))
+    {
+      return q;
+    }
+  }
+  return std::nullopt;
+}
 
-  const ControllerEmu::ControlGroup* buttons = Pad::GetGBAGroup(0, GBAPadGroup::Buttons);
+// Mapped = the slot's default device currently exists AND at least one button has an
+// expression. A mapping to an unplugged gamepad is not "mapped".
+bool GbaSlotMapped(int slot)
+{
+  const ControllerEmu::EmulatedController* controller = Pad::GetGBAConfig()->GetController(slot);
+  if (!controller || !g_controller_interface.FindDevice(controller->GetDefaultDevice()))
+    return false;
+  const ControllerEmu::ControlGroup* buttons = Pad::GetGBAGroup(slot, GBAPadGroup::Buttons);
   if (!buttons)
     return false;
-
   for (const auto& control : buttons->controls)
   {
     if (control->control_ref && !control->control_ref->GetExpression().empty())
       return true;
   }
   return false;
+}
+}  // namespace
+
+// Which local GBA slot a player's own GBA reads from is decided by NetPlay's pad map
+// (NetPlayClient InGameToLocal counts the SI channels assigned to you, in order): the
+// HOST owns channel 0 (GameCube controller) and channel 1 (GBA port 2), so the host's
+// GBA is local slot 1 = "GBA 2"; a JOINER owns only channel 2 (GBA port 3), so theirs
+// is local slot 0 = "GBA 1". Both must be mapped for the checklist to be honest.
+bool GbaInputMapped()
+{
+  if (!Pad::IsGBAInitialized())
+    return false;
+  return GbaSlotMapped(0) && GbaSlotMapped(1);
 }
 
 bool ApplyDefaultGbaInput()
@@ -291,14 +330,21 @@ bool ApplyDefaultGbaInput()
     return false;
 
   InputConfig* const config = Pad::GetGBAConfig();
-  ControllerEmu::EmulatedController* const controller = config->GetController(0);
-  if (!controller)
-    return false;
-
-  controller->LoadDefaults(g_controller_interface);
+  const std::optional<ciface::Core::DeviceQualifier> keyboard = KeyboardDevice();
+  for (int slot = 0; slot < 4; ++slot)
+  {
+    ControllerEmu::EmulatedController* const controller = config->GetController(slot);
+    if (!controller)
+      return false;
+    controller->LoadDefaults(g_controller_interface);
+    if (keyboard)
+      controller->SetDefaultDevice(*keyboard);
+    controller->UpdateReferences(g_controller_interface);
+  }
   config->SaveConfig();
   return GbaInputMapped();
 }
+
 
 bool SeedTeamSaves()
 {
