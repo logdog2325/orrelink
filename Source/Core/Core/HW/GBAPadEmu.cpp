@@ -95,8 +95,9 @@ void GBAPad::LoadDefaults(const ControllerInterface& ciface)
   // Buttons
   m_buttons->SetControlExpression(0, "`Z`");  // B
   m_buttons->SetControlExpression(1, "`X`");  // A
+  // OrreLink layout: WASD moves, so R moves off W.
   m_buttons->SetControlExpression(2, "`Q`");  // L
-  m_buttons->SetControlExpression(3, "`W`");  // R
+  m_buttons->SetControlExpression(3, "`E`");  // R
 #ifdef _WIN32
   m_buttons->SetControlExpression(4, "`BACK`");    // Select
   m_buttons->SetControlExpression(5, "`RETURN`");  // Start
@@ -109,9 +110,9 @@ void GBAPad::LoadDefaults(const ControllerInterface& ciface)
 #endif
 
   // D-Pad
-  m_dpad->SetControlExpression(0, "`T`");  // Up
-  m_dpad->SetControlExpression(1, "`G`");  // Down
-  m_dpad->SetControlExpression(2, "`F`");  // Left
-  m_dpad->SetControlExpression(3, "`H`");  // Right
+  m_dpad->SetControlExpression(0, "`W`");  // Up
+  m_dpad->SetControlExpression(1, "`S`");  // Down
+  m_dpad->SetControlExpression(2, "`A`");  // Left
+  m_dpad->SetControlExpression(3, "`D`");  // Right
 #endif
 }
