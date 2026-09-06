@@ -26,8 +26,12 @@ u32 GetSeed();
 u64 GetPeriod();
 u64 CallCount();
 u64 DefaultIncrement();  // per-call step of the Default-class counter (logged next to the period)
-u32 GetFrame(Core::System& system);            // XD's main-loop frame counter (0x804EA8A8)
-u64 FrameExactTimeBase(Core::System& system);  // T0 + period * frame (no per-call term)
+u32 GetFrame(Core::System& system);  // XD's main-loop pass counter (0x804EA8A8); ordinal key + pf=
+u64 FrameExactTimeBase(Core::System& system);  // T0 + period * fields (no per-call term)
+u32 GetFields();       // clock unit: SDK VI fields sampled at the main-loop 'now' stamp
+u64 LastNowTicks();    // CoreTiming ticks at the last 'now' stamp (diagnostics only)
+u64 LastNowDelta();    // ticks between the last two 'now' stamps (diagnostics only)
+u32 ClockModel();      // 2 = v1.5.12 field clock; logged so a reader knows what lf= means
 
 void OSGetTick(const Core::CPUThreadGuard& guard);  // hooks 0x800b225c
 void OSGetTime(const Core::CPUThreadGuard& guard);  // hooks 0x800b2244

@@ -19,7 +19,7 @@ namespace XDNetplay::MonFactory
 // defaults of the validated Python injector (and its Android Kotlin port,
 // MonFactory.kt):
 //
-//  - language English (0x0202), friendship 70
+//  - language English (0x0202), friendship 255 unless the paste says Happiness: N
 //  - origins: met level = current level, game of origin 3 (Emerald),
 //    ball 4 (Poke Ball), OT gender male, met location 0
 //  - PP = 35 for every non-empty move slot, 0 otherwise, PP bonuses 0

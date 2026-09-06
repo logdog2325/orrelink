@@ -90,7 +90,7 @@ struct Gen3Mon
   u32 held_item = 0;
   u32 experience = 0;
   u32 pp_bonuses = 0;
-  u32 friendship = 0;
+  u32 friendship = 255;  // game max; MonFactory/Decode overwrite
   u32 growth_unknown = 0;
 
   // Attacks substructure

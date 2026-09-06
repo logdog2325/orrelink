@@ -28,10 +28,11 @@ struct ShowdownSet
   std::array<int, 6> evs{};                        // hp, atk, def, spa, spd, spe
   std::array<int, 6> ivs{31, 31, 31, 31, 31, 31};  // hp, atk, def, spa, spd, spe
   std::vector<std::string> moves;                  // max 4
+  std::optional<int> happiness;                    // "Happiness: N", 0..255; unset = 255
 };
 
 // Parser for Showdown team-export text. Sets are separated by blank lines;
-// lines that are not recognized (e.g. "Happiness:", "Tera Type:") are ignored
+// lines that are not recognized (e.g. "Tera Type:") are ignored
 // gracefully. Ported 1:1 from the Android Kotlin port (ShowdownParser.kt).
 namespace ShowdownParser
 {
