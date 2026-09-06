@@ -6,6 +6,7 @@ import org.dolphinemu.dolphinemu.features.input.model.InputOverrider
 
 object GbaInputFocusManager {
     private var focusedDevice = GbaHostBridge.NO_DEVICE
+    private val registeredGameCubePorts = mutableSetOf<Int>()
     private var blockedGameCubePorts = IntArray(0)
 
     fun onGbaInputRegistered(deviceNumber: Int) {
@@ -17,6 +18,7 @@ object GbaInputFocusManager {
     }
 
     fun requestFocus(deviceNumber: Int) {
+        if (focusedDevice == deviceNumber) return  // already focused: nothing to redo per event
         if (deviceNumber !in GBA_DEVICE_RANGE) {
             return
         }
@@ -51,7 +53,13 @@ object GbaInputFocusManager {
 
     private fun setGameCubeInputEnabled(controllerIndices: IntArray, enabled: Boolean) {
         for (controllerIndex in controllerIndices) {
-            InputOverrider.registerGameCube(controllerIndex)
+            // Register the override ONCE per port. registerGameCube re-assigns the core's
+            // std::function; the enable flag below is an atomic store and is all that has to
+            // run per event. (Re-registering on every ACTION_MOVE raced the CPU thread's pad
+            // poll and aborted the app at team preview.)
+            if (registeredGameCubePorts.add(controllerIndex)) {
+                InputOverrider.registerGameCube(controllerIndex)
+            }
             InputOverrider.setGameCubeInputEnabled(controllerIndex, enabled)
         }
     }
