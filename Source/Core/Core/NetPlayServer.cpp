@@ -31,6 +31,7 @@
 #include "Common/Hash.h"
 #include "Common/Logging/Log.h"
 #include "Common/MsgHandler.h"
+#include "Common/Random.h"
 #include "Common/SFMLHelper.h"
 #include "Common/StringUtil.h"
 #include "Common/UPnP.h"
@@ -1409,9 +1410,14 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     {
       // we have all records for this frame
 
-      if (!std::ranges::all_of(timebases, [&](std::pair<PlayerId, u64> pair) {
-            return pair.second == timebases[0].second;
-          }))
+      // OrreLink v1.5.11: with the XD clock on, JIT64 vs JITARM64 raw time bases differ by a
+      // few ticks by design (block-boundary skew); only a real divergence (>=1e5 ticks within
+      // seconds in the field logs) counts.
+      const auto mm =
+          std::ranges::minmax_element(timebases, {}, &std::pair<PlayerId, u64>::second);
+      const u64 spread = mm.max->second - mm.min->second;
+      const u64 tolerance = m_settings.xd_deterministic_clock ? 4096 : 0;
+      if (spread > tolerance)
       {
         int pid_to_blame = 0;
         for (auto pair : timebases)
@@ -1707,39 +1713,53 @@ bool NetPlayServer::SetupNetSettings()
   // Copy all relevant settings
   settings.cpu_thread = Config::Get(Config::MAIN_CPU_THREAD);
   settings.cpu_core = Config::Get(Config::MAIN_CPU_CORE);
-  // OrreLink cross-architecture determinism. The enum above is only portable
-  // between machines of the same architecture: an x86_64 build cannot construct
-  // JITARM64 (JitInterface.cpp), PowerPC.cpp then silently substitutes JIT64,
-  // and two different recompilers split blocks differently -- so the emulated
-  // tick a time-base read sees differs by a few dozen cycles, XD's link key and
-  // battle RNG are time-base derived, and the two games drift apart from the
-  // first GBA link (the v1.5.9 macOS-vs-Windows desync, proven from both logs).
-  // Same-arch rooms keep the host's core untouched: macOS arm64 and Android
-  // arm64 both run JITARM64, and the AYN Thor cannot afford anything slower.
+  // OrreLink cross-architecture determinism. The enum above is only portable between
+  // machines of the same architecture: an x86_64 build cannot construct JITARM64 and two
+  // recompilers split blocks differently, so a time-base read sees a tick that differs by a
+  // few dozen cycles (the v1.5.9 macOS-vs-Windows desync). v1.5.11: mixed rooms keep their
+  // recompilers and XD's OSGetTick/OSGetTime are served by HLE_XD from game state plus a
+  // per-session salt (clock=1 below). ForceCommonCoreOnMixedArch is the opt-in "safest"
+  // fallback (Cached Interpreter, clock off). Same-arch rooms are never touched.
+  settings.xd_deterministic_clock = false;
+  settings.xd_clock_salt = 0;
+  settings.xd_rng_seed = 0;
   {
     const bool mixed = RoomMixesCpuArchitectures();
-    const bool override_on = Config::Get(Config::NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH);
+    const bool safest = Config::Get(Config::NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH);
+    const bool is_xd = game->GetGameID() == "GXXE01";
     const std::string archs = DescribeRoomArchitectures();
     std::string line;
-    if (mixed && override_on && settings.cpu_core != PowerPC::CPUCore::Interpreter)
+    if (mixed && safest && settings.cpu_core != PowerPC::CPUCore::Interpreter)
     {
       settings.cpu_core = PowerPC::CPUCore::CachedInterpreter;
-      line = fmt::format("Mixed CPU architectures ({}): all players use the Cached Interpreter "
-                         "this battle so both sides compute identical results (slower than JIT).",
+      line = fmt::format("Mixed CPU architectures ({}): 'safest' override is on, all players use "
+                         "the Cached Interpreter this battle (slower than JIT).",
                          archs);
     }
-    else if (mixed && !override_on)
+    else if (mixed && is_xd)
     {
-      line = fmt::format("Mixed CPU architectures ({}) with the common-core override OFF: the "
-                         "two recompilers are not identical, a desync is likely.",
+      settings.xd_deterministic_clock = true;
+      settings.xd_clock_salt = Common::Random::GenerateValue<u32>();
+      settings.xd_rng_seed = Common::Random::GenerateValue<u32>();
+      line = fmt::format("Mixed CPU architectures ({}): recompilers stay on; OrreLink serves XD's "
+                         "clock this battle so both sides compute identical results (main menu "
+                         "skipped).",
+                         archs);
+    }
+    else if (mixed)
+    {
+      line = fmt::format("Mixed CPU architectures ({}) on a game without the XD clock: a desync "
+                         "is possible. The host can set ForceCommonCoreOnMixedArch = True.",
                          archs);
     }
     if (!line.empty())
       SendChatMessage(line);  // pid 0 notice; the host's own loopback client shows it too
 #ifdef HAS_LIBMGBA
-    GBADetectLog::NoteBoot(
-        fmt::format("netplay corepolicy archs=\"{}\" mixed={} override={} cpu_core={}", archs,
-                    mixed ? 1 : 0, override_on ? 1 : 0, static_cast<int>(settings.cpu_core)));
+    GBADetectLog::NoteBoot(fmt::format(
+        "netplay corepolicy archs=\"{}\" mixed={} override={} cpu_core={} clock={} salt={:08x} "
+        "seed={:08x}",
+        archs, mixed ? 1 : 0, safest ? 1 : 0, static_cast<int>(settings.cpu_core),
+        settings.xd_deterministic_clock ? 1 : 0, settings.xd_clock_salt, settings.xd_rng_seed));
 #endif
   }
   settings.enable_cheats = Config::AreCheatsEnabled();
@@ -1805,6 +1825,10 @@ bool NetPlayServer::SetupNetSettings()
   // every netplay client until v1.5.10 because the field was never serialized
   // (see StartGame / OnStartGame).
   settings.accurate_fmadds = true;
+  // OrreLink v1.5.11: x86-64 and ARM64 produce default NaNs of opposite sign; with the
+  // recompilers kept on in mixed rooms, pin accurate NaNs so a NaN's bits match on both sides.
+  if (RoomMixesCpuArchitectures())
+    settings.accurate_nans = true;
   settings.disable_icache = Config::Get(Config::MAIN_DISABLE_ICACHE);
   settings.sync_on_skip_idle = Config::Get(Config::MAIN_SYNC_ON_SKIP_IDLE);
   settings.sync_gpu = Config::Get(Config::MAIN_SYNC_GPU);
@@ -1816,6 +1840,11 @@ bool NetPlayServer::SetupNetSettings()
   settings.mmu = Config::Get(Config::MAIN_MMU);
   settings.fastmem = Config::Get(Config::MAIN_FASTMEM);
   settings.skip_ipl = Config::Get(Config::MAIN_SKIP_IPL) || !DoAllPlayersHaveIPLDump();
+  // OrreLink v1.5.11: the HLE_XD hooks are installed from HLE::Reload at OnTitleDirectlyBooted,
+  // which for an IPL (main menu) boot runs before main.dol is in RAM and is never re-run. The
+  // deterministic clock therefore requires the apploader (skip-IPL) boot path.
+  if (settings.xd_deterministic_clock)
+    settings.skip_ipl = true;
   settings.load_ipl_dump = Config::Get(Config::SESSION_LOAD_IPL_DUMP) && DoAllPlayersHaveIPLDump();
   settings.vertex_rounding = Config::Get(Config::GFX_HACK_VERTEX_ROUNDING);
   settings.internal_resolution = Config::Get(Config::GFX_EFB_SCALE);
@@ -2088,6 +2117,11 @@ bool NetPlayServer::StartGame()
 
   for (size_t i = 0; i < sizeof(m_settings.sram); ++i)
     spac << m_settings.sram[i];
+
+  // OrreLink v1.5.11 -- keep these LAST; NetPlayClient::OnStartGame reads them in this order.
+  spac << m_settings.xd_deterministic_clock;
+  spac << m_settings.xd_clock_salt;
+  spac << m_settings.xd_rng_seed;
 
   SendAsyncToClients(std::move(spac));
 
