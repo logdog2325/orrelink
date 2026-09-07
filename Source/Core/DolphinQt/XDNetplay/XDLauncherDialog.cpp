@@ -374,7 +374,7 @@ void XDLauncherDialog::CreateMainLayout()
   // (GBA 1) sits on port 1, which the launcher keeps as a Standard Controller -- so from
   // there the mapping was unreachable. This opens the GBA mapping window directly and
   // then copies the result to every GBA slot, so it holds whether you join or host.
-  m_gba_customize_button = new NonDefaultQPushButton(tr("Customize..."));
+  m_gba_customize_button = new NonDefaultQPushButton(tr("Change GBA controls..."));
   m_gba_customize_button->setToolTip(tr("Remap the GBA buttons. Applies to every GBA slot, so it "
                                         "works whether you join or host."));
   checklist_layout->addWidget(m_gba_customize_button, row - 1, 3);  // beside 'Use defaults'
@@ -1073,7 +1073,7 @@ void XDLauncherDialog::OnFixGbaInput()
          "when hosting):\n\n"
          "D-Pad = W / A / S / D,  A = X,  B = Z\n"
          "L = Q,  R = E,  Start = Enter,  Select = Backspace\n\n"
-         "Change them with Customize... (they apply whether you join or host)."));
+         "To remap them press Change GBA controls... (the mapping applies whether you join or host)."));
   RefreshChecklist();
 }
 
