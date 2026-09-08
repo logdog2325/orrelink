@@ -84,6 +84,12 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     // gates in shared core read when this device hosts; a pick here is
     // already "applied".
     private var formatId by mutableStateOf(FormatBridge.FORMAT_FREE)
+    // Host's battle timer (native Main/XDNetplay/Timer* keys). Applied by
+    // shared core through the same rules pin as the format when this device
+    // hosts with a rules format; a joiner's values do nothing.
+    private var timerEnabled by mutableStateOf(false)
+    private var timerTurnSeconds by mutableStateOf(60)
+    private var timerGameMinutes by mutableStateOf(20)
     private var practiceDummy by mutableStateOf(false)
 
     /** True from the moment "Search for Match" is tapped until it joins, hosts or gives up. */
@@ -357,6 +363,24 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                         IntSetting.MAIN_XD_FORMAT.setInt(NativeConfig.LAYER_BASE, id)
                         NativeConfig.save(NativeConfig.LAYER_BASE)
                     },
+                    timerEnabled = timerEnabled,
+                    onTimerEnabledChanged = { on ->
+                        timerEnabled = on
+                        BooleanSetting.MAIN_XD_TIMER_ENABLED.setBoolean(NativeConfig.LAYER_BASE, on)
+                        NativeConfig.save(NativeConfig.LAYER_BASE)
+                    },
+                    timerTurnSeconds = timerTurnSeconds,
+                    onTimerTurnSecondsChanged = { v ->
+                        timerTurnSeconds = v
+                        IntSetting.MAIN_XD_TIMER_TURN_SECONDS.setInt(NativeConfig.LAYER_BASE, v)
+                        NativeConfig.save(NativeConfig.LAYER_BASE)
+                    },
+                    timerGameMinutes = timerGameMinutes,
+                    onTimerGameMinutesChanged = { v ->
+                        timerGameMinutes = v
+                        IntSetting.MAIN_XD_TIMER_GAME_MINUTES.setInt(NativeConfig.LAYER_BASE, v)
+                        NativeConfig.save(NativeConfig.LAYER_BASE)
+                    },
                     onBattle = { NetplaySetupActivity.launch(this) },
                     onSearchForMatch = { searchForMatch() },
                     searching = searching,
@@ -564,6 +588,9 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         musicId = BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_MUSIC)
         venueId = BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_VENUE)
         formatId = IntSetting.MAIN_XD_FORMAT.int
+        timerEnabled = BooleanSetting.MAIN_XD_TIMER_ENABLED.boolean
+        timerTurnSeconds = IntSetting.MAIN_XD_TIMER_TURN_SECONDS.int
+        timerGameMinutes = IntSetting.MAIN_XD_TIMER_GAME_MINUTES.int
         practiceDummy = BooleanSetting.MAIN_GBA_PRACTICE_DUMMY.boolean
         migrateContentPaths()
         emeraldRomSet = ensureGbaConfig()

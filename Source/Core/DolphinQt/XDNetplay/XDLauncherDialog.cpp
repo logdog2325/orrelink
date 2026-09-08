@@ -17,6 +17,8 @@
 
 #include <QAbstractItemModel>
 #include <QCheckBox>
+#include <QHBoxLayout>
+#include <QSpinBox>
 #include <QDesktopServices>
 #include <QDir>
 #include <QComboBox>
@@ -549,6 +551,34 @@ void XDLauncherDialog::CreateMainLayout()
     m_format_combo->addItem(
         QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(format_id)), format_id);
   }
+  {
+    // Battle timer: the other non-cosmetic pick. It is one word of the same
+    // Custom-1 record the Format pins, so it only exists where a record is
+    // pinned; RefreshTimerRow greys it for Free/OU.
+    const QString timer_tip =
+        tr("Host only. XD's per-turn and per-game timer, pinned for both players like the "
+           "format. Needs an Orre or Hoenn format; off by default.");
+    m_timer_check = new QCheckBox(tr("Battle timer"));
+    m_timer_turn_spin = new QSpinBox;
+    m_timer_turn_spin->setRange(10, 99);
+    m_timer_turn_spin->setSuffix(tr(" s per turn"));
+    m_timer_game_spin = new QSpinBox;
+    m_timer_game_spin->setRange(1, 99);
+    m_timer_game_spin->setSuffix(tr(" min per game"));
+    for (QWidget* w : {static_cast<QWidget*>(m_timer_check),
+                       static_cast<QWidget*>(m_timer_turn_spin),
+                       static_cast<QWidget*>(m_timer_game_spin)})
+    {
+      w->setToolTip(timer_tip);
+    }
+    auto* timer_fields = new QHBoxLayout;
+    timer_fields->addWidget(m_timer_turn_spin);
+    timer_fields->addWidget(m_timer_game_spin);
+    timer_fields->addStretch(1);
+    style_layout->addWidget(m_timer_check, style_row, 0);
+    style_layout->addLayout(timer_fields, style_row, 1);
+    style_row++;
+  }
   const auto populate_style_combo =
       [this](QComboBox* combo, std::span<const XDNetplay::BattleCustomizer::StyleOption> table,
              bool model_table, bool terrain_suffix) {
@@ -805,6 +835,22 @@ void XDLauncherDialog::ConnectWidgets()
   connect_style_combo(m_style_guest_model_combo, Config::MAIN_XD_STYLE_GUEST_MODEL);
   connect_style_combo(m_style_music_combo, Config::MAIN_XD_STYLE_MUSIC);
   connect_style_combo(m_style_venue_combo, Config::MAIN_XD_STYLE_VENUE);
+  connect(m_timer_check, &QCheckBox::toggled, this, [this](bool checked) {
+    Config::SetBaseOrCurrent(Config::MAIN_XD_TIMER_ENABLED, checked);
+    Config::Save();
+    RefreshTimerRow();
+  });
+  connect(m_timer_turn_spin, &QSpinBox::valueChanged, this, [](int value) {
+    Config::SetBaseOrCurrent(Config::MAIN_XD_TIMER_TURN_SECONDS, value);
+    Config::Save();
+  });
+  connect(m_timer_game_spin, &QSpinBox::valueChanged, this, [](int value) {
+    Config::SetBaseOrCurrent(Config::MAIN_XD_TIMER_GAME_MINUTES, value);
+    Config::Save();
+  });
+  // The Format decides whether a record is pinned at all, so it gates the row.
+  connect(m_format_combo, &QComboBox::currentIndexChanged, this,
+          [this](int) { RefreshTimerRow(); });
 
   connect(m_share_log_button, &QPushButton::clicked, this, &XDLauncherDialog::OnShareLog);
   connect(m_gba_customize_button, &QPushButton::clicked, this,
@@ -863,7 +909,24 @@ void XDLauncherDialog::showEvent(QShowEvent* event)
   refresh_style_combo(m_style_guest_model_combo, Config::MAIN_XD_STYLE_GUEST_MODEL);
   refresh_style_combo(m_style_music_combo, Config::MAIN_XD_STYLE_MUSIC);
   refresh_style_combo(m_style_venue_combo, Config::MAIN_XD_STYLE_VENUE);
+  {
+    const QSignalBlocker b1(m_timer_check), b2(m_timer_turn_spin), b3(m_timer_game_spin);
+    m_timer_check->setChecked(Config::Get(Config::MAIN_XD_TIMER_ENABLED));
+    m_timer_turn_spin->setValue(Config::Get(Config::MAIN_XD_TIMER_TURN_SECONDS));
+    m_timer_game_spin->setValue(Config::Get(Config::MAIN_XD_TIMER_GAME_MINUTES));
+  }
+  RefreshTimerRow();
   RefreshChecklist();
+}
+
+void XDLauncherDialog::RefreshTimerRow()
+{
+  const bool pinned =
+      XDNetplay::FormatRules::HasTeamRules(m_format_combo->currentData().toInt());
+  m_timer_check->setEnabled(pinned);
+  const bool fields_on = pinned && m_timer_check->isChecked();
+  m_timer_turn_spin->setEnabled(fields_on);
+  m_timer_game_spin->setEnabled(fields_on);
 }
 
 void XDLauncherDialog::RefreshChecklist()

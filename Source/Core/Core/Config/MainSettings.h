@@ -256,6 +256,15 @@ extern const Info<int> MAIN_XD_STYLE_VENUE;
 // a joiner's own value is irrelevant while joining. Unknown values behave as
 // Free, never clamped.
 extern const Info<int> MAIN_XD_FORMAT;
+// Host-side battle timer, folded into the format rules pin: when enabled and
+// the Format pins a rules record, BattleCustomizer emits that record's timer
+// word (+0x14 s16 minutes per game, +0x16 s16 seconds per turn; positive = on)
+// with these values instead of the stock "60 min / 20 s, both off". Free and
+// OU pin no record, so the timer is inert there. Clamped at emit time to the
+// game's own editable ranges (game 1..99 min, turn 10..99 s).
+extern const Info<bool> MAIN_XD_TIMER_ENABLED;
+extern const Info<int> MAIN_XD_TIMER_TURN_SECONDS;
+extern const Info<int> MAIN_XD_TIMER_GAME_MINUTES;
 
 // Display filename of the user save imported over a GBA socket's team save by
 // UICommon/XDNetplay/SaveImport; "" = the bundled team-editor save. Display
