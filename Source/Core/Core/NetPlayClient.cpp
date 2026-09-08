@@ -53,6 +53,7 @@
 #ifdef HAS_LIBMGBA
 #include "Core/HW/GBACore.h"
 #include "Core/HW/GBADetectLog.h"
+#include "Core/HW/SI/SI_DeviceGBAEmu.h"
 #endif
 #include "Core/HW/GBAPad.h"
 #include "Core/HW/GCMemcard/GCMemcard.h"
@@ -76,6 +77,7 @@
 #include "Core/System.h"
 #include "DiscIO/Blob.h"
 
+#include "InputCommon/ControlReference/ControlReference.h"
 #include "InputCommon/GCAdapter.h"
 #include "UICommon/GameFile.h"
 #include "VideoCommon/OnScreenDisplay.h"
@@ -2686,6 +2688,61 @@ bool NetPlayClient::WiimoteUpdate(const std::span<WiimoteDataBatchEntry>& entrie
   return true;
 }
 
+#ifdef HAS_LIBMGBA
+namespace
+{
+// Diagnostic only: what THIS machine's keyboard/controller produced for its own
+// GBA, before the state enters the netplay pad buffer, and whether Dolphin was
+// even reading input (gate=0 -- no game window focused and Background Input
+// off -- means every key was ignored). One line per change, budgeted like the
+// SI-side 'keys' lines; the two together separate "never pressed", "pressed but
+// ignored" and "pressed but lost in transit".
+void LogLocalGbaKeys(int ingame_pad, int local_pad, const GCPadStatus& pad_status)
+{
+  if (ingame_pad < 0 || ingame_pad >= 4)
+    return;
+  static std::array<u16, 4> prev_keys{};
+  static std::array<bool, 4> prev_gate{true, true, true, true};
+  static std::array<u64, 4> window{};
+  static std::array<u32, 4> in_window{};
+  static std::array<u32, 4> dropped{};
+
+  const u16 keys = SerialInterface::CSIDevice_GBAEmu::GbaKeysFromPad(pad_status);
+  const bool gate = ControlReference::GetInputGate();
+  if (keys == prev_keys[ingame_pad] && gate == prev_gate[ingame_pad])
+    return;
+  prev_keys[ingame_pad] = keys;
+  prev_gate[ingame_pad] = gate;
+
+  auto& system = Core::System::GetInstance();
+  const u64 now = system.GetCoreTiming().GetTicks();
+  const u64 second = system.GetSystemTimers().GetTicksPerSecond();
+  if (now - window[ingame_pad] >= second)
+  {
+    if (dropped[ingame_pad] != 0)
+    {
+      GBADetectLog::LogEvent(ingame_pad, now, "keys-local-dropped",
+                             fmt::format("n={}", dropped[ingame_pad]), false);
+    }
+    window[ingame_pad] = now;
+    in_window[ingame_pad] = 0;
+    dropped[ingame_pad] = 0;
+  }
+  if (in_window[ingame_pad] >= 30)
+  {
+    ++dropped[ingame_pad];
+    return;
+  }
+  ++in_window[ingame_pad];
+  GBADetectLog::LogEvent(ingame_pad, now, "keys-local",
+                         fmt::format("slot={} {:03x} {} gate={}", local_pad, keys,
+                                     SerialInterface::CSIDevice_GBAEmu::DescribeGbaKeys(keys),
+                                     gate ? 1 : 0),
+                         false);
+}
+}  // namespace
+#endif
+
 bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
 {
   const int ingame_pad = LocalPadToInGamePad(local_pad);
@@ -2695,6 +2752,9 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
   if (m_net_settings.gba_config[ingame_pad].enabled)
   {
     pad_status = Pad::GetGBAStatus(local_pad);
+#ifdef HAS_LIBMGBA
+    LogLocalGbaKeys(ingame_pad, local_pad, pad_status);
+#endif
   }
   else if (Config::Get(Config::GetInfoForSIDevice(local_pad)) ==
            SerialInterface::SIDEVICE_WIIU_ADAPTER)

@@ -7,6 +7,7 @@
 
 #include <array>
 #include <atomic>
+#include <string>
 #include <vector>
 
 #include <fmt/format.h>
@@ -965,6 +966,70 @@ int CSIDevice_GBAEmu::TransferInterval()
   return SIDevice_GetGBATransferTime(m_system.GetSystemTimers(), m_last_cmd);
 }
 
+u16 CSIDevice_GBAEmu::GbaKeysFromPad(const GCPadStatus& pad_status)
+{
+  static constexpr std::array<PadButton, 10> buttons_map = {
+      PadButton::PAD_BUTTON_A,      // A
+      PadButton::PAD_BUTTON_B,      // B
+      PadButton::PAD_TRIGGER_Z,     // Select
+      PadButton::PAD_BUTTON_START,  // Start
+      PadButton::PAD_BUTTON_RIGHT,  // Right
+      PadButton::PAD_BUTTON_LEFT,   // Left
+      PadButton::PAD_BUTTON_UP,     // Up
+      PadButton::PAD_BUTTON_DOWN,   // Down
+      PadButton::PAD_TRIGGER_R,     // R
+      PadButton::PAD_TRIGGER_L,     // L
+  };
+  u16 keys = 0;
+  for (size_t i = 0; i < buttons_map.size(); ++i)
+    keys |= static_cast<u16>(static_cast<bool>((pad_status.button & buttons_map[i])) << i);
+  return keys;
+}
+
+std::string CSIDevice_GBAEmu::DescribeGbaKeys(u16 keys)
+{
+  static constexpr std::array<const char*, 10> names = {"A",    "B",  "Select", "Start", "Right",
+                                                       "Left", "Up", "Down",   "R",     "L"};
+  std::string out;
+  for (size_t i = 0; i < names.size(); ++i)
+  {
+    if ((keys >> i) & 1)
+    {
+      if (!out.empty())
+        out += '+';
+      out += names[i];
+    }
+  }
+  return out.empty() ? "-" : out;
+}
+
+// Diagnostic only. Which buttons the emulated GBA is about to see, logged on
+// change: the missing half of every "my GBA does not respond" report so far.
+void CSIDevice_GBAEmu::LogGbaKeys(u16 keys)
+{
+  const u64 now = m_system.GetCoreTiming().GetTicks();
+  const u64 second = m_system.GetSystemTimers().GetTicksPerSecond();
+  if (now - m_diag_keys_window >= second)
+  {
+    if (m_diag_keys_dropped != 0)
+    {
+      GBADetectLog::LogEvent(m_device_number, now, "keys-dropped",
+                             fmt::format("n={}", m_diag_keys_dropped), false);
+    }
+    m_diag_keys_window = now;
+    m_diag_keys_in_window = 0;
+    m_diag_keys_dropped = 0;
+  }
+  if (m_diag_keys_in_window >= 30)
+  {
+    ++m_diag_keys_dropped;
+    return;
+  }
+  ++m_diag_keys_in_window;
+  GBADetectLog::LogEvent(m_device_number, now, "keys",
+                         fmt::format("{:03x} {}", keys, DescribeGbaKeys(keys)), false);
+}
+
 DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
 {
   GCPadStatus pad_status{};
@@ -1003,22 +1068,12 @@ DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
   SerialInterface::CSIDevice_GCController::HandleMoviePadStatus(m_system.GetMovie(),
                                                                 m_device_number, &pad_status);
 
-  static constexpr std::array<PadButton, 10> buttons_map = {
-      PadButton::PAD_BUTTON_A,      // A
-      PadButton::PAD_BUTTON_B,      // B
-      PadButton::PAD_TRIGGER_Z,     // Select
-      PadButton::PAD_BUTTON_START,  // Start
-      PadButton::PAD_BUTTON_RIGHT,  // Right
-      PadButton::PAD_BUTTON_LEFT,   // Left
-      PadButton::PAD_BUTTON_UP,     // Up
-      PadButton::PAD_BUTTON_DOWN,   // Down
-      PadButton::PAD_TRIGGER_R,     // R
-      PadButton::PAD_TRIGGER_L,     // L
-  };
-
-  m_keys = 0;
-  for (size_t i = 0; i < buttons_map.size(); ++i)
-    m_keys |= static_cast<u16>(static_cast<bool>((pad_status.button & buttons_map[i]))) << i;
+  m_keys = GbaKeysFromPad(pad_status);
+  if (m_keys != m_diag_prev_keys)
+  {
+    m_diag_prev_keys = m_keys;
+    LogGbaKeys(m_keys);
+  }
 
   // Use X button as a reset signal for NetPlay/Movies. Reset asynchronously on
   // the core's own event thread -- the synchronous Reset() here can deadlock on

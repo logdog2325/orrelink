@@ -327,6 +327,55 @@ bool GbaInputMapped()
   return GbaSlotMapped(0) && GbaSlotMapped(1);
 }
 
+namespace
+{
+std::vector<std::string> GbaGroupExpressions(int slot, GBAPadGroup group)
+{
+  std::vector<std::string> out;
+  const ControllerEmu::ControlGroup* controls = Pad::GetGBAGroup(slot, group);
+  if (!controls)
+    return out;
+  for (const auto& control : controls->controls)
+    out.push_back(control->control_ref ? control->control_ref->GetExpression() : std::string());
+  return out;
+}
+}  // namespace
+
+bool MigrateLegacyGbaDefaults()
+{
+  if (!Pad::IsGBAInitialized())
+    return false;
+
+  // Exactly the 1.5.12 defaults: D-pad Up/Down/Left/Right and the L/R pair;
+  // A, B, Start, Select did not change and are not checked.
+  static const std::vector<std::string> legacy_dpad = {"`T`", "`G`", "`F`", "`H`"};
+  InputConfig* const config = Pad::GetGBAConfig();
+  bool changed = false;
+  for (int slot = 0; slot < config->GetControllerCount(); ++slot)
+  {
+    const std::vector<std::string> dpad = GbaGroupExpressions(slot, GBAPadGroup::DPad);
+    const std::vector<std::string> buttons = GbaGroupExpressions(slot, GBAPadGroup::Buttons);
+    // Buttons group order: B, A, L, R, Select, Start.
+    if (dpad != legacy_dpad || buttons.size() < 4 || buttons[2] != "`Q`" || buttons[3] != "`W`")
+      continue;
+    // Only the six keys that moved; A/B/Start/Select and the device stay as
+    // the player has them.
+    ControllerEmu::ControlGroup* const dpad_group = Pad::GetGBAGroup(slot, GBAPadGroup::DPad);
+    ControllerEmu::ControlGroup* const button_group =
+        Pad::GetGBAGroup(slot, GBAPadGroup::Buttons);
+    dpad_group->SetControlExpression(0, "`W`");
+    dpad_group->SetControlExpression(1, "`S`");
+    dpad_group->SetControlExpression(2, "`A`");
+    dpad_group->SetControlExpression(3, "`D`");
+    button_group->SetControlExpression(3, "`E`");
+    config->GetController(slot)->UpdateReferences(g_controller_interface);
+    changed = true;
+  }
+  if (changed)
+    config->SaveConfig();
+  return changed;
+}
+
 bool ApplyDefaultGbaInput()
 {
   if (!Pad::IsGBAInitialized())
