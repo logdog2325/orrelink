@@ -82,6 +82,8 @@
     <!--Link Base-->
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <GenerateMapFile>true</GenerateMapFile>
+      <MapFileName>$(OutDir)$(TargetName).map</MapFileName>
       <TreatLinkerWarningAsErrors>true</TreatLinkerWarningAsErrors>
       <AdditionalOptions>/experimental:deterministic %(AdditionalOptions)</AdditionalOptions>
     </Link>
