@@ -209,6 +209,21 @@ enum class IntSetting(
         Settings.SECTION_INI_XD_NETPLAY,
         "Format",
         0
+    ),
+
+    // Same keys as the C++ MAIN_XD_TIMER_TURN_SECONDS / _GAME_MINUTES: the
+    // host's battle timer, folded into the format rules pin by shared core.
+    MAIN_XD_TIMER_TURN_SECONDS(
+        Settings.FILE_DOLPHIN,
+        Settings.SECTION_INI_XD_NETPLAY,
+        "TimerTurnSeconds",
+        60
+    ),
+    MAIN_XD_TIMER_GAME_MINUTES(
+        Settings.FILE_DOLPHIN,
+        Settings.SECTION_INI_XD_NETPLAY,
+        "TimerGameMinutes",
+        20
     );
 
     override val isOverridden: Boolean
