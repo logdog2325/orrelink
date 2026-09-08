@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstddef>
 #include <memory>
+#include <string>
 
 #include "Common/CommonTypes.h"
 #include "Core/HW/SI/SI_Device.h"
@@ -19,6 +20,8 @@ class Core;
 }  // namespace HW::GBA
 
 class GBAHostInterface;
+
+struct GCPadStatus;
 
 namespace SerialInterface
 {
@@ -73,6 +76,12 @@ public:
   void DoState(PointerWrap& p) override;
   void OnEvent(u64 userdata, s64 cycles_late) override;
 
+  // Diagnostics shared with the netplay local-pad poll: the GBA key bitmask
+  // (bit order A, B, Select, Start, Right, Left, Up, Down, R, L) a GC pad state
+  // maps to, and its readable form ("A+Right", "-" for none).
+  static u16 GbaKeysFromPad(const GCPadStatus& pad_status);
+  static std::string DescribeGbaKeys(u16 keys);
+
 private:
   enum class NextAction
   {
@@ -113,6 +122,14 @@ private:
   bool m_netplay_pad_is_local = true;
   bool m_netplay_locality_cached = false;
   u16 m_keys = 0;
+  // 'keys' log lines: one per change of the keys the emulated GBA sees
+  // (netplay-synced, so identical on every machine), at most 30 per second per
+  // socket; the overflow is counted and reported once the window rolls.
+  u16 m_diag_prev_keys = 0;
+  u64 m_diag_keys_window = 0;
+  u32 m_diag_keys_in_window = 0;
+  u32 m_diag_keys_dropped = 0;
+  void LogGbaKeys(u16 keys);
 
   // Diagnostic-only mirror of the previous poll's link state, so window_count
   // can count open edges without reading (or perturbing) m_link_was_enabled,

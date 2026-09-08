@@ -21,6 +21,8 @@
 #include <QWidget>
 
 #include "Common/Config/Config.h"
+#include "Common/CrashReport.h"
+#include "Common/FileUtil.h"
 #include "Common/MsgHandler.h"
 #include "Common/ScopeGuard.h"
 #include "Common/StringUtil.h"
@@ -193,6 +195,8 @@ int main(int argc, char* argv[])
 
   UICommon::SetUserDirectory(static_cast<const char*>(options.get("user")));
   UICommon::CreateDirectories();
+  // Crash reports land next to the session logs, so Share Log's folder has them.
+  Common::CrashReport::Install(File::GetUserPath(D_GBAUSER_IDX));
   UICommon::Init();
   Resources::Init();
   Settings::Instance().SetBatchModeEnabled(options.is_set("batch"));
