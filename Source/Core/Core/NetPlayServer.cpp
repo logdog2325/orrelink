@@ -624,6 +624,16 @@ unsigned int NetPlayServer::OnDisconnect(const Client& player)
 {
   const PlayerId pid = player.pid;
 
+#ifdef HAS_LIBMGBA
+  {
+    const std::string detail = fmt::format("pid={} running={}", pid, m_is_running ? 1 : 0);
+    if (GBADetectLog::IsSessionOpen())
+      GBADetectLog::LogEvent(0, 0, "player-left", detail);
+    else
+      GBADetectLog::LogPostSession("player-left " + detail);
+  }
+#endif
+
   // Roster change: same reasoning as in OnConnect.
   m_auto_buffer_raise_streak = 0;
   m_auto_buffer_lower_streak = 0;

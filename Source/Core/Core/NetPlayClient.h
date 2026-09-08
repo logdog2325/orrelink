@@ -295,6 +295,7 @@ private:
     std::chrono::steady_clock::time_point started{};
     u64 next_notice_ms = 0;
     bool started_valid = false;
+    bool silence_notice = false;
   };
 
   // Why a session stopped by the watchdog stopped. It decides how loudly we say
