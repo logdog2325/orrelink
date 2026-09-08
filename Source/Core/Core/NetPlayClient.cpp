@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <ctime>
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -128,6 +129,25 @@ constexpr u64 PAD_STALL_REPEAT_SLOW_MS = 30000;
 // verdict (PEER_TIMEOUT, 30 s) still arrives and is still authoritative -- this
 // only stops us from being a frozen window for the last third of that wait.
 constexpr u64 LINK_SILENT_MS = 20000;
+
+namespace
+{
+// Local wall clock for the gba_detect log: every earlier wall<->emulated-time
+// reconstruction of a stalled session was accurate to +-5 s at best.
+std::string WallClockHHMMSS()
+{
+  const std::time_t now = std::time(nullptr);
+  std::tm tm{};
+#ifdef _WIN32
+  localtime_s(&tm, &now);
+#else
+  localtime_r(&now, &tm);
+#endif
+  char buf[16] = {};
+  std::strftime(buf, sizeof(buf), "%H:%M:%S", &tm);
+  return buf;
+}
+}  // namespace
 // Backstop for "starved of a pad whose owner has already left the room".
 // Deliberately parked past PEER_TIMEOUT so that in every topology we understand
 // the server's own DisableGame broadcast wins the race and this never fires; it
@@ -1090,6 +1110,10 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
 
 void NetPlayClient::OnStopGame(sf::Packet& packet)
 {
+#ifdef HAS_LIBMGBA
+  GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "stop-request",
+                         fmt::format("server wall={}", WallClockHHMMSS()));
+#endif
   INFO_LOG_FMT(NETPLAY, "Game stopped");
 
   StopGame();
@@ -2231,6 +2255,7 @@ bool NetPlayClient::PadOwnerHasLeftRoom(const int pad_nb)
 }
 
 // called from ---CPU--- thread (safe from any thread)
+
 void NetPlayClient::DeclareSessionLost(const SessionEndKind kind, const std::string& reason)
 {
   // First one in wins; later slices of the same stall must not re-announce.
@@ -2243,6 +2268,14 @@ void NetPlayClient::DeclareSessionLost(const SessionEndKind kind, const std::str
   {
     return;
   }
+
+#ifdef HAS_LIBMGBA
+  // The one line that says WHY a session ended, next to everything else.
+  GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "session-end",
+                         fmt::format("kind={} wall={} reason=\"{}\"",
+                                     kind == SessionEndKind::PeerLost ? "peer-lost" : "local-stop",
+                                     WallClockHHMMSS(), reason));
+#endif
 
   if (kind == SessionEndKind::LocalStopCompleted)
   {
@@ -2362,6 +2395,21 @@ bool NetPlayClient::WaitOnRemote(Common::Event& wait_event, const int pad_nb,
         SessionEndKind::PeerLost,
         Common::GetStringT("NetPlay: lost contact with the host. Ending this session."));
     return false;
+  }
+  // Halfway to that verdict, say so once: a screen that stopped moving with no
+  // word from the emulator has been reported as "it froze" every single time.
+  if (const u64 last_recv = m_last_recv_ms.load(std::memory_order_relaxed);
+      last_recv != 0 && now_ms - last_recv >= LINK_SILENT_MS / 2 && !state.silence_notice)
+  {
+    state.silence_notice = true;
+    OSD::AddMessage(Common::GetStringT("NetPlay: nothing from the other side for 10 s. The "
+                                       "session ends after 20 s of silence."),
+                    OSD::Duration::VERY_LONG, OSD::Color::YELLOW);
+#ifdef HAS_LIBMGBA
+    GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(),
+                           "link-silent",
+                           fmt::format("ms={} wall={}", now_ms - last_recv, WallClockHHMMSS()));
+#endif
   }
 
   // 3. The pad we are starved of belongs to a player the server has already told
@@ -2598,7 +2646,8 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
     {
       m_lat_last_emit_us = now_us;
       const std::string line = fmt::format(
-          "NetLat ping={}ms buf={}/{} wait~{:.0f}ms(max{}) starve={}/{}", GetPlayersMaxPing(),
+          "NetLat wall={} ping={}ms buf={}/{} wait~{:.0f}ms(max{}) starve={}/{}",
+          WallClockHHMMSS(), GetPlayersMaxPing(),
           depth, m_target_buffer_size, m_lat_wait_ewma_us / 1000.0, m_lat_wait_max_us / 1000,
           m_lat_starve_pops, m_lat_pops);
       // No OSD line anymore: the once-per-second flash on the play screen was
@@ -2966,7 +3015,13 @@ void NetPlayClient::RequestStopGame()
   // from the PREVIOUS game cannot land just after StartGame() cleared this and
   // arm a stop deadline against a session that is only now booting.
   if (m_is_running.IsSet())
+  {
     m_stop_requested_ms.store(SteadyNowMs(), std::memory_order_relaxed);
+#ifdef HAS_LIBMGBA
+    GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(),
+                           "stop-request", fmt::format("local wall={}", WallClockHHMMSS()));
+#endif
+  }
 
   // Tell the server to stop if we have a pad mapped in game.
   if (LocalPlayerHasControllerMapped())

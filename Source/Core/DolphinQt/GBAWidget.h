@@ -98,6 +98,7 @@ private:
   bool m_moving;
   QPoint m_move_pos;
   bool m_interframe_blending;
+  bool m_keys_off = false;
 };
 
 class GBAWidgetController : public QObject

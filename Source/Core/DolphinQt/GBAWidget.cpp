@@ -24,6 +24,7 @@
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/GBAPad.h"
+#include "Core/Host.h"
 #include "Core/HW/SI/SI.h"
 #include "Core/HW/SI/SI_Device.h"
 #include "Core/Movie.h"
@@ -105,6 +106,16 @@ void GBAWidget::GameChanged(const HW::GBA::CoreInfo& info)
 
 void GBAWidget::SetVideoBuffer(std::span<const u32> video_buffer)
 {
+  // Say it in the title while it is true: with Background Input off, Dolphin
+  // reads no keys unless the game window or a GBA window is the active window,
+  // and a player who alt-tabbed to chat sees a GBA that "does not respond".
+  const bool keys_off =
+      !Config::Get(Config::MAIN_INPUT_BACKGROUND_INPUT) && !Host_RendererHasFocus();
+  if (keys_off != m_keys_off)
+  {
+    m_keys_off = keys_off;
+    UpdateTitle();
+  }
   m_previous_frame = std::move(m_last_frame);
   if (video_buffer.size() == static_cast<size_t>(m_core_info.width * m_core_info.height))
   {
@@ -316,6 +327,9 @@ void GBAWidget::UpdateTitle()
     title += " | Muted";
   else
     title += fmt::format(" | Volume {}%", m_volume);
+
+  if (m_keys_off)
+    title += " | KEYS OFF: click the game or a GBA window";
 
   setWindowTitle(QString::fromStdString(title));
 }
