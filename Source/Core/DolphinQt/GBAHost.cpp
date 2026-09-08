@@ -5,6 +5,8 @@
 
 #include "DolphinQt/GBAHost.h"
 
+#include <vector>
+
 #include <QApplication>
 
 #include "Core/HW/GBACore.h"
@@ -40,9 +42,14 @@ void GBAHost::GameChanged()
 
 void GBAHost::FrameEnded(std::span<const u32> video_buffer)
 {
-  QueueOnObject(m_widget_controller, [widget_controller = m_widget_controller, video_buffer] {
-    widget_controller->FrameEnded(video_buffer);
-  });
+  // The span points into the core's own buffer; by the time the UI thread runs
+  // this the core may have advanced or, at a stop, be gone. Copy it (150 KB,
+  // once per GBA frame).
+  std::vector<u32> frame(video_buffer.begin(), video_buffer.end());
+  QueueOnObject(m_widget_controller,
+                [widget_controller = m_widget_controller, frame = std::move(frame)] {
+                  widget_controller->FrameEnded(frame);
+                });
 }
 
 std::unique_ptr<GBAHostInterface> Host_CreateGBAHost(std::weak_ptr<HW::GBA::Core> core)
