@@ -145,6 +145,7 @@
     <ClInclude Include="Common\MemArena.h" />
     <ClInclude Include="Common\MemoryUtil.h" />
     <ClInclude Include="Common\MinizipUtil.h" />
+    <ClInclude Include="Common\CrashReport.h" />
     <ClInclude Include="Common\MsgHandler.h" />
     <ClInclude Include="Common\Mutex.h" />
     <ClInclude Include="Common\NandPaths.h" />
@@ -893,6 +894,7 @@
     <ClCompile Include="Common\Matrix.cpp" />
     <ClCompile Include="Common\MemArenaWin.cpp" />
     <ClCompile Include="Common\MemoryUtil.cpp" />
+    <ClCompile Include="Common\CrashReport.cpp" />
     <ClCompile Include="Common\MsgHandler.cpp" />
     <ClCompile Include="Common\NandPaths.cpp" />
     <ClCompile Include="Common\Network.cpp" />

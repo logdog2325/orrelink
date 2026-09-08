@@ -342,6 +342,10 @@ XDLauncherDialog::XDLauncherDialog(const GameListModel& game_list_model, QWidget
 {
   setWindowTitle(tr("OrreLink Launcher"));
 
+  // Old "Use defaults" mappings (T/G/F/H) become the current WASD ones here,
+  // before the checklist reads them.
+  XDNetplay::MigrateLegacyGbaDefaults();
+
   CreateMainLayout();
   ConnectWidgets();
 }

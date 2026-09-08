@@ -3,6 +3,7 @@
 
 #include "Core/MemTools.h"
 
+#include <algorithm>
 #include <cstdlib>
 
 #include "Common/CommonFuncs.h"
@@ -303,18 +304,29 @@ static void sigsegv_handler(int sig, siginfo_t* info, void* raw_context)
                         old_sa_segv;
 
   sigaction(sig, &old_sa, nullptr);
+  if ((old_sa.sa_flags & SA_SIGINFO) != 0 && old_sa.sa_sigaction != nullptr)
+  {
+    // Hand the original siginfo/context to the previous handler (the crash
+    // reporter) so it records the real faulting address, not a raise().
+    old_sa.sa_sigaction(sig, info, raw_context);
+    return;
+  }
   raise(sig);
 }
 
 void InstallExceptionHandler()
 {
+  // SIGSTKSZ is ~8 KiB on glibc: enough for this handler alone, not for the
+  // crash reporter it chains to (backtrace + dladdr) on top of an AVX-512
+  // signal frame. 64 KiB costs nothing.
+  const size_t stack_size = std::max<size_t>(SIGSTKSZ, 64 * 1024);
   stack_t signal_stack;
 #ifdef __FreeBSD__
-  signal_stack.ss_sp = (char*)malloc(SIGSTKSZ);
+  signal_stack.ss_sp = (char*)malloc(stack_size);
 #else
-  signal_stack.ss_sp = malloc(SIGSTKSZ);
+  signal_stack.ss_sp = malloc(stack_size);
 #endif
-  signal_stack.ss_size = SIGSTKSZ;
+  signal_stack.ss_size = stack_size;
   signal_stack.ss_flags = 0;
   if (sigaltstack(&signal_stack, nullptr) != 0)
     PanicAlertFmt("sigaltstack failed: {}", Common::LastStrerrorString());
