@@ -12,6 +12,7 @@
 #include "Common/Config/Config.h"
 #include "Common/Crypto/SHA1.h"
 #include "Common/FileUtil.h"
+#include "Common/IniFile.h"
 #include "Common/IOFile.h"
 #include "Common/StringUtil.h"
 
@@ -370,6 +371,36 @@ bool MigrateLegacyGbaDefaults()
     button_group->SetControlExpression(3, "`E`");
     config->GetController(slot)->UpdateReferences(g_controller_interface);
     changed = true;
+  }
+  // Older launchers only ever mapped slot 0, but the host reads slot 1, so the
+  // checklist showed such a config as "not mapped" and steered the player to
+  // "Use defaults" -- which quietly changed their keys. Fill slots that have
+  // nothing at all from slot 0 instead; the keys the player knows stay as
+  // they are.
+  const auto slot_is_empty = [&](int slot) {
+    for (const GBAPadGroup group : {GBAPadGroup::DPad, GBAPadGroup::Buttons})
+    {
+      for (const std::string& expression : GbaGroupExpressions(slot, group))
+      {
+        if (!expression.empty())
+          return false;
+      }
+    }
+    return true;
+  };
+  if (!slot_is_empty(0))
+  {
+    Common::IniFile::Section section;
+    config->GetController(0)->SaveConfig(&section);
+    for (int slot = 1; slot < config->GetControllerCount(); ++slot)
+    {
+      if (!slot_is_empty(slot))
+        continue;
+      ControllerEmu::EmulatedController* const target = config->GetController(slot);
+      target->LoadConfig(&section);
+      target->UpdateReferences(g_controller_interface);
+      changed = true;
+    }
   }
   if (changed)
     config->SaveConfig();
