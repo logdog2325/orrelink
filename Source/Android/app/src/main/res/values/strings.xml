@@ -1148,6 +1148,12 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_format_hint_hoenn_suffix">" Entries: bring 6, pick 3."</string>
     <string name="xd_format_hint_hoenn_standard">Applies to rooms you host (listed with a [Hoenn] tag): no Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys; no duplicate species; no duplicate held items; Soul Dew banned. Sleep, Freeze, and Self-KO clauses are enforced by the game itself.</string>
     <string name="xd_format_hint_orre">Applies to rooms you host (listed with an [Orre] tag): no Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys; no duplicate species; no duplicate held items; Soul Dew banned. Sleep, Freeze, and Self-KO clauses are enforced by the game itself.</string>
+    <!-- Host-side battle timer, folded into the format rules pin. -->
+    <string name="xd_timer_label">Battle timer</string>
+    <string name="xd_timer_turn_label">Seconds per turn</string>
+    <string name="xd_timer_game_label">Minutes per game</string>
+    <string name="xd_timer_hint">Host only: XD\'s timer is pinned to these values for both players, like the format.</string>
+    <string name="xd_timer_hint_off">Needs an Orre or Hoenn format — Free and OU leave XD\'s rules screen alone.</string>
     <!-- Non-blocking paste-time note; %1$s is a reason from shared core,
          e.g. "banned species: Kyogre". -->
     <string name="xd_format_note">note: this team is not %1$s legal - %2$s</string>
