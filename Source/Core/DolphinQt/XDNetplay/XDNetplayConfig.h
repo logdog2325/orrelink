@@ -99,6 +99,13 @@ bool GbaInputMapped();
 // Loads Dolphin's default keyboard/controller mapping onto GBA 1 and saves it.
 bool ApplyDefaultGbaInput();
 
+// A GBA slot whose D-pad and L/R are exactly what an older launcher's "Use
+// defaults" wrote (T/G/F/H, Q/W) gets those six keys moved to the current
+// defaults (W/S/A/D, Q/E) once, silently; its other buttons and its device are
+// untouched, and any other mapping is left alone. Returns true if any slot was
+// rewritten.
+bool MigrateLegacyGbaDefaults();
+
 // Copy the bundled EMERALD-2/3.sav templates next to the imported Emerald
 // dump's derived save paths for ports 2 and 3. Existing saves are never
 // overwritten; missing Sys templates are tolerated.
