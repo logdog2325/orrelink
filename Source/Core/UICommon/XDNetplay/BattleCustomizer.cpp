@@ -4,6 +4,7 @@
 #include "UICommon/XDNetplay/BattleCustomizer.h"
 
 #include <mutex>
+#include <algorithm>
 #include <optional>
 #include <span>
 #include <string>
@@ -848,6 +849,38 @@ constexpr u32 RULESET_LV50_WORDS[36] = {
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
 };
 constexpr int RULESET_ENTRIES_WORD = 6;  // u16 at +0x1A = low half of word 6
+// Word 5 = the two battle timers: s16 at +0x14 = MINUTES per game (the game's
+// getter at 0x8004ce20 multiplies it by 60), s16 at +0x16 = SECONDS per turn
+// (getter 0x8004cdfc). The sign is the switch: the rules screen negates a value
+// to turn it OFF and the battle's enable wrappers (0x801f1cd8 / 0x801f1d28)
+// require > 0. Stock 0xFFC4FFEC = 60 min / 20 s, both off. The battle reads
+// the record LIVE through those getters (no copy at battle start), so the
+// per-frame pin below is all it takes; the in-game rules screen renders one
+// digit per cell, so values above 99 misdraw there -- the ranges below are the
+// screen's own limits (up/down clamp 1..99 for the game, 10..99 for the turn).
+constexpr int RULESET_TIMER_WORD = 5;
+constexpr int TIMER_TURN_MIN_S = 10, TIMER_TURN_MAX_S = 99;
+constexpr int TIMER_GAME_MIN_MIN = 1, TIMER_GAME_MAX_MIN = 99;
+
+// The timer word to pin, or nullopt when the timer is off.
+std::optional<u32> TimerWord()
+{
+  if (!Config::Get(Config::MAIN_XD_TIMER_ENABLED))
+    return std::nullopt;
+  const int turn_s = std::clamp(Config::Get(Config::MAIN_XD_TIMER_TURN_SECONDS),
+                                TIMER_TURN_MIN_S, TIMER_TURN_MAX_S);
+  const int game_min = std::clamp(Config::Get(Config::MAIN_XD_TIMER_GAME_MINUTES),
+                                  TIMER_GAME_MIN_MIN, TIMER_GAME_MAX_MIN);
+  return (static_cast<u32>(game_min) & 0xFFFFu) << 16 | (static_cast<u32>(turn_s) & 0xFFFFu);
+}
+
+std::string TimerSummary()
+{
+  const std::optional<u32> word = TimerWord();
+  if (!word)
+    return "off";
+  return fmt::format("{}s/{}min", *word & 0xFFFFu, *word >> 16);
+}
 
 std::string FormatRuleLines()
 {
@@ -893,13 +926,18 @@ std::string FormatRuleLines()
   for (const auto& line : ORRE_MENU_GLOBAL_LINES)
     AppendLine(&lines, line[0], line[1]);
   AppendLine(&lines, BATTLE_TYPE_GLOBAL, battle_type);
+  const std::optional<u32> timer_word = TimerWord();
   for (size_t i = 0; i < 36; i++)
   {
     u32 word = words[i];
     if (i == RULESET_ENTRIES_WORD)
       word = (word & 0xFFFF0000u) | entries;
+    else if (i == RULESET_TIMER_WORD && timer_word)
+      word = *timer_word;
     AppendLine(&lines, ORRE_RULESET_BASE + static_cast<u32>(4 * i), word);
   }
+  if (timer_word)
+    LogNote(fmt::format("battlestyle timer {} word={:08X}", TimerSummary(), *timer_word));
   return lines;
 }
 
@@ -1244,10 +1282,10 @@ void PrepareForStart()
         s_cheats_before = !need_cheats;
     }
     Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, need_cheats);
-    LogNote(fmt::format("battlestyle cheats {} for this session (format={} block={})",
+    LogNote(fmt::format("battlestyle cheats {} for this session (format={} timer={} block={})",
                         need_cheats ? "on" : "off",
                         FormatRules::FormatDisplayName(Config::Get(Config::MAIN_XD_FORMAT)),
-                        active ? "active" : "empty"));
+                        TimerSummary(), active ? "active" : "empty"));
   }
 }
 
