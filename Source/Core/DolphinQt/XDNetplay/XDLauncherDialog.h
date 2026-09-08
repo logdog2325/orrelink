@@ -16,6 +16,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QSpinBox;
 class QShowEvent;
 class TeamEditorDialog;
 
@@ -73,6 +74,7 @@ private:
   void CreateMainLayout();
   void ConnectWidgets();
   void RefreshChecklist();
+  void RefreshTimerRow();
   void RefreshSaveSlots();
   void AutoDiscoverFromGameFolder();
   void FitToScreen();
@@ -128,6 +130,12 @@ private:
   // FORMAT (Free / Orre Colosseum / OU), persisted in MAIN_XD_FORMAT and enforced
   // by FormatRules' gates -- see the tooltip built in CreateMainLayout.
   QComboBox* m_format_combo;
+  // Battle timer row: a host pick folded into the format rules pin by
+  // BattleCustomizer::FormatRuleLines. Greyed while the Format pins no record
+  // (Free/OU); the fields follow the checkbox.
+  QCheckBox* m_timer_check = nullptr;
+  QSpinBox* m_timer_turn_spin = nullptr;
+  QSpinBox* m_timer_game_spin = nullptr;
   QComboBox* m_style_host_model_combo;
   QComboBox* m_style_guest_model_combo;
   QComboBox* m_style_music_combo;

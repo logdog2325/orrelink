@@ -29,6 +29,14 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -87,6 +95,12 @@ fun XDLauncherScreen(
     onVenueChanged: (Int) -> Unit,
     formatId: Int,
     onFormatChanged: (Int) -> Unit,
+    timerEnabled: Boolean,
+    onTimerEnabledChanged: (Boolean) -> Unit,
+    timerTurnSeconds: Int,
+    onTimerTurnSecondsChanged: (Int) -> Unit,
+    timerGameMinutes: Int,
+    onTimerGameMinutesChanged: (Int) -> Unit,
     onSearchForMatch: () -> Unit,
     searching: Boolean,
     onFindBattles: () -> Unit,
@@ -203,7 +217,13 @@ fun XDLauncherScreen(
                     onMusicChanged = onMusicChanged,
                     onVenueChanged = onVenueChanged,
                     formatId = formatId,
-                    onFormatChanged = onFormatChanged
+                    onFormatChanged = onFormatChanged,
+                    timerEnabled = timerEnabled,
+                    onTimerEnabledChanged = onTimerEnabledChanged,
+                    timerTurnSeconds = timerTurnSeconds,
+                    onTimerTurnSecondsChanged = onTimerTurnSecondsChanged,
+                    timerGameMinutes = timerGameMinutes,
+                    onTimerGameMinutesChanged = onTimerGameMinutesChanged
                 )
                 Spacer(Modifier.height(12.dp))
                 // The headline action: no codes to trade, no lobby to read.
@@ -273,7 +293,13 @@ private fun BattleStyleCard(
     onMusicChanged: (Int) -> Unit,
     onVenueChanged: (Int) -> Unit,
     formatId: Int,
-    onFormatChanged: (Int) -> Unit
+    onFormatChanged: (Int) -> Unit,
+    timerEnabled: Boolean,
+    onTimerEnabledChanged: (Boolean) -> Unit,
+    timerTurnSeconds: Int,
+    onTimerTurnSecondsChanged: (Int) -> Unit,
+    timerGameMinutes: Int,
+    onTimerGameMinutesChanged: (Int) -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -360,6 +386,15 @@ private fun BattleStyleCard(
                         else -> stringResource(R.string.xd_format_hint_free)
                     }
                 }
+            )
+            BattleTimerRow(
+                enabled = FormatBridge.hasTeamRules(formatId),
+                checked = timerEnabled,
+                onCheckedChange = onTimerEnabledChanged,
+                turnSeconds = timerTurnSeconds,
+                onTurnSecondsChanged = onTimerTurnSecondsChanged,
+                gameMinutes = timerGameMinutes,
+                onGameMinutesChanged = onTimerGameMinutesChanged
             )
             Text(
                 text = stringResource(R.string.xd_style_section_hint),
@@ -613,4 +648,86 @@ private fun CheckRow(
             }
         }
     }
+}
+
+/**
+ * Host's battle timer: one word of the same rules record the Format pins, so it
+ * only exists where a record is pinned (enabled = a rules format is picked).
+ * Values are committed only inside the game's own editable ranges; shared core
+ * clamps again at emit time.
+ */
+@Composable
+private fun BattleTimerRow(
+    enabled: Boolean,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    turnSeconds: Int,
+    onTurnSecondsChanged: (Int) -> Unit,
+    gameMinutes: Int,
+    onGameMinutesChanged: (Int) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = checked && enabled,
+                onCheckedChange = onCheckedChange,
+                enabled = enabled
+            )
+            Text(
+                text = stringResource(R.string.xd_timer_label),
+                style = MaterialTheme.typography.bodyLarge
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            NumberField(
+                label = stringResource(R.string.xd_timer_turn_label),
+                value = turnSeconds,
+                range = 10..99,
+                enabled = enabled && checked,
+                onCommit = onTurnSecondsChanged,
+                modifier = Modifier.weight(1f)
+            )
+            NumberField(
+                label = stringResource(R.string.xd_timer_game_label),
+                value = gameMinutes,
+                range = 1..99,
+                enabled = enabled && checked,
+                onCommit = onGameMinutesChanged,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Text(
+            text = stringResource(
+                if (enabled) R.string.xd_timer_hint else R.string.xd_timer_hint_off
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun NumberField(
+    label: String,
+    value: Int,
+    range: IntRange,
+    enabled: Boolean,
+    onCommit: (Int) -> Unit,
+    modifier: Modifier
+) {
+    // Digits are held in the field while typed; only an in-range number is
+    // committed, so a half-typed "6" never lands as a 6-second turn.
+    var text by remember(value) { mutableStateOf(value.toString()) }
+    OutlinedTextField(
+        value = text,
+        onValueChange = { typed ->
+            text = typed.filter { it.isDigit() }.take(2)
+            text.toIntOrNull()?.let { if (it in range) onCommit(it) }
+        },
+        label = { Text(label) },
+        singleLine = true,
+        enabled = enabled,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = modifier
+    )
 }

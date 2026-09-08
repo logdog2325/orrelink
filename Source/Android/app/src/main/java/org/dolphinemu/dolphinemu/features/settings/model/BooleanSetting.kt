@@ -1007,6 +1007,14 @@ enum class BooleanSetting(
         Settings.SECTION_INI_XD_NETPLAY,
         "SubmitUseSave",
         false
+    ),
+
+    // Same key as the C++ MAIN_XD_TIMER_ENABLED (host's battle timer switch).
+    MAIN_XD_TIMER_ENABLED(
+        Settings.FILE_DOLPHIN,
+        Settings.SECTION_INI_XD_NETPLAY,
+        "TimerEnabled",
+        false
     );
 
     override val isOverridden: Boolean
