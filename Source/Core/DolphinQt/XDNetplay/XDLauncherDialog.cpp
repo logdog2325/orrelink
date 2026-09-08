@@ -382,6 +382,18 @@ void XDLauncherDialog::CreateMainLayout()
   m_gba_customize_button->setToolTip(tr("Remap the GBA buttons. Applies to every GBA slot, so it "
                                         "works whether you join or host."));
   checklist_layout->addWidget(m_gba_customize_button, row - 1, 3);  // beside 'Use defaults'
+  {
+    // The one phase every first-timer has called a freeze: XD draws a still
+    // screen while each player picks a team on their GBA.
+    auto* pick_note = MakeNoteLabel(
+        tr("Team pick happens on the GBA screen: A adds a Pokémon, B removes one. The GameCube "
+           "screen stays still until both players have confirmed."));
+    pick_note->setToolTip(
+        tr("Keys reach the game only while an OrreLink window (game or GBA) is the active "
+           "window. Pressing B while the GBAs are still connecting cancels the link."));
+    checklist_layout->addWidget(pick_note, row, 0, 1, 4);
+    row++;
+  }
   checklist_layout->setColumnStretch(1, 1);
   checklist_box->setLayout(checklist_layout);
   layout->addWidget(checklist_box);
