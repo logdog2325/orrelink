@@ -141,7 +141,6 @@ private:
   QComboBox* m_style_music_combo;
   QComboBox* m_style_venue_combo;
 
-  QCheckBox* m_practice_dummy_check;
   QCheckBox* m_show_on_startup_check;
   QPushButton* m_boot_button;
   QPushButton* m_host_button;

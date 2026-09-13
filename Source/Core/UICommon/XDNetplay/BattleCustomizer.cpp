@@ -863,7 +863,7 @@ constexpr int TIMER_TURN_MIN_S = 10, TIMER_TURN_MAX_S = 99;
 constexpr int TIMER_GAME_MIN_MIN = 1, TIMER_GAME_MAX_MIN = 99;
 
 // The timer word to pin, or nullopt when the timer is off.
-std::optional<u32> TimerWord()
+static std::optional<u32> TimerWord()
 {
   if (!Config::Get(Config::MAIN_XD_TIMER_ENABLED))
     return std::nullopt;
@@ -874,7 +874,7 @@ std::optional<u32> TimerWord()
   return (static_cast<u32>(game_min) & 0xFFFFu) << 16 | (static_cast<u32>(turn_s) & 0xFFFFu);
 }
 
-std::string TimerSummary()
+static std::string TimerSummary()
 {
   const std::optional<u32> word = TimerWord();
   if (!word)
