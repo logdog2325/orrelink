@@ -710,7 +710,7 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
         "cpu arch={} core_cfg={} core_eff=\"{}\" dispatch={} hw_fma={} hw_afp={} use_fma={} "
         "accurate_fmadds={} accurate_nans={} fprf={} float_exc={} div0_exc={} disable_icache={} "
         "accurate_dcache={} fastmem={} follow_branch={} mmu={} cpu_thread={} oc={} "
-        "sync_on_skip_idle={} cheats={} gpu_det={} dsp_hle={} dsp_thread={} practice_dummy={} "
+        "sync_on_skip_idle={} cheats={} gpu_det={} dsp_hle={} dsp_thread={} "
         "debug={} soft_flush={} netplay={} xd_clock={} xd_clock_cfg={} xd_salt={:08x} "
         "xd_seed={:08x} xd_period={} xd_inc={} xd_clock_v={} rev={} orrelink={}",
         NetPlay::LocalCpuArch(), static_cast<int>(Config::Get(Config::MAIN_CPU_CORE)),
@@ -729,7 +729,6 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
         Config::Get(Config::MAIN_SYNC_ON_SKIP_IDLE) ? 1 : 0, Config::AreCheatsEnabled() ? 1 : 0,
         Config::Get(Config::MAIN_GPU_DETERMINISM_MODE), Config::Get(Config::MAIN_DSP_HLE) ? 1 : 0,
         Config::Get(Config::MAIN_DSP_THREAD) ? 1 : 0,
-        Config::Get(Config::MAIN_GBA_PRACTICE_DUMMY) ? 1 : 0,
         Config::Get(Config::MAIN_ENABLE_DEBUGGING) ? 1 : 0,
         ppc.GetPPCState().software_fpu_flush ? 1 : 0,
         NetPlay::IsNetPlayRunning() ? 1 : 0, HLE_XD::IsInstalled() ? "on" : "off",

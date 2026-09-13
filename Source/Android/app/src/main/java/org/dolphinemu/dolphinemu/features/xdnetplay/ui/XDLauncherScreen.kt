@@ -5,7 +5,6 @@ package org.dolphinemu.dolphinemu.features.xdnetplay.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.material3.Switch
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -79,8 +78,6 @@ fun XDLauncherScreen(
     onPickEmeraldRom: () -> Unit,
     onTeamEditor: () -> Unit,
     onPlayXd: () -> Unit,
-    practiceDummy: Boolean,
-    onPracticeDummyChanged: (Boolean) -> Unit,
     onBattle: () -> Unit,
     modelOptions: List<BattleStyleBridge.StyleOption>,
     musicOptions: List<BattleStyleBridge.StyleOption>,
@@ -180,21 +177,6 @@ fun XDLauncherScreen(
                 ) {
                     Text("Boot Pokémon XD (solo)", style = MaterialTheme.typography.titleMedium)
                 }
-                Spacer(Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Practice vs dummy", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "Auto-plays GBA port 3 so you can practice link battles alone.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    Switch(checked = practiceDummy, onCheckedChange = onPracticeDummyChanged)
-                }
-
                 Spacer(Modifier.height(12.dp))
                 // The battle Format pick plus the cosmetic battle-style
                 // selectors, host-side. The guest picks its OWN model in the
