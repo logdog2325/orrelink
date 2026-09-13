@@ -25,11 +25,11 @@ namespace
 // every build this project has ever shipped is one, so it would report a version from months back
 // and tell everybody they were current forever. Newest-first, so one page is plenty.
 constexpr char RELEASE_API_URL[] =
-    "https://api.github.com/repos/logdog2325/dolphin-xd-netplay/releases?per_page=20";
-constexpr char RELEASES_PAGE_URL[] = "https://github.com/logdog2325/dolphin-xd-netplay/releases";
+    "https://api.github.com/repos/logdog2325/orrelink/releases?per_page=20";
+constexpr char RELEASES_PAGE_URL[] = "https://github.com/logdog2325/orrelink/releases";
 
 // GitHub rejects API requests that arrive without a User-Agent.
-constexpr char USER_AGENT[] = "dolphin-xd-netplay";
+constexpr char USER_AGENT[] = "OrreLink";
 
 constexpr std::chrono::milliseconds REQUEST_TIMEOUT{10000};
 
@@ -245,7 +245,7 @@ UpdateCheckResult CheckForUpdate()
   // Intent.ACTION_VIEW), which will happily act on schemes that are not the web. Only a URL that
   // is actually inside this repository is taken at its word; anything else falls back to the
   // hardcoded releases page, which is never wrong, only less specific.
-  constexpr std::string_view REPO_PREFIX = "https://github.com/logdog2325/dolphin-xd-netplay/";
+  constexpr std::string_view REPO_PREFIX = "https://github.com/logdog2325/orrelink/";
   result.html_url = html_url->starts_with(REPO_PREFIX) ? *html_url : RELEASES_PAGE_URL;
 
   const std::optional<int> order = CompareVersions(VERSION, result.latest_tag);
