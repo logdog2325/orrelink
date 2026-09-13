@@ -440,9 +440,6 @@ void XDLauncherDialog::CreateMainLayout()
   auto* battle_box = new QGroupBox(tr("Battle"));
   auto* battle_layout = new QGridLayout;
   m_boot_button = new NonDefaultQPushButton(tr("Boot Pokémon XD (solo)"));
-  m_practice_dummy_check = new QCheckBox(tr("Practice vs dummy"));
-  m_practice_dummy_check->setToolTip(
-      tr("Auto-plays GBA port 3 so you can practice link battles alone."));
   // The headline action: one button, no codes to trade. Everything below it is
   // the manual escape hatch for people who already know their opponent.
   m_search_button = new NonDefaultQPushButton(tr("Search for Match"));
@@ -459,8 +456,7 @@ void XDLauncherDialog::CreateMainLayout()
   // row; word wrap because the "hosting and waiting" line is a sentence.
   m_match_status = MakeNoteLabel(QString());
   m_match_status->hide();
-  battle_layout->addWidget(m_boot_button, 0, 0);
-  battle_layout->addWidget(m_practice_dummy_check, 0, 1);
+  battle_layout->addWidget(m_boot_button, 0, 0, 1, 2);
   battle_layout->addWidget(m_search_button, 1, 0, 1, 2);
   battle_layout->addWidget(m_match_status, 2, 0, 1, 2);
   battle_layout->addWidget(m_host_button, 3, 0, 1, 2);
@@ -811,11 +807,6 @@ void XDLauncherDialog::ConnectWidgets()
   });
   connect(m_team_editor_button, &QPushButton::clicked, this, &XDLauncherDialog::OnTeamEditor);
 
-  connect(m_practice_dummy_check, &QCheckBox::toggled, this, [](bool checked) {
-    Config::SetBaseOrCurrent(Config::MAIN_GBA_PRACTICE_DUMMY, checked);
-    Config::Save();
-  });
-
   // Persist a Battle Style pick the moment it is made -- same idiom as the
   // checkboxes above. Only the config key is written here: the AR block is
   // assembled from these keys by BattleCustomizer's lifecycle hooks (start
@@ -881,10 +872,6 @@ void XDLauncherDialog::showEvent(QShowEvent* event)
   // solo boot, the team editor, hosting -- reads the socket saves. No-op
   // unless leftovers exist; refuses to run while a room or emulation is live.
   XDNetplay::DisposableSave::HealLeftoverSession();
-  {
-    const QSignalBlocker blocker(m_practice_dummy_check);
-    m_practice_dummy_check->setChecked(Config::Get(Config::MAIN_GBA_PRACTICE_DUMMY));
-  }
   {
     // The hub carries the same toggle, so this one can be stale by the time the
     // launcher is opened from it.

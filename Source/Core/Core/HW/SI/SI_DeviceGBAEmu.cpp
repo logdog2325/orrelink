@@ -1036,34 +1036,6 @@ DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
   if (!NetPlay::IsNetPlayRunning())
   {
     pad_status = Pad::GetGBAStatus(m_device_number);
-
-    // Practice dummy: drive GBA port 3 so a single player can spar against a
-    // scripted opponent without netplay. Press A to confirm/attack, and inject
-    // a D-pad tap between A presses so XD's "select a Pokemon" screen advances
-    // to a *different* Pokemon each cycle instead of re-confirming the same
-    // slot forever (which never completes team selection).
-    // Not before the link is up: Emerald's joybus window lives on the copyright
-    // screen, and holding A walks straight past it, so a dummy that starts
-    // mashing at boot stops socket 3 from ever being detected.
-    if (m_device_number == 2 && (m_link_established || m_battle_locked) &&
-        Config::Get(Config::MAIN_GBA_PRACTICE_DUMMY))
-    {
-      const u64 tenths = m_system.GetCoreTiming().GetTicks() /
-                         (m_system.GetSystemTimers().GetTicksPerSecond() / 10);
-      const u64 phase = tenths % 7;
-      if (phase < 2)
-      {
-        pad_status.button |= PadButton::PAD_BUTTON_A;
-      }
-      else if (phase == 4)
-      {
-        // Move the cursor in the A-release gap. Alternate Right/Down each cycle
-        // to sweep a 2D roster grid and avoid wedging against an edge; a single
-        // 0.1s tap steps exactly one slot (too short to trigger auto-repeat).
-        pad_status.button |= (tenths / 7 % 2 == 0) ? PadButton::PAD_BUTTON_RIGHT
-                                                   : PadButton::PAD_BUTTON_DOWN;
-      }
-    }
   }
   SerialInterface::CSIDevice_GCController::HandleMoviePadStatus(m_system.GetMovie(),
                                                                 m_device_number, &pad_status);
