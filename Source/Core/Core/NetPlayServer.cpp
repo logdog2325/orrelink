@@ -626,11 +626,10 @@ unsigned int NetPlayServer::OnDisconnect(const Client& player)
 
 #ifdef HAS_LIBMGBA
   {
-    const std::string detail = fmt::format("pid={} running={}", pid, m_is_running ? 1 : 0);
-    if (GBADetectLog::IsSessionOpen())
-      GBADetectLog::LogEvent(0, 0, "player-left", detail);
-    else
-      GBADetectLog::LogPostSession("player-left " + detail);
+    // LogPostSession writes through the live sink while a session is open and
+    // appends to the last log otherwise, with no window between the two.
+    GBADetectLog::LogPostSession(
+        fmt::format("player-left pid={} running={}", pid, m_is_running ? 1 : 0));
   }
 #endif
 

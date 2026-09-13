@@ -90,10 +90,6 @@ public:
     // Not in NetSettings; read by PowerPC.cpp / JitBase.cpp and changes both
     // timing and semantics on the interpreter cores. Pin it off for everyone.
     layer->Set(Config::MAIN_ACCURATE_CPU_CACHE, false);
-    // OrreLink: the practice dummy injects A/Right/Down into GBA port 3 LOCALLY
-    // (SI_DeviceGBAEmu) -- a host that left it on would feed its copy of the
-    // guest's GBA input nobody else sees. Never under netplay.
-    layer->Set(Config::MAIN_GBA_PRACTICE_DUMMY, false);
     // Per-machine and never synced upstream; "none" defeats the deterministic
     // GPU thread while cpu_thread itself is synced. Pin the default for all.
     layer->Set(Config::MAIN_GPU_DETERMINISM_MODE, std::string("auto"));

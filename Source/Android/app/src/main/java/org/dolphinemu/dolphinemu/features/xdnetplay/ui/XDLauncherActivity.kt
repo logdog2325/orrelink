@@ -90,7 +90,6 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var timerEnabled by mutableStateOf(false)
     private var timerTurnSeconds by mutableStateOf(60)
     private var timerGameMinutes by mutableStateOf(20)
-    private var practiceDummy by mutableStateOf(false)
 
     /** True from the moment "Search for Match" is tapped until it joins, hosts or gives up. */
     private var searching by mutableStateOf(false)
@@ -326,12 +325,6 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     onPickEmeraldRom = { pickEmeraldRom.launch(arrayOf("*/*")) },
                     onTeamEditor = { TeamEditorActivity.launch(this) },
                     onPlayXd = { bootXd() },
-                    practiceDummy = practiceDummy,
-                    onPracticeDummyChanged = { on ->
-                        practiceDummy = on
-                        BooleanSetting.MAIN_GBA_PRACTICE_DUMMY.setBoolean(NativeConfig.LAYER_BASE, on)
-                        NativeConfig.save(NativeConfig.LAYER_BASE)
-                    },
                     modelOptions = modelOptions,
                     musicOptions = musicOptions,
                     venueOptions = venueOptions,
@@ -591,7 +584,6 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         timerEnabled = BooleanSetting.MAIN_XD_TIMER_ENABLED.boolean
         timerTurnSeconds = IntSetting.MAIN_XD_TIMER_TURN_SECONDS.int
         timerGameMinutes = IntSetting.MAIN_XD_TIMER_GAME_MINUTES.int
-        practiceDummy = BooleanSetting.MAIN_GBA_PRACTICE_DUMMY.boolean
         migrateContentPaths()
         emeraldRomSet = ensureGbaConfig()
         xdGameFound = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID) != null
