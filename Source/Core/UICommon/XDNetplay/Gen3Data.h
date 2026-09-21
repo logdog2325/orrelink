@@ -79,6 +79,13 @@ public:
   std::optional<int> AbilityId(const std::string& name) const;
   const Nature* FindNature(const std::string& name) const;
 
+  // Base PP of a move (no PP Ups) by internal move id, straight from the
+  // Gen 3 move table. 0 for "no move" and for an id outside that table.
+  static int MoveBasePp(int move_id);
+  // PP of the move with pp_ups PP Ups on it (0..3), the games' own formula:
+  // every PP Up adds a fifth of the base value, rounded down.
+  static int MoveMaxPp(int move_id, int pp_ups);
+
   // Total experience at level (1..100) for growth group exp_group (e.g.
   // "MEDIUM_SLOW"), from the cumulative table. std::nullopt for an unknown
   // group or out-of-range level.
