@@ -382,6 +382,116 @@ void WriteGuestMark(const std::string& save_path)
   if (mark)
     mark.WriteString("A guest's team is in this socket's save. Removed when the room closes.\n");
 }
+
+// The write half shared by the guest path (InjectGuestTeam) and the host path
+// (SubmitHostTeam): optional rename, build the party, optional raise, write,
+// verify, report. The caller has already loaded and vetted the save (FRLG,
+// format gate, lifecycle); nothing in here knows whose save it is, except for
+// the destination wording that goes into the status line ("the guest save",
+// "your GBA port 2 save"). Returns false with *status set when nothing was
+// written.
+bool WriteSetsToSave(EmeraldSave& save, const std::string& save_path,
+                     const std::vector<ShowdownSet>& sets, const Gen3Data& data,
+                     const std::string& trainer_name, bool raise_to_level_100,
+                     std::string_view destination, std::string* status)
+{
+  const auto fail = [status](std::string message) {
+    if (status)
+      *status = std::move(message);
+    return false;
+  };
+  std::string error;
+
+  // ORDER IS LOAD-BEARING: the trainer name goes in BEFORE the party is built.
+  // MonFactory::Build stamps each Pokemon's OT name from the DESTINATION save
+  // (save.GetTrainerName() below), so building first would give every mon the
+  // save's old OT while the trainer block said something else -- in-game they
+  // would read as traded outsiders (disobedience above the badge cap, "it does
+  // not seem to want to obey"), which is exactly the bug this ordering avoids.
+  //
+  // trainer_name may be untrusted remote text, so it is sanitized, never
+  // rejected: a name that survives sanitizing is written, one that does not
+  // leaves the save's existing name in place. Either way the outcome is
+  // reported below.
+  std::string applied_name;
+  std::string dropped_name_note;
+  // A name of only spaces (or nothing at all) means "no name was asked for" and
+  // is not worth a line in chat; a name that HAD content but sanitized away to
+  // nothing is, because the player will otherwise wonder why it did not take.
+  if (trainer_name.find_first_not_of(" \t\r\n") != std::string::npos)
+  {
+    const std::string sanitized = EmeraldSave::SanitizeTrainerName(trainer_name);
+    if (sanitized.empty())
+    {
+      dropped_name_note = "name unusable in-game, kept " + save.GetTrainerName();
+    }
+    else if (!save.SetTrainerName(sanitized, &error))
+    {
+      // Unreachable in practice -- SanitizeTrainerName only emits names
+      // SetTrainerName accepts -- but never silently pretend it worked.
+      dropped_name_note = fmt::format("name not set ({})", error);
+    }
+    else
+    {
+      applied_name = sanitized;
+    }
+  }
+
+  // Any party size is accepted: players run whatever format they like, and the
+  // game itself enforces its own rules at battle setup.
+  std::vector<Gen3Mon> built;
+  size_t skipped = 0;
+  for (const ShowdownSet& set : sets)
+  {
+    if (built.size() == EmeraldSave::PARTY_MAX)
+    {
+      ++skipped;
+      continue;
+    }
+    std::string mon_error;
+    // GetTrainerName() here is the name set just above, which is the point.
+    auto mon =
+        MonFactory::Build(set, data, save.GetTrainerName(), save.GetTrainerId(), &mon_error);
+    if (mon)
+      built.push_back(std::move(*mon));
+    else
+      ++skipped;
+  }
+  if (built.empty())
+    return fail("no usable Pokemon in that team");
+
+  // Opt-in "raise to Lv. 100": honored only under a level-100 format (the
+  // HOST's pick governs the room) and only ever raises.
+  int raised = 0;
+  if (raise_to_level_100 &&
+      FormatRules::FormatFixedLevel(Config::Get(Config::MAIN_XD_FORMAT)) == 100)
+  {
+    raised = MonFactory::RaisePartyToLevel100(built, data);
+  }
+
+  const size_t count = built.size();
+  if (!save.WriteParty(built))
+    return fail("party too large");
+  if (!VerifiedWriteSaveFile(save_path, save, &error))
+    return fail(fmt::format("save NOT written ({})", error));
+
+  if (status)
+  {
+    *status = skipped == 0 ?
+                  fmt::format("{} Pokemon written to {}", count, destination) :
+                  fmt::format("{} Pokemon written to {} ({} entries skipped)", count, destination,
+                              skipped);
+    // Always show the name that actually landed -- it is what the opponent
+    // will see across the link, and it may not be what was asked for.
+    if (!applied_name.empty())
+      *status += fmt::format(", playing as {}", applied_name);
+    if (!dropped_name_note.empty())
+      *status += fmt::format(" ({})", dropped_name_note);
+    if (raised > 0)
+      *status += fmt::format(", {} raised to Lv. 100", raised);
+  }
+  return true;
+}
 }  // namespace
 #endif
 
@@ -564,95 +674,16 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
   if (sets.empty())
     return fail("nothing recognizable in that paste");
 
-  // ORDER IS LOAD-BEARING: the trainer name goes in BEFORE the party is built.
-  // MonFactory::Build stamps each Pokemon's OT name from the DESTINATION save
-  // (save->GetTrainerName() below), so building first would give every mon the
-  // host's old OT while the trainer block said something else -- in-game they
-  // would read as traded outsiders (disobedience above the badge cap, "it does
-  // not seem to want to obey"), which is exactly the bug this ordering avoids.
-  //
-  // trainer_name is untrusted remote text, so it is sanitized, never rejected:
-  // a name that survives sanitizing is written, one that does not leaves the
-  // save's existing name in place. Either way the outcome is reported below.
-  std::string applied_name;
-  std::string dropped_name_note;
-  // A name of only spaces (or nothing at all) means "no name was asked for" and
-  // is not worth a line in chat; a name that HAD content but sanitized away to
-  // nothing is, because the guest will otherwise wonder why it did not take.
-  if (trainer_name.find_first_not_of(" \t\r\n") != std::string::npos)
+  // Rename, build, raise, write and verify, then word the status line: shared
+  // with the host's own in-room submission (SubmitHostTeam). trainer_name is
+  // untrusted remote text here; the helper sanitizes it and never rejects.
+  if (!WriteSetsToSave(*save, save_path, sets, *data, trainer_name, raise_to_level_100,
+                       "the guest save", status))
   {
-    const std::string sanitized = EmeraldSave::SanitizeTrainerName(trainer_name);
-    if (sanitized.empty())
-    {
-      dropped_name_note = "name unusable in-game, kept " + save->GetTrainerName();
-    }
-    else if (!save->SetTrainerName(sanitized, &error))
-    {
-      // Unreachable in practice -- SanitizeTrainerName only emits names
-      // SetTrainerName accepts -- but never silently pretend it worked.
-      dropped_name_note = fmt::format("name not set ({})", error);
-    }
-    else
-    {
-      applied_name = sanitized;
-    }
+    return false;
   }
-
-  // Any party size is accepted: players run whatever format they like, and the
-  // game itself enforces its own rules at battle setup.
-  std::vector<Gen3Mon> built;
-  size_t skipped = 0;
-  for (const ShowdownSet& set : sets)
-  {
-    if (built.size() == EmeraldSave::PARTY_MAX)
-    {
-      ++skipped;
-      continue;
-    }
-    std::string mon_error;
-    // GetTrainerName() here is the name set just above, which is the point.
-    auto mon = MonFactory::Build(set, *data, save->GetTrainerName(), save->GetTrainerId(),
-                                 &mon_error);
-    if (mon)
-      built.push_back(std::move(*mon));
-    else
-      ++skipped;
-  }
-  if (built.empty())
-    return fail("no usable Pokemon in that team");
-
-  // Guest opted in to "raise to Lv. 100": honored only under a level-100
-  // format (the HOST's pick governs the room) and only ever raises.
-  int raised = 0;
-  if (raise_to_level_100 &&
-      FormatRules::FormatFixedLevel(Config::Get(Config::MAIN_XD_FORMAT)) == 100)
-  {
-    raised = MonFactory::RaisePartyToLevel100(built, *data);
-  }
-
-  const size_t count = built.size();
-  if (!save->WriteParty(built))
-    return fail("party too large");
-  if (!VerifiedWriteSaveFile(save_path, *save, &error))
-    return fail(fmt::format("save NOT written ({})", error));
 
   WriteGuestMark(save_path);
-
-  if (status)
-  {
-    *status = skipped == 0 ?
-                  fmt::format("{} Pokemon written to the guest save", count) :
-                  fmt::format("{} Pokemon written to the guest save ({} entries skipped)", count,
-                              skipped);
-    // Always show the name that actually landed -- it is what the opponent
-    // will see across the link, and it may not be what was asked for.
-    if (!applied_name.empty())
-      *status += fmt::format(", playing as {}", applied_name);
-    if (!dropped_name_note.empty())
-      *status += fmt::format(" ({})", dropped_name_note);
-    if (raised > 0)
-      *status += fmt::format(", {} raised to Lv. 100", raised);
-  }
   return true;
 #endif
 }
@@ -719,6 +750,79 @@ std::string HostTrainerName()
     return {};
   const auto save = LoadSaveFile(save_path);
   return save ? save->GetTrainerName() : std::string{};
+#endif
+}
+
+bool SubmitHostTeam(const std::string& showdown_text, const std::string& trainer_name,
+                    std::string* status, bool raise_to_level_100)
+{
+  const auto fail = [status](std::string message) {
+    if (status)
+      *status = std::move(message);
+    return false;
+  };
+#ifndef HAS_LIBMGBA
+  return fail("this build has no GBA support");
+#else
+  // Same refusal as RenameHostTrainer: a live mGBA core rewrites the save from
+  // its in-memory copy at teardown, so a write made now would simply be lost.
+  if (!Core::IsUninitialized(Core::System::GetInstance()))
+    return fail("stop the game first, the emulated GBA owns its save while it runs");
+
+  std::string error;
+  const auto data = Gen3Data::LoadBundled(&error);
+  if (!data)
+    return fail(fmt::format("game data unavailable ({})", error));
+
+  const std::vector<ShowdownSet> sets = ShowdownParser::ParseTeam(showdown_text);
+  if (sets.empty())
+    return fail("nothing recognizable in that paste");
+
+  // FORMAT gate, host's own team: the same ruleset the room applies to a guest
+  // submission and to the host's saves before the room opens
+  // (ValidateHostPartiesForFormat). Runs before any file is opened, so a
+  // refused team leaves no trace. With format=Free this is one int compare.
+  if (const int format = Config::Get(Config::MAIN_XD_FORMAT); FormatRules::HasTeamRules(format))
+  {
+    const FormatRules::Verdict verdict = FormatRules::ValidateSets(format, sets, *data);
+    if (!verdict.ok)
+      return fail(std::string(FormatRules::FormatDisplayName(format)) + ": " + verdict.reason);
+  }
+
+  // Port 2 is the host's own socket. SavePathForDevice is the exact resolution
+  // netplay's save sync uses at Start, so this is the file the room will play.
+  const std::string save_path = SavePathForDevice(1);
+  if (save_path.empty())
+    return fail("no Emerald ROM configured, set it up in the launcher first");
+
+  // A port with no save yet starts from the bundled template, the same way the
+  // Team Editor opens one. There is deliberately NO stash and NO guest marker
+  // anywhere on this path: the write is the host editing their own save, and
+  // it is meant to stay.
+  std::vector<u8> bytes;
+  if (!(File::Exists(save_path) && ReadFileBytes(save_path, &bytes)))
+  {
+    if (!ReadFileBytes(GuestTemplatePath(1), &bytes))
+      return fail("no save on GBA port 2 and no bundled template");
+  }
+
+  auto save = EmeraldSave::Create(std::move(bytes), &error);
+  if (!save)
+    return fail(fmt::format("could not read the GBA port 2 save ({})", error));
+
+  // Same reason InjectGuestTeam refuses: FireRed/LeafGreen keeps its party at
+  // other section offsets, and an Emerald-offset write there passes
+  // verification and then plays the old FRLG party anyway.
+  if (EmeraldSave::DetectGame(*save) == Gen3Game::FireRedLeafGreen)
+  {
+    return fail("your GBA port 2 save is FireRed/LeafGreen, which Submit Team cannot write to. "
+                "Use an Emerald or Ruby/Sapphire save");
+  }
+
+  // Rename (before the build: the OT stamp order is load-bearing, see the
+  // helper), build, raise, write and verify.
+  return WriteSetsToSave(*save, save_path, sets, *data, trainer_name, raise_to_level_100,
+                         "your GBA port 2 save", status);
 #endif
 }
 

@@ -82,6 +82,15 @@ public:
   void SetAutoPadBufferEnabled(bool enabled);
   bool IsAutoPadBufferEnabled() const { return m_auto_buffer_enabled.load(); }
 
+  // XD Netplay: true from the moment a Start is requested (the saves and the
+  // codes have been read and are being sent to the other player) until the
+  // game has ended. Anything that rewrites the host's GBA save or the synced
+  // Battle Style block from the room UI must refuse while this holds, or the
+  // two sides boot with different data. Safe to call from any thread.
+  // StartGame() raises m_is_running before it clears m_start_pending, so there
+  // is no instant where a start is in flight and both read false.
+  bool IsStartingOrRunning() const { return m_start_pending.load() || m_is_running.load(); }
+
   void SetHostInputAuthority(bool enable);
 
   void KickPlayer(PlayerId player);
@@ -183,7 +192,9 @@ private:
 
   NetSettings m_settings;
 
-  bool m_is_running = false;
+  // Atomic: the room UI reads both flags from its own thread through
+  // IsStartingOrRunning().
+  std::atomic<bool> m_is_running{false};
   bool m_do_loop = false;
   Common::Timer m_ping_timer;
   u32 m_ping_key = 0;
@@ -197,7 +208,7 @@ private:
   unsigned int m_codes_synced_players = 0;
   bool m_saves_synced = true;
   bool m_codes_synced = true;
-  bool m_start_pending = false;
+  std::atomic<bool> m_start_pending{false};
   bool m_host_input_authority = false;
   PlayerId m_current_golfer = 1;
   PlayerId m_pending_golfer = 0;
