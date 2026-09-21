@@ -10,9 +10,8 @@ package org.dolphinemu.dolphinemu.features.xdnetplay.gen3
  *  - language English (0x0202), friendship 255 unless the paste says otherwise
  *  - origins: met level = current level, game of origin 3 (Emerald),
  *    ball 4 (Poke Ball), OT gender male, met location 0
- *  - PP = 35 for every non-empty move slot, 0 otherwise, PP bonuses 0
- *    (the Python used exactly this constant; there is no per-move base-PP
- *    table in the data JSON, and the game clamps PP on use)
+ *  - three PP Ups on every non-empty move slot and current PP at the true
+ *    maximum for that move ([Gen3MovePp]); an empty slot carries neither
  *  - contest stats, ribbons, status, pokerus all 0
  *
  * The PID is chosen deterministically to satisfy, in priority order:
@@ -24,7 +23,7 @@ package org.dolphinemu.dolphinemu.features.xdnetplay.gen3
  */
 object MonFactory {
     private const val LANGUAGE_ENGLISH = 0x0202
-    private const val DEFAULT_PP = 35        // mirrors the Python injector
+    private const val PP_UPS = 3             // competitive sets assume all three
     private const val GAME_EMERALD = 3
     private const val BALL_POKE = 4          // the Python injector's default ball
     private const val OT_GENDER_MALE = 0
@@ -120,12 +119,19 @@ object MonFactory {
         mon.species = species.id
         mon.heldItem = heldItem
         mon.experience = data.expForLevel(species.expGroup, level)
-        mon.ppBonuses = 0
+        // Two bits of PP Ups per move slot; an empty slot carries none.
+        var ppBonuses = 0
+        for (i in 0..3) {
+            if (moveIds[i] != 0) {
+                ppBonuses = ppBonuses or (PP_UPS shl (2 * i))
+            }
+        }
+        mon.ppBonuses = ppBonuses
         // Showdown "Happiness:" when given; otherwise MAX (Return 102 BP), not the base value.
         mon.friendship = set.happiness ?: 255
         mon.moves = moveIds
         for (i in 0..3) {
-            mon.pp[i] = if (moveIds[i] != 0) DEFAULT_PP else 0
+            mon.pp[i] = Gen3MovePp.maxPp(moveIds[i], PP_UPS)
         }
         mon.evs = evs
         mon.metLocation = 0
