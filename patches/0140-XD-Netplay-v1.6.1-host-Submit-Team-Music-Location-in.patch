@@ -1,4 +1,4 @@
-From 2bfa2b2ad16505f4b95ebb1eba69d7e60cebae4a Mon Sep 17 00:00:00 2001
+From 4f635ab84a564bbb00838a776ef26e225d1e9780 Mon Sep 17 00:00:00 2001
 From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
 Date: Mon, 21 Sep 2026 13:43:15 -0700
 Subject: [PATCH] XD Netplay v1.6.1: host Submit Team, Music & Location in the
@@ -24,8 +24,10 @@ booting different data. NetPlayServer::IsStartingOrRunning() (the two flags
 are atomic now, and StartGame raises running before it clears pending) backs a
 refusal on every one of these writes. Desktop checks it on the UI thread, the
 thread Start reads on. Android serializes Start and the writes with one mutex
-in the JNI layer, refuses once the room is gone, and greys the controls from
-the Start tap on.
+in the JNI layer, refuses once the room is closing (releasing the client and
+the server waits on the same mutex), and greys the controls from the Start tap
+on. The older Set Name control writes the same save and now follows the same
+rules on every platform.
 
 Hidden Power. Gen 3 and Gen 4 store no Hidden Power type; the game derives it
 from IV parity. A paste that names a type ("Hidden Power [Ice]") but carries
@@ -37,26 +39,26 @@ whenever possible. The spread table is checked against the type formula with a
 static_assert.
 ---
  .../features/netplay/NetplaySession.kt        |  55 +++
- .../netplay/model/NetplayViewModel.kt         | 172 ++++++++-
+ .../netplay/model/NetplayViewModel.kt         | 176 ++++++++-
  .../features/netplay/ui/NetplayActivity.kt    |  31 ++
- .../features/netplay/ui/NetplayScreen.kt      | 360 ++++++++++++++++--
+ .../features/netplay/ui/NetplayScreen.kt      | 371 ++++++++++++++++--
  .../features/xdnetplay/gen3/ShowdownParser.kt | 127 +++++-
  .../app/src/main/res/values/strings.xml       |  11 +
- Source/Android/jni/NetPlay/Netplay.cpp        | 131 +++++++
+ Source/Android/jni/NetPlay/Netplay.cpp        | 154 +++++++-
  Source/Core/Core/NetPlayServer.cpp            |   3 +-
  Source/Core/Core/NetPlayServer.h              |  15 +-
  Source/Core/DolphinQt/CMakeLists.txt          |   2 +
  Source/Core/DolphinQt/DolphinQt.vcxproj       |   2 +
- .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  | 356 ++++++++++++++++-
+ .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  | 360 ++++++++++++++++-
  Source/Core/DolphinQt/NetPlay/NetPlayDialog.h |   6 +
  .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  |  74 +---
- .../Core/DolphinQt/XDNetplay/XDStyleCombo.cpp | 106 ++++++
+ .../Core/DolphinQt/XDNetplay/XDStyleCombo.cpp | 106 +++++
  .../Core/DolphinQt/XDNetplay/XDStyleCombo.h   |  37 ++
  .../UICommon/XDNetplay/ShowdownParser.cpp     | 169 +++++++-
- .../Core/UICommon/XDNetplay/TeamInjector.cpp  | 274 ++++++++-----
+ .../Core/UICommon/XDNetplay/TeamInjector.cpp  | 274 +++++++++----
  Source/Core/UICommon/XDNetplay/TeamInjector.h |  24 ++
  Source/Core/UICommon/XDNetplay/Version.h      |   2 +-
- 20 files changed, 1750 insertions(+), 207 deletions(-)
+ 20 files changed, 1788 insertions(+), 211 deletions(-)
  create mode 100644 Source/Core/DolphinQt/XDNetplay/XDStyleCombo.cpp
  create mode 100644 Source/Core/DolphinQt/XDNetplay/XDStyleCombo.h
 
@@ -134,10 +136,10 @@ index 9f8190a..57b6797 100644
  
      private external fun nativeAdjustClientPadBufferSize(buffer: Int)
 diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt
-index 3cfcd55..bcf400c 100644
+index 3cfcd55..8ce59ae 100644
 --- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt
 +++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt
-@@ -11,21 +11,26 @@ import kotlinx.coroutines.DelicateCoroutinesApi
+@@ -11,21 +11,27 @@ import kotlinx.coroutines.DelicateCoroutinesApi
  import kotlinx.coroutines.Dispatchers
  import kotlinx.coroutines.GlobalScope
  import kotlinx.coroutines.channels.Channel
@@ -146,6 +148,7 @@ index 3cfcd55..bcf400c 100644
  import kotlinx.coroutines.flow.receiveAsFlow
  import kotlinx.coroutines.flow.SharingStarted
  import kotlinx.coroutines.flow.asStateFlow
++import kotlinx.coroutines.flow.combine
 +import kotlinx.coroutines.flow.flow
 +import kotlinx.coroutines.flow.flowOn
  import kotlinx.coroutines.flow.launchIn
@@ -164,7 +167,7 @@ index 3cfcd55..bcf400c 100644
  import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.EmeraldSave
  import org.dolphinemu.dolphinemu.model.GameFile
  import org.dolphinemu.dolphinemu.services.GameFileCacheManager
-@@ -130,16 +135,39 @@ class NetplayViewModel(
+@@ -130,16 +136,42 @@ class NetplayViewModel(
  
      fun startGame() {
          if (netplaySession.doAllPlayersHaveGame()) {
@@ -188,6 +191,9 @@ index 3cfcd55..bcf400c 100644
 +     * out of their own room.
 +     */
 +    private fun requestStart() {
++        if (netplaySession.isClosed) {
++            return
++        }
 +        val stamp = System.nanoTime()
 +        startRequestedAt.value = stamp
          netplaySession.startGame()
@@ -205,7 +211,7 @@ index 3cfcd55..bcf400c 100644
      /** Default in-game name offered in the submit sheet: this player's netplay
       *  nickname, cut down to what a Gen 3 save can actually hold. */
      val defaultTrainerName: String
-@@ -250,6 +278,136 @@ class NetplayViewModel(
+@@ -250,6 +282,136 @@ class NetplayViewModel(
          }
      }
  
@@ -220,15 +226,15 @@ index 3cfcd55..bcf400c 100644
 +     */
 +    val gameRunning = flow {
 +        while (true) {
-+            emit(
-+                startRequestedAt.value != 0L ||
-+                    netplaySession.isLaunching ||
-+                    !NativeLibrary.IsUninitialized()
-+            )
++            emit(netplaySession.isLaunching || !NativeLibrary.IsUninitialized())
 +            delay(GAME_RUNNING_POLL_MS)
 +        }
 +    }
 +        .flowOn(Dispatchers.Default)
++        // The Start tap counts at once, without waiting for the next poll.
++        .combine(startRequestedAt) { running, startRequested ->
++            running || startRequested != 0L
++        }
 +        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false)
 +
 +    /** Result line of the host's last in-room action, shown green or red. */
@@ -342,7 +348,7 @@ index 3cfcd55..bcf400c 100644
      /**
       * XD Netplay "Use my save": submit the party from this player's OWN local
       * save -- real mon bytes, real trainer identity -- instead of a Showdown
-@@ -421,6 +579,18 @@ class NetplayViewModel(
+@@ -421,6 +583,18 @@ class NetplayViewModel(
          }
      }
  
@@ -418,7 +424,7 @@ index 1e15d3e..4bbe1bd 100644
                      onStartGame = viewModel::startGame,
                      onGameSelected = viewModel::changeGame,
 diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
-index 9793645..a1e5aa0 100644
+index 9793645..28a0aeb 100644
 --- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
 +++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
 @@ -57,6 +57,7 @@ import androidx.compose.material3.LinearProgressIndicator
@@ -797,7 +803,29 @@ index 9793645..a1e5aa0 100644
                  joinAddresses = joinAddresses,
                  selectedJoinInfoType = selectedJoinInfoType,
                  onSelectedJoinInfoTypeChanged = onSelectedJoinInfoTypeChanged,
-@@ -748,6 +922,97 @@ private fun HostTrainerNameSection(onSetHostName: (String) -> Unit, hostTrainerN
+@@ -708,7 +882,11 @@ private fun LandscapeContent(
+  * save the room syncs at start (with the party's OT names re-stamped).
+  */
+ @Composable
+-private fun HostTrainerNameSection(onSetHostName: (String) -> Unit, hostTrainerName: String) {
++private fun HostTrainerNameSection(
++    onSetHostName: (String) -> Unit,
++    hostTrainerName: String,
++    gameRunning: Boolean = false
++) {
+     // Prefilled with the save's current name; re-seeded when that loads or changes.
+     var name by rememberSaveable(hostTrainerName) { mutableStateOf(hostTrainerName) }
+     Column(
+@@ -740,7 +918,7 @@ private fun HostTrainerNameSection(onSetHostName: (String) -> Unit, hostTrainerN
+             Spacer(Modifier.width(8.dp))
+             Button(
+                 onClick = { onSetHostName(name.trim()) },
+-                enabled = name.isNotBlank()
++                enabled = name.isNotBlank() && !gameRunning
+             ) {
+                 Text(stringResource(R.string.xd_host_name_set))
+             }
+@@ -748,6 +926,97 @@ private fun HostTrainerNameSection(onSetHostName: (String) -> Unit, hostTrainerN
      }
  }
  
@@ -895,7 +923,7 @@ index 9793645..a1e5aa0 100644
  @Composable
  private fun PlayersAndSettings(
      game: String,
-@@ -768,6 +1033,11 @@ private fun PlayersAndSettings(
+@@ -768,6 +1037,11 @@ private fun PlayersAndSettings(
      isHosting: Boolean,
      onSetHostName: (String) -> Unit = {},
      hostTrainerName: String = "",
@@ -907,24 +935,27 @@ index 9793645..a1e5aa0 100644
      joinAddresses: Map<JoinInfoType, JoinAddress>,
      selectedJoinInfoType: JoinInfoType,
      onSelectedJoinInfoTypeChanged: (JoinInfoType) -> Unit,
-@@ -795,6 +1065,16 @@ private fun PlayersAndSettings(
+@@ -790,7 +1064,18 @@ private fun PlayersAndSettings(
  
-             MenuSpacer()
- 
+             HostTrainerNameSection(
+                 onSetHostName = onSetHostName,
+-                hostTrainerName = hostTrainerName
++                hostTrainerName = hostTrainerName,
++                gameRunning = gameRunning
++            )
++
++            MenuSpacer()
++
 +            HostBattleSetupSection(
 +                onShowSubmitTeam = onShowSubmitTeam,
 +                onShowMusicLocation = onShowMusicLocation,
 +                gameRunning = gameRunning,
 +                resultText = hostResultText,
 +                resultOk = hostResultOk
-+            )
-+
-+            MenuSpacer()
-+
-             JoinAddressSection(
-                 joinAddresses = joinAddresses,
-                 selectedType = selectedJoinInfoType,
-@@ -1680,6 +1960,16 @@ private fun PreviewNetplayScreen() {
+             )
+ 
+             MenuSpacer()
+@@ -1680,6 +1965,16 @@ private fun PreviewNetplayScreen() {
          modelOptions = emptyList(),
          orreFormatLocal = false,
          validateTeamForFormat = { "" },
@@ -1130,7 +1161,7 @@ index 7fd1a56..490b14c 100644
           User-visible wording mirrors the desktop launcher's Save Files box
           (DolphinQt XDLauncherDialog) verbatim; refusal/success messages come
 diff --git a/Source/Android/jni/NetPlay/Netplay.cpp b/Source/Android/jni/NetPlay/Netplay.cpp
-index a72dbba..6812548 100644
+index a72dbba..4da6926 100644
 --- a/Source/Android/jni/NetPlay/Netplay.cpp
 +++ b/Source/Android/jni/NetPlay/Netplay.cpp
 @@ -1,8 +1,11 @@
@@ -1145,7 +1176,7 @@ index a72dbba..6812548 100644
  #include <string>
  #include <vector>
  
-@@ -52,6 +55,18 @@ static NetPlay::NetPlayServer* GetServerPointer(JNIEnv* env, jobject obj)
+@@ -52,6 +55,32 @@ static NetPlay::NetPlayServer* GetServerPointer(JNIEnv* env, jobject obj)
        env->GetLongField(obj, IDCache::GetNetPlayServerPointer()));
  }
  
@@ -1161,10 +1192,39 @@ index a72dbba..6812548 100644
 +static constexpr const char* HOST_WRITE_BUSY = "A battle is starting. Try again after it ends.";
 +static constexpr const char* HOST_WRITE_NO_ROOM = "The room has closed. Nothing was changed.";
 +
++// Call with s_host_write_mutex held. Returns why a host write must not happen
++// right now, or nullptr when it may. Kotlin zeroes the client pointer before
++// it releases the client, and releasing the client is what puts the host's own
++// save back (OnRoomClosed), so a missing client means the room is closing.
++static const char* HostWriteRefusal(JNIEnv* env, jobject obj)
++{
++  auto* server = GetServerPointer(env, obj);
++  if (!server || !GetClientPointer(env, obj))
++    return HOST_WRITE_NO_ROOM;
++  if (server->IsStartingOrRunning())
++    return HOST_WRITE_BUSY;
++  return nullptr;
++}
++
  // The save file this player's OWN GBA slot (port 2, device 1) will play with:
  // the same ROM resolution as SaveImport/TeamInjector (this socket's ROM,
  // falling back to the other socket's -- a launcher-made setup points both at
-@@ -122,6 +137,118 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetHostTrai
+@@ -115,13 +144,126 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeHostTrainer
+ 
+ JNIEXPORT jstring JNICALL
+ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetHostTrainerName(
+-    JNIEnv* env, jobject, jstring jname)
++    JNIEnv* env, jobject obj, jstring jname)
+ {
++  // Rewrites the GBA port 2 save, so it follows the same rules as the host's
++  // Submit Team: never while a battle is starting or running, never once the
++  // room is closing.
++  std::lock_guard lk(s_host_write_mutex);
++  if (const char* refusal = HostWriteRefusal(env, obj))
++    return ToJString(env, refusal);
++
+   std::string status;
+   XDNetplay::RenameHostTrainer(GetJString(env, jname), &status);
    return ToJString(env, status);
  }
  
@@ -1202,11 +1262,8 @@ index a72dbba..6812548 100644
 +
 +  // A pokepast.es fetch can outlive the room. With the room gone the port 2
 +  // save may be the host's own imported save again, which is not ours to touch.
-+  auto* server = GetServerPointer(env, obj);
-+  if (!server)
-+    return reply(false, HOST_WRITE_NO_ROOM);
-+  if (server->IsStartingOrRunning())
-+    return reply(false, HOST_WRITE_BUSY);
++  if (const char* refusal = HostWriteRefusal(env, obj))
++    return reply(false, refusal);
 +
 +  // The model is its own setting, independent of the team, the same as on
 +  // desktop: a refused team does not take the model pick down with it. The
@@ -1265,11 +1322,8 @@ index a72dbba..6812548 100644
 +  // Returns an empty string on success, or the one-line reason nothing changed.
 +  std::lock_guard lk(s_host_write_mutex);
 +
-+  auto* server = GetServerPointer(env, obj);
-+  if (!server)
-+    return ToJString(env, HOST_WRITE_NO_ROOM);
-+  if (server->IsStartingOrRunning())
-+    return ToJString(env, HOST_WRITE_BUSY);
++  if (const char* refusal = HostWriteRefusal(env, obj))
++    return ToJString(env, refusal);
 +
 +  const int music = XDNetplay::BattleCustomizer::IsValidMusicId(jmusic) ? jmusic : 0;
 +  const int venue = XDNetplay::BattleCustomizer::IsValidVenueId(jvenue) ? jvenue : 0;
@@ -1283,7 +1337,7 @@ index a72dbba..6812548 100644
  JNIEXPORT jstring JNICALL
  Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitSaveBundle(
      JNIEnv* env, jobject obj, jint jmodel, jboolean jraise)
-@@ -380,6 +507,10 @@ JNIEXPORT void JNICALL
+@@ -380,6 +522,10 @@ JNIEXPORT void JNICALL
  Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(JNIEnv* env,
                                                                                 jobject obj)
  {
@@ -1294,6 +1348,26 @@ index a72dbba..6812548 100644
    auto* server = GetServerPointer(env, obj);
    if (!server)
      return;
+@@ -495,6 +641,10 @@ JNIEXPORT void JNICALL
+ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeReleaseClient(JNIEnv*, jobject,
+                                                                                    jlong pointer)
+ {
++  // Releasing the client puts the host's own save back (OnRoomClosed). Waiting
++  // here lets a host write that is already under way finish first; any later
++  // one sees the zeroed client pointer and is refused.
++  std::lock_guard lk(s_host_write_mutex);
+   delete reinterpret_cast<NetPlay::NetPlayClient*>(pointer);
+ }
+ 
+@@ -502,6 +652,8 @@ JNIEXPORT void JNICALL
+ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeReleaseServer(JNIEnv*, jobject,
+                                                                                    jlong pointer)
+ {
++  // Never free the server under a host write or a Start that still uses it.
++  std::lock_guard lk(s_host_write_mutex);
+   delete reinterpret_cast<NetPlay::NetPlayServer*>(pointer);
+ }
+ 
 diff --git a/Source/Core/Core/NetPlayServer.cpp b/Source/Core/Core/NetPlayServer.cpp
 index 2055c23..6b409a2 100644
 --- a/Source/Core/Core/NetPlayServer.cpp
@@ -1383,7 +1457,7 @@ index 6681eb0..a9aedf5 100644
      <QtMoc Include="CheatSearchFactoryWidget.h" />
      <QtMoc Include="CheatSearchWidget.h" />
 diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
-index bcfbabe..39bed96 100644
+index bcfbabe..fe78f24 100644
 --- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
 +++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
 @@ -73,6 +73,7 @@
@@ -1489,7 +1563,18 @@ index bcfbabe..39bed96 100644
    m_host_name_edit->setHidden(!is_hosting);
    m_host_name_button->setHidden(!is_hosting);
    if (is_hosting)
-@@ -977,6 +1017,14 @@ void NetPlayDialog::OnSetHostName()
+@@ -967,6 +1007,10 @@ void NetPlayDialog::OnRoomClosed()
+ 
+ void NetPlayDialog::OnSetHostName()
+ {
++  // Rewrites the GBA port 2 save, like the host's Submit Team.
++  if (!HostWriteAllowed())
++    return;
++
+   std::string status;
+   const bool ok =
+       XDNetplay::RenameHostTrainer(m_host_name_edit->text().trimmed().toStdString(), &status);
+@@ -977,6 +1021,14 @@ void NetPlayDialog::OnSetHostName()
  
  void NetPlayDialog::OnSubmitTeam()
  {
@@ -1504,7 +1589,7 @@ index bcfbabe..39bed96 100644
    // Joiner side. A pokepast.es link is resolved HERE, on the submitting
    // client, so the host only ever parses plain text it was handed -- it never
    // fetches a URL a stranger chose.
-@@ -1320,10 +1368,8 @@ void NetPlayDialog::OnSubmitTeam()
+@@ -1320,10 +1372,8 @@ void NetPlayDialog::OnSubmitTeam()
      return;
    }
  
@@ -1517,7 +1602,7 @@ index bcfbabe..39bed96 100644
    {
      Settings::Instance().GetNetPlayClient()->SendTeamSubmission(
          XDNetplay::BuildTeamSubmissionPayload(text.toStdString(), trainer_name, model, raise));
-@@ -1332,8 +1378,8 @@ void NetPlayDialog::OnSubmitTeam()
+@@ -1332,8 +1382,8 @@ void NetPlayDialog::OnSubmitTeam()
      return;
    }
  
@@ -1528,7 +1613,7 @@ index bcfbabe..39bed96 100644
    // The fetch is asynchronous and the submission is committed from the user's
    // point of view, so persist NOW rather than in the deferred lambda: if a
    // flaky network fails the fetch, the link prefilling on the next open is
-@@ -1364,6 +1410,283 @@ void NetPlayDialog::OnSubmitTeam()
+@@ -1364,6 +1414,283 @@ void NetPlayDialog::OnSubmitTeam()
    }).detach();
  }
  
@@ -1812,7 +1897,7 @@ index bcfbabe..39bed96 100644
  void NetPlayDialog::OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,
                                      const std::string& netplay_name)
  {
-@@ -1412,6 +1735,11 @@ void NetPlayDialog::SetOptionsEnabled(bool enabled)
+@@ -1412,6 +1739,11 @@ void NetPlayDialog::SetOptionsEnabled(bool enabled)
      m_host_input_authority_action->setEnabled(enabled);
      m_golf_mode_action->setEnabled(enabled);
      m_fixed_delay_action->setEnabled(enabled);
