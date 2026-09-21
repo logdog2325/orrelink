@@ -111,6 +111,11 @@ private:
   void ConnectWidgets();
   void OnChat();
   void OnSubmitTeam();
+  void OnSubmitHostTeam();
+  bool HostWriteAllowed();
+  void ApplyHostTeam(const std::string& showdown_text, const std::string& trainer_name,
+                     bool raise_to_level_100);
+  void OnStyleSettings();
   void OnSetHostName();
   void OnStart();
   void DisplayMessage(const QString& msg, const std::string& color,
@@ -129,6 +134,7 @@ private:
   QLineEdit* m_chat_type_edit;
   QPushButton* m_chat_send_button;
   QPushButton* m_submit_team_button;
+  QPushButton* m_style_button;
   QLineEdit* m_host_name_edit;
   QPushButton* m_host_name_button;
 

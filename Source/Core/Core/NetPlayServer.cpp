@@ -2141,8 +2141,9 @@ bool NetPlayServer::StartGame()
 
   SendAsyncToClients(std::move(spac));
 
-  m_start_pending = false;
+  // Running goes up before pending comes down: see IsStartingOrRunning().
   m_is_running = true;
+  m_start_pending = false;
 
   return true;
 }
