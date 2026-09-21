@@ -256,6 +256,7 @@
     <ClCompile Include="XDNetplay\TeamEditorDialog.cpp" />
     <ClCompile Include="XDNetplay\XDLauncherDialog.cpp" />
     <ClCompile Include="XDNetplay\XDNetplayConfig.cpp" />
+    <ClCompile Include="XDNetplay\XDStyleCombo.cpp" />
   </ItemGroup>
   <!--
     Put C/C++ headers here. If moc needs to be run for the file (only needed if
@@ -294,6 +295,7 @@
     <ClInclude Include="Translation.h" />
     <ClInclude Include="WiiUpdate.h" />
     <ClInclude Include="XDNetplay\XDNetplayConfig.h" />
+    <ClInclude Include="XDNetplay\XDStyleCombo.h" />
     <QtMoc Include="AboutDialog.h" />
     <QtMoc Include="CheatSearchFactoryWidget.h" />
     <QtMoc Include="CheatSearchWidget.h" />

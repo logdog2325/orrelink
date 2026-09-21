@@ -63,6 +63,7 @@
 #include "DolphinQt/Settings.h"
 #include "DolphinQt/XDNetplay/TeamEditorDialog.h"
 #include "DolphinQt/XDNetplay/XDNetplayConfig.h"
+#include "DolphinQt/XDNetplay/XDStyleCombo.h"
 
 #include "UICommon/GameFile.h"
 #include "UICommon/NetPlayIndex.h"
@@ -319,24 +320,6 @@ std::optional<NetPlaySession> PickMatch(const std::vector<NetPlaySession>& sessi
   return std::nullopt;
 }
 
-// Battlefield indices whose rooms are outdoor / cave / water rather than a
-// colosseum floor. Terrain is the one way the location pick is not purely
-// cosmetic: Nature Power's move, Camouflage's type and Secret Power's side
-// effect all resolve from it (and Secret Power is a common Gen 3 TM). Per the
-// venue research these entries get a suffix in their dropdown label -- no
-// separate warning dialog. Keep in sync with BattleCustomizer's VenueTable.
-constexpr int TERRAIN_VENUES[] = {5,  7,  10, 12, 14, 15, 16, 17, 19, 21, 22, 23, 39,
-                                  42, 44, 45, 49, 50, 53, 54, 55, 56, 57, 58, 59};
-
-bool VenueAltersTerrain(int id)
-{
-  for (const int terrain_id : TERRAIN_VENUES)
-  {
-    if (terrain_id == id)
-      return true;
-  }
-  return false;
-}
 }  // namespace
 
 XDLauncherDialog::XDLauncherDialog(const GameListModel& game_list_model, QWidget* parent)
@@ -491,8 +474,8 @@ void XDLauncherDialog::CreateMainLayout()
     // models are PER PLAYER (a joiner picks theirs in the Submit Team
     // sheet, and that pick beats the host's fallback dropdown).
     auto* who_note = MakeNoteLabel(
-        tr("The host picks format, music and location. Joiners set team, name and model in "
-           "Submit Team; hosts set their name in the room or Team Editor."));
+        tr("The host picks format, music and location. Each player sets team, name and model in "
+           "the room's Submit Team."));
     style_layout->addWidget(who_note, style_row, 0, 1, 2);
     style_row++;
   }
@@ -575,43 +558,6 @@ void XDLauncherDialog::CreateMainLayout()
     style_layout->addLayout(timer_fields, style_row, 1);
     style_row++;
   }
-  const auto populate_style_combo =
-      [this](QComboBox* combo, std::span<const XDNetplay::BattleCustomizer::StyleOption> table,
-             bool model_table, bool terrain_suffix) {
-        using XDNetplay::BattleCustomizer::Tier;
-        combo->addItem(tr("Game default"), 0);
-        bool past_tested = false;
-        for (const XDNetplay::BattleCustomizer::StyleOption& option : table)
-        {
-          // Music/venue tables list tested-safe entries first; the tier change
-          // is where the "here be dragons" separator goes. Model lists get no
-          // tier presentation (the field has disproven "untested" there):
-          // their one distinction is whether the pick has a pre-rendered bust,
-          // said in the label as "(no portrait)".
-          if (!model_table && !past_tested && option.tier == Tier::Experimental)
-          {
-            combo->insertSeparator(combo->count());
-            past_tested = true;
-          }
-          const QString name = QString::fromUtf8(option.name);
-          const bool untested = !model_table && option.tier == Tier::Experimental;
-          const bool no_portrait =
-              model_table && !XDNetplay::BattleCustomizer::ModelHasPortrait(option.id);
-          const bool terrain = terrain_suffix && VenueAltersTerrain(option.id);
-          QString item;
-          if (untested && terrain)
-            item = tr("%1 (untested, alters Nature Power etc.)").arg(name);
-          else if (untested)
-            item = tr("%1 (untested)").arg(name);
-          else if (terrain)
-            item = tr("%1 (alters Nature Power etc.)").arg(name);
-          else if (no_portrait)
-            item = tr("%1 (no portrait)").arg(name);
-          else
-            item = name;
-          combo->addItem(item, option.id);
-        }
-      };
   m_style_host_model_combo = add_style_combo(
       tr("Your model:"), tr("The trainer model you appear as. Applies when you host;\n"
                             "both players see the same battle."));
@@ -623,13 +569,13 @@ void XDLauncherDialog::CreateMainLayout()
   m_style_venue_combo = add_style_combo(
       tr("Battle location:"), tr("Locations that alter Nature Power, Camouflage or Secret Power\n"
                                  "say so in their name -- everything else is purely cosmetic."));
-  populate_style_combo(m_style_host_model_combo, XDNetplay::BattleCustomizer::ModelTable(), true,
-                       false);
-  populate_style_combo(m_style_guest_model_combo, XDNetplay::BattleCustomizer::ModelTable(), true,
-                       false);
-  populate_style_combo(m_style_music_combo, XDNetplay::BattleCustomizer::MusicTable(), false,
-                       false);
-  populate_style_combo(m_style_venue_combo, XDNetplay::BattleCustomizer::VenueTable(), false, true);
+  // Entries, labels and the experimental-tier separator come from the shared
+  // StyleCombo helper, so the netplay room's host dialogs list the same things.
+  using XDNetplay::StyleCombo::Table;
+  XDNetplay::StyleCombo::Populate(m_style_host_model_combo, Table::Model);
+  XDNetplay::StyleCombo::Populate(m_style_guest_model_combo, Table::Model);
+  XDNetplay::StyleCombo::Populate(m_style_music_combo, Table::Music);
+  XDNetplay::StyleCombo::Populate(m_style_venue_combo, Table::Venue);
   style_layout->setColumnStretch(1, 1);
   style_box->setLayout(style_layout);
   layout->addWidget(style_box);

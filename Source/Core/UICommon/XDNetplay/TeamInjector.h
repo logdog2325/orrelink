@@ -174,6 +174,30 @@ bool RenameHostTrainer(const std::string& name, std::string* status);
 // prefilling the host's name field.
 std::string HostTrainerName();
 
+// The HOST's in-room counterpart of a joiner's team submission: parse a
+// Showdown team and write it (and, if given, the trainer name) into the GBA
+// port 2 save (the host's own socket, the one the room syncs at Start) through
+// the same verified write RenameHostTrainer uses.
+//
+// PERSISTENT, like the Team Editor's Save: no .hostteam stash and no guest
+// marker, because this IS the host's own save. When the room runs on a
+// disposable save because the host imported a personal save, the write lands
+// in the disposable and the import comes back untouched when the room closes.
+// That is by design.
+//
+// Refuses while a game is running (the mGBA core owns the file), refuses an
+// FRLG save (its party lives at other offsets, see InjectGuestTeam), and
+// applies the HOST's format gate (FormatRules::ValidateSets with
+// MAIN_XD_FORMAT) before anything is written. A port with no save yet is
+// seeded from the bundled template, the same way the Team Editor does it.
+//
+// trainer_name "" keeps the save's current name; a name that sanitizes to
+// nothing is dropped, not fatal. raise_to_level_100 is honoured only in a
+// level-100 format and only raises. *status always receives a one-line
+// human-readable result.
+bool SubmitHostTeam(const std::string& showdown_text, const std::string& trainer_name,
+                    std::string* status, bool raise_to_level_100 = false);
+
 // HOST gate for the one-tap FORMAT feature (FormatRules.h): when the host's
 // MAIN_XD_FORMAT key is Orre Colosseum, validate the parties the HOST brings
 // to the room -- the port-2 save (the host's own team) AND the port-3 save
