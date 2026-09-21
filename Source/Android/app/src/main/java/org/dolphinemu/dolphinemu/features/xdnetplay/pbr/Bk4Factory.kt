@@ -16,8 +16,8 @@ import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.ShowdownSet
  *  - version 12 (Diamond) as the game of origin, fateful encounter off
  *  - met level = current level, met date 2007-04-25 (PBR's own release day —
  *    a fixed, obviously-deliberate date rather than a fake plausible one)
- *  - PP 40 per non-empty move slot with no PP Ups; the games clamp PP on use
- *    and the asset carries no per-move base-PP table
+ *  - three PP Ups on every non-empty move slot and current PP at the true
+ *    maximum for that move ([Gen4MovePp]); an empty slot carries neither
  *  - the profile's own OT name / TID / SID, so the team reads as the player's
  *
  * The PID is chosen deterministically to satisfy, in priority order: nature
@@ -28,7 +28,6 @@ import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.ShowdownSet
 object Bk4Factory {
     private const val LANGUAGE_ENGLISH = 2
     private const val DEFAULT_FRIENDSHIP = 255
-    private const val DEFAULT_PP = 40
     private const val BALL_POKE = 4
     private const val OT_GENDER_MALE = 0
     private const val VERSION_DIAMOND = 12
@@ -113,8 +112,8 @@ object Bk4Factory {
             moveIds[i] = resolveMoveId(set.moves[i], data)
         }
         mon.moves = moveIds
-        mon.movePp = IntArray(4) { if (moveIds[it] != 0) DEFAULT_PP else 0 }
-        mon.movePpUps = IntArray(4)
+        mon.movePp = IntArray(4) { Gen4MovePp.maxPp(moveIds[it], Gen4MovePp.PP_UPS) }
+        mon.movePpUps = IntArray(4) { if (moveIds[it] != 0) Gen4MovePp.PP_UPS else 0 }
 
         mon.genderRaw = genderFor(species.genderRatio, pid)
         val nickname = sanitizeName(set.nickname ?: species.name, Bk4Mon.NICKNAME_CHARS)

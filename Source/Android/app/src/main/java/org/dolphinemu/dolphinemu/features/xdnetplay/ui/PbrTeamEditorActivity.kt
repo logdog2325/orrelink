@@ -22,6 +22,7 @@ import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.Bk4Factory
 import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.Bk4Mon
 import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.Gen4Data
 import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.Gen4Growth
+import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.Gen4MovePp
 import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.Gen4Text
 import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.PbrContainer
 import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.PbrSave
@@ -446,14 +447,25 @@ class PbrTeamRepo(private val context: Context) {
                 mon.genderRaw = Bk4Factory.genderFor(species.genderRatio, mon.pid)
             }
 
+            // A slot whose move did not change keeps its PP and PP Ups as they
+            // are (they may come from the player's own save). A new move gets
+            // all three PP Ups and its true maximum PP, like a fresh import.
             val previousMoves = mon.moves
             val previousPp = mon.movePp
+            val previousPpUps = mon.movePpUps
             mon.moves = moveIds
             mon.movePp = IntArray(4) { i ->
                 when {
                     moveIds[i] == 0 -> 0
                     moveIds[i] == previousMoves[i] -> previousPp[i]
-                    else -> DEFAULT_PP
+                    else -> Gen4MovePp.maxPp(moveIds[i], Gen4MovePp.PP_UPS)
+                }
+            }
+            mon.movePpUps = IntArray(4) { i ->
+                when {
+                    moveIds[i] == 0 -> 0
+                    moveIds[i] == previousMoves[i] -> previousPpUps[i]
+                    else -> Gen4MovePp.PP_UPS
                 }
             }
             mon.heldItem = heldItem
@@ -546,7 +558,6 @@ class PbrTeamRepo(private val context: Context) {
 
     companion object {
         val STAT_LABELS = listOf("HP", "Atk", "Def", "SpA", "SpD", "Spe")
-        private const val DEFAULT_PP = 40
 
         /**
          * "0 HP / 252 Atk / 0 Def / 0 SpA / 4 SpD / 252 Spe" — Showdown's own
