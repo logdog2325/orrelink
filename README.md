@@ -63,9 +63,11 @@ Two rules explain everything below.
   automatically, so joiners **submit** their team instead.
 - **Format, battle timer, music and location are the host's picks.** Trainer
   models are per player.
-- **Hidden Power comes out as the type in your paste.** If your paste says
-  Hidden Power [Ice] and lists no IVs, OrreLink sets the IVs that give Ice. If
-  you list some IVs, such as 0 Atk, it keeps them and adjusts the others.
+- **Hidden Power comes out as the type in your paste.** With no IVs line you
+  get the same default IVs Showdown uses for that type. If your paste has an
+  IVs line, those IVs are used as written.
+- **Pasted teams have max PP.** Every move gets all three PP Ups. A team you
+  pasted before version 1.6.2 keeps its old PP until you paste it again.
 
 If you imported a personal Emerald save, only a rebuilt copy with your party
 and trainer identity ever leaves your machine. Your boxes, items and story

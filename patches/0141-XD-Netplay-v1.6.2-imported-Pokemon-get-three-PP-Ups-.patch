@@ -1,0 +1,419 @@
+From db225239dc87f234ee2d8b58c991712afbce9a2d Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 16:14:39 -0700
+Subject: [PATCH] XD Netplay v1.6.2: imported Pokemon get three PP Ups and true
+ maximum PP
+
+Every Pokemon built from a Showdown paste used to get a flat PP value (35 on
+the Gen 3 side, 40 on the Gen 4 side) and no PP Ups, on the assumption that the
+game clamps PP on use. In battle that reads as moves that are not PP maxed:
+Thunderbolt at 15 instead of 24, Earthquake at 10 instead of 16.
+
+Built Pokemon now carry three PP Ups on every filled move slot and current PP
+at the real maximum for that move (base + 3 * base / 5, the games' own
+formula). An empty slot carries neither, the way the games leave it.
+
+The base PP tables are per generation, because some moves changed between
+them (Giga Drain 5 in Gen 3 and 10 in Gen 4, Recover 20 and 10). Each table
+was extracted by script and compared entry by entry against a second,
+independent source; both pairs agree on every id (355 Gen 3 ids, 468 Gen 4
+ids), and every id was aligned against the bundled name to id maps.
+
+ - Gen3Data::MoveBasePp / MoveMaxPp (C++), used by MonFactory. This is the
+   path behind the desktop Team Editor and Submit Team for both players on
+   every platform.
+ - Gen3MovePp.kt, used by the Android Team Editor's MonFactory.
+ - Gen4MovePp.kt, used by Bk4Factory and by the PBR editor when a move is
+   changed. A slot whose move did not change keeps its PP and PP Ups, since
+   they may come from the player's own save.
+
+Pokemon taken from a player's own save ("Use my save", imported saves) are not
+touched. A team that was built before this version keeps its old PP until it
+is imported again.
+---
+ .../features/xdnetplay/gen3/Gen3MovePp.kt     | 47 ++++++++++++++++
+ .../features/xdnetplay/gen3/MonFactory.kt     | 18 ++++--
+ .../features/xdnetplay/pbr/Bk4Factory.kt      |  9 ++-
+ .../features/xdnetplay/pbr/Gen4MovePp.kt      | 55 +++++++++++++++++++
+ .../xdnetplay/ui/PbrTeamEditorActivity.kt     | 15 ++++-
+ Source/Core/UICommon/XDNetplay/Gen3Data.cpp   | 43 +++++++++++++++
+ Source/Core/UICommon/XDNetplay/Gen3Data.h     |  7 +++
+ Source/Core/UICommon/XDNetplay/MonFactory.cpp | 14 ++++-
+ Source/Core/UICommon/XDNetplay/Version.h      |  2 +-
+ 9 files changed, 194 insertions(+), 16 deletions(-)
+ create mode 100644 Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/gen3/Gen3MovePp.kt
+ create mode 100644 Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/pbr/Gen4MovePp.kt
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/gen3/Gen3MovePp.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/gen3/Gen3MovePp.kt
+new file mode 100644
+index 0000000..75decfb
+--- /dev/null
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/gen3/Gen3MovePp.kt
+@@ -0,0 +1,47 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++package org.dolphinemu.dolphinemu.features.xdnetplay.gen3
++
++/**
++ * Base PP per internal Gen 3 move id, and the PP a move has with PP Ups on it.
++ *
++ * Generation 3 values, which differ from later games for some moves (Giga
++ * Drain is 5 here, Recover 20). Extracted by script from the Emerald move
++ * table and checked entry by entry against a second, independent source; the
++ * two agree on all 355 ids. Kept in step with MOVE_BASE_PP in Gen3Data.cpp.
++ */
++object Gen3MovePp {
++    /** Index = move id, 0..354. Index 0 is "no move". */
++    private val BASE_PP = intArrayOf(
++         0, 35, 25, 10, 15, 20, 20, 15, 15, 15, 35, 30,  5, 10, 30, 30, 35, 35, 20, 15,
++        20, 20, 10, 20, 30,  5, 25, 15, 15, 15, 25, 20,  5, 35, 15, 20, 20, 20, 15, 30,
++        35, 20, 20, 30, 25, 40, 20, 15, 20, 20, 20, 30, 25, 15, 30, 25,  5, 15, 10,  5,
++        20, 20, 20,  5, 35, 20, 25, 20, 20, 20, 15, 20, 10, 10, 40, 25, 10, 35, 30, 15,
++        20, 40, 10, 15, 30, 15, 20, 10, 15, 10,  5, 10, 10, 25, 10, 20, 40, 30, 30, 20,
++        20, 15, 10, 40, 15, 20, 30, 20, 20, 10, 40, 40, 30, 30, 30, 20, 30, 10, 10, 20,
++         5, 10, 30, 20, 20, 20,  5, 15, 10, 20, 15, 15, 35, 20, 15, 10, 20, 30, 15, 40,
++        20, 15, 10,  5, 10, 30, 10, 15, 20, 15, 40, 40, 10,  5, 15, 10, 10, 10, 15, 30,
++        30, 10, 10, 20, 10,  1,  1, 10, 10, 10,  5, 15, 25, 15, 10, 15, 30,  5, 40, 15,
++        10, 25, 10, 30, 10, 20, 10, 10, 10, 10, 10, 20,  5, 40,  5,  5, 15,  5, 10,  5,
++        15, 10,  5, 10, 20, 20, 40, 15, 10, 20, 20, 25,  5, 15, 10,  5, 20, 15, 20, 25,
++        20,  5, 30,  5, 10, 20, 40,  5, 20, 40, 20, 15, 35, 10,  5,  5,  5, 15,  5, 20,
++         5,  5, 15, 20, 10,  5,  5, 15, 15, 15, 15, 10, 10, 10, 10, 10, 10, 10, 10, 15,
++        15, 15, 10, 20, 20, 10, 20, 20, 20, 20, 20, 10, 10, 10, 20, 20,  5, 15, 10, 10,
++        15, 10, 20,  5,  5, 10, 10, 20,  5, 10, 20, 10, 20, 20, 20,  5,  5, 15, 20, 10,
++        15, 20, 15, 10, 10, 15, 10,  5,  5, 10, 15, 10,  5, 20, 25,  5, 40, 10,  5, 40,
++        15, 20, 20,  5, 15, 20, 30, 15, 15,  5, 10, 30, 20, 30, 15,  5, 40, 15,  5, 20,
++         5, 15, 25, 40, 15, 20, 15, 20, 15, 20, 10, 20, 20,  5,  5,
++    )
++
++    /** Base PP (no PP Ups). 0 for "no move" and for an id outside the table. */
++    fun basePp(moveId: Int): Int = if (moveId in 1 until BASE_PP.size) BASE_PP[moveId] else 0
++
++    /**
++     * PP with [ppUps] PP Ups (0..3), the games' own formula: every PP Up adds a
++     * fifth of the base value, rounded down.
++     */
++    fun maxPp(moveId: Int, ppUps: Int): Int {
++        val base = basePp(moveId)
++        return base + base * ppUps.coerceIn(0, 3) / 5
++    }
++}
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/gen3/MonFactory.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/gen3/MonFactory.kt
+index c974423..7bccede 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/gen3/MonFactory.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/gen3/MonFactory.kt
+@@ -10,9 +10,8 @@ package org.dolphinemu.dolphinemu.features.xdnetplay.gen3
+  *  - language English (0x0202), friendship 255 unless the paste says otherwise
+  *  - origins: met level = current level, game of origin 3 (Emerald),
+  *    ball 4 (Poke Ball), OT gender male, met location 0
+- *  - PP = 35 for every non-empty move slot, 0 otherwise, PP bonuses 0
+- *    (the Python used exactly this constant; there is no per-move base-PP
+- *    table in the data JSON, and the game clamps PP on use)
++ *  - three PP Ups on every non-empty move slot and current PP at the true
++ *    maximum for that move ([Gen3MovePp]); an empty slot carries neither
+  *  - contest stats, ribbons, status, pokerus all 0
+  *
+  * The PID is chosen deterministically to satisfy, in priority order:
+@@ -24,7 +23,7 @@ package org.dolphinemu.dolphinemu.features.xdnetplay.gen3
+  */
+ object MonFactory {
+     private const val LANGUAGE_ENGLISH = 0x0202
+-    private const val DEFAULT_PP = 35        // mirrors the Python injector
++    private const val PP_UPS = 3             // competitive sets assume all three
+     private const val GAME_EMERALD = 3
+     private const val BALL_POKE = 4          // the Python injector's default ball
+     private const val OT_GENDER_MALE = 0
+@@ -120,12 +119,19 @@ object MonFactory {
+         mon.species = species.id
+         mon.heldItem = heldItem
+         mon.experience = data.expForLevel(species.expGroup, level)
+-        mon.ppBonuses = 0
++        // Two bits of PP Ups per move slot; an empty slot carries none.
++        var ppBonuses = 0
++        for (i in 0..3) {
++            if (moveIds[i] != 0) {
++                ppBonuses = ppBonuses or (PP_UPS shl (2 * i))
++            }
++        }
++        mon.ppBonuses = ppBonuses
+         // Showdown "Happiness:" when given; otherwise MAX (Return 102 BP), not the base value.
+         mon.friendship = set.happiness ?: 255
+         mon.moves = moveIds
+         for (i in 0..3) {
+-            mon.pp[i] = if (moveIds[i] != 0) DEFAULT_PP else 0
++            mon.pp[i] = Gen3MovePp.maxPp(moveIds[i], PP_UPS)
+         }
+         mon.evs = evs
+         mon.metLocation = 0
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/pbr/Bk4Factory.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/pbr/Bk4Factory.kt
+index 0148397..e74e4d0 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/pbr/Bk4Factory.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/pbr/Bk4Factory.kt
+@@ -16,8 +16,8 @@ import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.ShowdownSet
+  *  - version 12 (Diamond) as the game of origin, fateful encounter off
+  *  - met level = current level, met date 2007-04-25 (PBR's own release day —
+  *    a fixed, obviously-deliberate date rather than a fake plausible one)
+- *  - PP 40 per non-empty move slot with no PP Ups; the games clamp PP on use
+- *    and the asset carries no per-move base-PP table
++ *  - three PP Ups on every non-empty move slot and current PP at the true
++ *    maximum for that move ([Gen4MovePp]); an empty slot carries neither
+  *  - the profile's own OT name / TID / SID, so the team reads as the player's
+  *
+  * The PID is chosen deterministically to satisfy, in priority order: nature
+@@ -28,7 +28,6 @@ import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.ShowdownSet
+ object Bk4Factory {
+     private const val LANGUAGE_ENGLISH = 2
+     private const val DEFAULT_FRIENDSHIP = 255
+-    private const val DEFAULT_PP = 40
+     private const val BALL_POKE = 4
+     private const val OT_GENDER_MALE = 0
+     private const val VERSION_DIAMOND = 12
+@@ -113,8 +112,8 @@ object Bk4Factory {
+             moveIds[i] = resolveMoveId(set.moves[i], data)
+         }
+         mon.moves = moveIds
+-        mon.movePp = IntArray(4) { if (moveIds[it] != 0) DEFAULT_PP else 0 }
+-        mon.movePpUps = IntArray(4)
++        mon.movePp = IntArray(4) { Gen4MovePp.maxPp(moveIds[it], Gen4MovePp.PP_UPS) }
++        mon.movePpUps = IntArray(4) { if (moveIds[it] != 0) Gen4MovePp.PP_UPS else 0 }
+ 
+         mon.genderRaw = genderFor(species.genderRatio, pid)
+         val nickname = sanitizeName(set.nickname ?: species.name, Bk4Mon.NICKNAME_CHARS)
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/pbr/Gen4MovePp.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/pbr/Gen4MovePp.kt
+new file mode 100644
+index 0000000..48fbdd9
+--- /dev/null
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/pbr/Gen4MovePp.kt
+@@ -0,0 +1,55 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++package org.dolphinemu.dolphinemu.features.xdnetplay.pbr
++
++/**
++ * Base PP per Gen 4 move id, and the PP a move has with PP Ups on it.
++ *
++ * Generation 4 values, which differ from Gen 3 for some moves (Giga Drain and
++ * Recover are both 10 here). Extracted by script and checked entry by entry
++ * against a second, independent source; the two agree on all 468 ids.
++ */
++object Gen4MovePp {
++    /** PP Ups a built Pokémon gets on every move: competitive sets assume all three. */
++    const val PP_UPS = 3
++
++    /** Index = move id, 0..467. Index 0 is "no move". */
++    private val BASE_PP = intArrayOf(
++         0, 35, 25, 10, 15, 20, 20, 15, 15, 15, 35, 30,  5, 10, 30, 30, 35, 35, 20, 15,
++        20, 20, 15, 20, 30,  5, 25, 15, 15, 15, 25, 20,  5, 35, 15, 20, 20, 20, 15, 30,
++        35, 20, 20, 30, 25, 40, 20, 15, 20, 20, 20, 30, 25, 15, 30, 25,  5, 15, 10,  5,
++        20, 20, 20,  5, 35, 20, 25, 20, 20, 20, 15, 25, 15, 10, 40, 25, 10, 35, 30, 15,
++        20, 40, 10, 15, 30, 15, 20, 10, 15, 10,  5, 10, 10, 25, 10, 20, 40, 30, 30, 20,
++        20, 15, 10, 40, 15, 10, 30, 20, 20, 10, 40, 40, 30, 30, 30, 20, 30, 10, 10, 20,
++         5, 10, 30, 20, 20, 20,  5, 15, 10, 20, 15, 15, 35, 20, 15, 10, 20, 30, 15, 40,
++        20, 15, 10,  5, 10, 30, 10, 15, 20, 15, 40, 40, 10,  5, 15, 10, 10, 10, 15, 30,
++        30, 10, 10, 20, 10,  1,  1, 10, 10, 10,  5, 15, 25, 15, 10, 15, 30,  5, 40, 15,
++        10, 25, 10, 30, 10, 20, 10, 10, 10, 10, 10, 20,  5, 40,  5,  5, 15,  5, 10,  5,
++        15, 10, 10, 10, 20, 20, 40, 15, 10, 20, 20, 25,  5, 15, 10,  5, 20, 15, 20, 25,
++        20,  5, 30,  5, 10, 20, 40,  5, 20, 40, 20, 15, 35, 10,  5,  5,  5, 15,  5, 20,
++         5,  5, 15, 20, 10,  5,  5, 15, 15, 15, 15, 10, 10, 10, 20, 10, 10, 10, 10, 15,
++        15, 15, 10, 20, 20, 10, 20, 20, 20, 20, 20, 10, 10, 10, 20, 20,  5, 15, 10, 10,
++        15, 10, 20,  5,  5, 10, 10, 20,  5, 10, 20, 10, 20, 20, 20,  5,  5, 15, 20, 10,
++        15, 20, 15, 10, 10, 15, 10,  5,  5, 10, 15, 10,  5, 20, 25,  5, 40, 10,  5, 40,
++        15, 20, 20,  5, 15, 20, 30, 15, 15,  5, 10, 30, 20, 30, 15,  5, 40, 15,  5, 20,
++         5, 15, 25, 40, 15, 20, 15, 20, 15, 20, 10, 20, 20,  5,  5, 10,  5, 40, 10, 10,
++         5, 10, 10, 15, 10, 20, 30, 30, 10, 20,  5, 10, 10, 15, 10, 10,  5, 15,  5, 10,
++        10, 30, 20, 20, 10, 10,  5,  5, 10,  5, 20, 10, 20, 10, 15, 10, 20, 20, 20, 15,
++        15, 10, 15, 20, 15, 10, 10, 10, 20,  5, 30,  5, 10, 15, 10, 10,  5, 20, 30, 10,
++        30, 15, 15, 15, 15, 30, 10, 20, 15, 10, 10, 20, 15,  5,  5, 15, 15,  5, 10,  5,
++        20,  5, 15, 20,  5, 20, 20, 20, 20, 10, 20, 10, 15, 20, 15, 10, 10,  5, 10,  5,
++         5, 10,  5,  5, 10,  5,  5,  5,
++    )
++
++    /** Base PP (no PP Ups). 0 for "no move" and for an id outside the table. */
++    fun basePp(moveId: Int): Int = if (moveId in 1 until BASE_PP.size) BASE_PP[moveId] else 0
++
++    /**
++     * PP with [ppUps] PP Ups (0..3), the games' own formula: every PP Up adds a
++     * fifth of the base value, rounded down.
++     */
++    fun maxPp(moveId: Int, ppUps: Int): Int {
++        val base = basePp(moveId)
++        return base + base * ppUps.coerceIn(0, 3) / 5
++    }
++}
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/PbrTeamEditorActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/PbrTeamEditorActivity.kt
+index 4d73913..5ca372b 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/PbrTeamEditorActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/PbrTeamEditorActivity.kt
+@@ -22,6 +22,7 @@ import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.Bk4Factory
+ import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.Bk4Mon
+ import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.Gen4Data
+ import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.Gen4Growth
++import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.Gen4MovePp
+ import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.Gen4Text
+ import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.PbrContainer
+ import org.dolphinemu.dolphinemu.features.xdnetplay.pbr.PbrSave
+@@ -446,14 +447,25 @@ class PbrTeamRepo(private val context: Context) {
+                 mon.genderRaw = Bk4Factory.genderFor(species.genderRatio, mon.pid)
+             }
+ 
++            // A slot whose move did not change keeps its PP and PP Ups as they
++            // are (they may come from the player's own save). A new move gets
++            // all three PP Ups and its true maximum PP, like a fresh import.
+             val previousMoves = mon.moves
+             val previousPp = mon.movePp
++            val previousPpUps = mon.movePpUps
+             mon.moves = moveIds
+             mon.movePp = IntArray(4) { i ->
+                 when {
+                     moveIds[i] == 0 -> 0
+                     moveIds[i] == previousMoves[i] -> previousPp[i]
+-                    else -> DEFAULT_PP
++                    else -> Gen4MovePp.maxPp(moveIds[i], Gen4MovePp.PP_UPS)
++                }
++            }
++            mon.movePpUps = IntArray(4) { i ->
++                when {
++                    moveIds[i] == 0 -> 0
++                    moveIds[i] == previousMoves[i] -> previousPpUps[i]
++                    else -> Gen4MovePp.PP_UPS
+                 }
+             }
+             mon.heldItem = heldItem
+@@ -546,7 +558,6 @@ class PbrTeamRepo(private val context: Context) {
+ 
+     companion object {
+         val STAT_LABELS = listOf("HP", "Atk", "Def", "SpA", "SpD", "Spe")
+-        private const val DEFAULT_PP = 40
+ 
+         /**
+          * "0 HP / 252 Atk / 0 Def / 0 SpA / 4 SpD / 252 Spe" — Showdown's own
+diff --git a/Source/Core/UICommon/XDNetplay/Gen3Data.cpp b/Source/Core/UICommon/XDNetplay/Gen3Data.cpp
+index 156de0b..42df591 100644
+--- a/Source/Core/UICommon/XDNetplay/Gen3Data.cpp
++++ b/Source/Core/UICommon/XDNetplay/Gen3Data.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "UICommon/XDNetplay/Gen3Data.h"
+ 
++#include <algorithm>
+ #include <cctype>
+ 
+ #include <picojson.h>
+@@ -194,6 +195,48 @@ std::optional<Gen3Data> Gen3Data::LoadBundled(std::string* error)
+ }
+ #endif
+ 
++namespace
++{
++// Base PP per internal move id, 0..354 (index 0 is "no move"). Generation 3
++// values, which differ from later games for some moves (Giga Drain is 5 here,
++// Recover 20). Extracted by script from the Emerald move table and checked
++// entry by entry against a second, independent source; the two agree on all
++// 355 ids. The Android copy is Gen3MovePp.kt.
++constexpr std::array<u8, 355> MOVE_BASE_PP = {
++     0, 35, 25, 10, 15, 20, 20, 15, 15, 15, 35, 30,  5, 10, 30, 30, 35, 35, 20, 15,
++    20, 20, 10, 20, 30,  5, 25, 15, 15, 15, 25, 20,  5, 35, 15, 20, 20, 20, 15, 30,
++    35, 20, 20, 30, 25, 40, 20, 15, 20, 20, 20, 30, 25, 15, 30, 25,  5, 15, 10,  5,
++    20, 20, 20,  5, 35, 20, 25, 20, 20, 20, 15, 20, 10, 10, 40, 25, 10, 35, 30, 15,
++    20, 40, 10, 15, 30, 15, 20, 10, 15, 10,  5, 10, 10, 25, 10, 20, 40, 30, 30, 20,
++    20, 15, 10, 40, 15, 20, 30, 20, 20, 10, 40, 40, 30, 30, 30, 20, 30, 10, 10, 20,
++     5, 10, 30, 20, 20, 20,  5, 15, 10, 20, 15, 15, 35, 20, 15, 10, 20, 30, 15, 40,
++    20, 15, 10,  5, 10, 30, 10, 15, 20, 15, 40, 40, 10,  5, 15, 10, 10, 10, 15, 30,
++    30, 10, 10, 20, 10,  1,  1, 10, 10, 10,  5, 15, 25, 15, 10, 15, 30,  5, 40, 15,
++    10, 25, 10, 30, 10, 20, 10, 10, 10, 10, 10, 20,  5, 40,  5,  5, 15,  5, 10,  5,
++    15, 10,  5, 10, 20, 20, 40, 15, 10, 20, 20, 25,  5, 15, 10,  5, 20, 15, 20, 25,
++    20,  5, 30,  5, 10, 20, 40,  5, 20, 40, 20, 15, 35, 10,  5,  5,  5, 15,  5, 20,
++     5,  5, 15, 20, 10,  5,  5, 15, 15, 15, 15, 10, 10, 10, 10, 10, 10, 10, 10, 15,
++    15, 15, 10, 20, 20, 10, 20, 20, 20, 20, 20, 10, 10, 10, 20, 20,  5, 15, 10, 10,
++    15, 10, 20,  5,  5, 10, 10, 20,  5, 10, 20, 10, 20, 20, 20,  5,  5, 15, 20, 10,
++    15, 20, 15, 10, 10, 15, 10,  5,  5, 10, 15, 10,  5, 20, 25,  5, 40, 10,  5, 40,
++    15, 20, 20,  5, 15, 20, 30, 15, 15,  5, 10, 30, 20, 30, 15,  5, 40, 15,  5, 20,
++     5, 15, 25, 40, 15, 20, 15, 20, 15, 20, 10, 20, 20,  5,  5,
++};
++}  // namespace
++
++int Gen3Data::MoveBasePp(int move_id)
++{
++  if (move_id <= 0 || move_id >= static_cast<int>(MOVE_BASE_PP.size()))
++    return 0;
++  return MOVE_BASE_PP[static_cast<size_t>(move_id)];
++}
++
++int Gen3Data::MoveMaxPp(int move_id, int pp_ups)
++{
++  const int base = MoveBasePp(move_id);
++  return base + base * std::clamp(pp_ups, 0, 3) / 5;
++}
++
+ const Gen3Data::Species* Gen3Data::FindSpecies(const std::string& name) const
+ {
+   const auto it = m_species.find(NormalizeName(name));
+diff --git a/Source/Core/UICommon/XDNetplay/Gen3Data.h b/Source/Core/UICommon/XDNetplay/Gen3Data.h
+index e456d93..fb67b19 100644
+--- a/Source/Core/UICommon/XDNetplay/Gen3Data.h
++++ b/Source/Core/UICommon/XDNetplay/Gen3Data.h
+@@ -79,6 +79,13 @@ public:
+   std::optional<int> AbilityId(const std::string& name) const;
+   const Nature* FindNature(const std::string& name) const;
+ 
++  // Base PP of a move (no PP Ups) by internal move id, straight from the
++  // Gen 3 move table. 0 for "no move" and for an id outside that table.
++  static int MoveBasePp(int move_id);
++  // PP of the move with pp_ups PP Ups on it (0..3), the games' own formula:
++  // every PP Up adds a fifth of the base value, rounded down.
++  static int MoveMaxPp(int move_id, int pp_ups);
++
+   // Total experience at level (1..100) for growth group exp_group (e.g.
+   // "MEDIUM_SLOW"), from the cumulative table. std::nullopt for an unknown
+   // group or out-of-range level.
+diff --git a/Source/Core/UICommon/XDNetplay/MonFactory.cpp b/Source/Core/UICommon/XDNetplay/MonFactory.cpp
+index 2671f9e..7b4de5b 100644
+--- a/Source/Core/UICommon/XDNetplay/MonFactory.cpp
++++ b/Source/Core/UICommon/XDNetplay/MonFactory.cpp
+@@ -14,7 +14,8 @@ namespace XDNetplay::MonFactory
+ namespace
+ {
+ constexpr u32 LANGUAGE_ENGLISH = 0x0202;
+-constexpr u32 DEFAULT_PP = 35;  // mirrors the Python injector
++// Competitive sets assume every move has all three PP Ups on it.
++constexpr int PP_UPS = 3;
+ constexpr u32 GAME_EMERALD = 3;
+ constexpr u32 BALL_POKE = 4;  // the Python injector's default ball
+ constexpr u32 OT_GENDER_MALE = 0;
+@@ -282,13 +283,22 @@ std::optional<Gen3Mon> Build(const ShowdownSet& set, const Gen3Data& data,
+   mon.species = static_cast<u32>(species->id);
+   mon.held_item = held_item;
+   mon.experience = static_cast<u32>(*experience);
++  // Two bits of PP Ups per move slot. An empty slot carries none, the way the
++  // games leave it.
+   mon.pp_bonuses = 0;
++  for (size_t i = 0; i < 4; i++)
++  {
++    if (move_ids[i] != 0)
++      mon.pp_bonuses |= static_cast<u32>(PP_UPS) << (2 * i);
++  }
+   // Showdown "Happiness:" when given; otherwise MAX (Return 102 BP), not the species base
+   // value -- competitive sets assume max happiness unless they say otherwise.
+   mon.friendship = static_cast<u32>(set.happiness.value_or(255));
+   mon.moves = move_ids;
++  // Current PP is the true maximum for the move with those PP Ups (Thunderbolt
++  // 24, Earthquake 16), not a flat number for the game to clamp.
+   for (size_t i = 0; i < 4; i++)
+-    mon.pp[i] = move_ids[i] != 0 ? DEFAULT_PP : 0;
++    mon.pp[i] = static_cast<u32>(Gen3Data::MoveMaxPp(static_cast<int>(move_ids[i]), PP_UPS));
+   for (size_t i = 0; i < 6; i++)
+     mon.evs[i] = static_cast<u32>(evs[i]);
+   mon.met_location = 0;
+diff --git a/Source/Core/UICommon/XDNetplay/Version.h b/Source/Core/UICommon/XDNetplay/Version.h
+index 847b201..adecca8 100644
+--- a/Source/Core/UICommon/XDNetplay/Version.h
++++ b/Source/Core/UICommon/XDNetplay/Version.h
+@@ -11,5 +11,5 @@ namespace XDNetplay
+ // fork's release, so it cannot answer "which XD Netplay am I?" -- this constant is the only thing
+ // that can. It MUST be bumped in the same patch that a release is tagged from: ship a tag ahead of
+ // this string and every user of that release is told they are out of date forever.
+-constexpr char VERSION[] = "1.6.1";
++constexpr char VERSION[] = "1.6.2";
+ }  // namespace XDNetplay
+-- 
+2.39.5 (Apple Git-154)
+
