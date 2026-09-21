@@ -63,6 +63,9 @@ Two rules explain everything below.
   automatically, so joiners **submit** their team instead.
 - **Format, battle timer, music and location are the host's picks.** Trainer
   models are per player.
+- **Hidden Power comes out as the type in your paste.** If your paste says
+  Hidden Power [Ice] and lists no IVs, OrreLink sets the IVs that give Ice. If
+  you list some IVs, such as 0 Atk, it keeps them and adjusts the others.
 
 If you imported a personal Emerald save, only a rebuilt copy with your party
 and trainer identity ever leaves your machine. Your boxes, items and story
@@ -71,8 +74,9 @@ closes.
 
 ### Host
 
-Set your team before you open the room. Once the room is open, the guest slot
-locks.
+You can set your team in the Team Editor before you open the room, or paste
+it in the room with **Submit Team**. Once the room is open, the guest slot in
+the editor locks.
 
 1. Pick a **Format** in the launcher (Orre Colosseum is the usual choice, see
    Formats below). Tick **Battle timer** if you want one.
@@ -84,8 +88,10 @@ locks.
    too. That is the team your opponent plays with if they never send one.
    Useful for testing alone or for handing a friend a team. A guest who sends a
    team replaces it.
-4. Go to **Netplay** and **Host**. Share the code. Your trainer name can also
-   be set in the room.
+4. Go to **Netplay** and **Host**. Share the code. In the room, **Submit Team**
+   lets you swap your team, name or trainer model, and **Music & Location**
+   changes the battle music and where you fight (stadiums and lobbies). Both
+   work any time before you press Start and apply to the next battle.
 5. Wait for your opponent's team to arrive. A line in the room chat says so.
    If the line never appears, their team did not arrive. Ask them to send it
    again before you press Start, or you will fight the wrong team.
@@ -93,8 +99,9 @@ locks.
    through the rules. They are already set. You drive these menus with the
    GameCube keys (see Controls). Your opponent's buttons do nothing here.
 
-There is no **Submit Team** button while hosting. Your team comes from the
-editor.
+A team you paste with **Submit Team** replaces the team in your **Host: GBA
+port 2** slot. If that slot holds a save you imported, the change only lasts
+until the room closes and your own save comes back untouched.
 
 ### Join
 
