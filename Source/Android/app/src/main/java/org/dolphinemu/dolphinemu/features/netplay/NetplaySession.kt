@@ -195,6 +195,50 @@ class NetplaySession(
     /** Current trainer name of the GBA port 2 save, or "" when unreadable. */
     fun hostTrainerName(): String = nativeHostTrainerName()
 
+    /** Outcome of [submitHostTeam]: whether the write succeeded, and the one-line status. */
+    data class HostSubmitResult(val ok: Boolean, val status: String)
+
+    /**
+     * Host only: the host's counterpart of [submitTeam]. Nothing is sent over
+     * netplay. The Showdown team is written into the host's own GBA port 2
+     * save (the one the room syncs at Start) through shared core, which
+     * refuses while a game runs and checks the host's Format pick first. A
+     * pokepast.es link must be resolved to text by the caller.
+     *
+     * [trainerName] "" keeps the save's current name. A blank [showdownText]
+     * with a name is a rename only; blank text and a blank name is a model
+     * change only.
+     *
+     * [modelId] is the HOST trainer model (0 = game default); a negative value
+     * leaves the stored model alone. The Battle Style block is rebuilt either
+     * way, so the pick is in what the room syncs at the next Start.
+     *
+     * Reads and writes the save file, so call off the main thread.
+     */
+    fun submitHostTeam(
+        showdownText: String,
+        trainerName: String,
+        modelId: Int,
+        raiseToLevel100: Boolean = false
+    ): HostSubmitResult {
+        val result = nativeSubmitHostTeam(showdownText, trainerName, modelId, raiseToLevel100)
+        return HostSubmitResult(
+            ok = result.getOrNull(0) == "1",
+            status = result.getOrNull(1).orEmpty()
+        )
+    }
+
+    /**
+     * Host only: store the battle music and location picks (0 = game default)
+     * and rebuild the Battle Style block, so a change made in the room is in
+     * what the room syncs at the next Start. Native refuses while a battle is
+     * starting or running and once the room is gone. Returns null on success,
+     * or the one-line reason nothing changed. Writes a small INI file, so call
+     * off the main thread.
+     */
+    fun setMusicAndLocation(musicId: Int, venueId: Int): String? =
+        nativeSetMusicAndLocation(musicId, venueId).ifEmpty { null }
+
     /**
      * "Use my save": submit the party from this player's OWN local save (their
      * imported or team-editor port-2 slot) instead of a Showdown paste. The
@@ -323,6 +367,17 @@ class NetplaySession(
     private external fun nativeSetHostTrainerName(name: String): String
 
     private external fun nativeHostTrainerName(): String
+
+    /** Returns ["1" or "0", status line]; see [submitHostTeam]. */
+    private external fun nativeSubmitHostTeam(
+        showdownText: String,
+        trainerName: String,
+        modelId: Int,
+        raiseToLevel100: Boolean
+    ): Array<String>
+
+    /** Returns "" on success, else why nothing changed. */
+    private external fun nativeSetMusicAndLocation(musicId: Int, venueId: Int): String
 
     private external fun nativeSetHostInputAuthority(enable: Boolean)
 
