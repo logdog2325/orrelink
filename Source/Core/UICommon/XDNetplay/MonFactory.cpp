@@ -14,7 +14,8 @@ namespace XDNetplay::MonFactory
 namespace
 {
 constexpr u32 LANGUAGE_ENGLISH = 0x0202;
-constexpr u32 DEFAULT_PP = 35;  // mirrors the Python injector
+// Competitive sets assume every move has all three PP Ups on it.
+constexpr int PP_UPS = 3;
 constexpr u32 GAME_EMERALD = 3;
 constexpr u32 BALL_POKE = 4;  // the Python injector's default ball
 constexpr u32 OT_GENDER_MALE = 0;
@@ -282,13 +283,22 @@ std::optional<Gen3Mon> Build(const ShowdownSet& set, const Gen3Data& data,
   mon.species = static_cast<u32>(species->id);
   mon.held_item = held_item;
   mon.experience = static_cast<u32>(*experience);
+  // Two bits of PP Ups per move slot. An empty slot carries none, the way the
+  // games leave it.
   mon.pp_bonuses = 0;
+  for (size_t i = 0; i < 4; i++)
+  {
+    if (move_ids[i] != 0)
+      mon.pp_bonuses |= static_cast<u32>(PP_UPS) << (2 * i);
+  }
   // Showdown "Happiness:" when given; otherwise MAX (Return 102 BP), not the species base
   // value -- competitive sets assume max happiness unless they say otherwise.
   mon.friendship = static_cast<u32>(set.happiness.value_or(255));
   mon.moves = move_ids;
+  // Current PP is the true maximum for the move with those PP Ups (Thunderbolt
+  // 24, Earthquake 16), not a flat number for the game to clamp.
   for (size_t i = 0; i < 4; i++)
-    mon.pp[i] = move_ids[i] != 0 ? DEFAULT_PP : 0;
+    mon.pp[i] = static_cast<u32>(Gen3Data::MoveMaxPp(static_cast<int>(move_ids[i]), PP_UPS));
   for (size_t i = 0; i < 6; i++)
     mon.evs[i] = static_cast<u32>(evs[i]);
   mon.met_location = 0;
