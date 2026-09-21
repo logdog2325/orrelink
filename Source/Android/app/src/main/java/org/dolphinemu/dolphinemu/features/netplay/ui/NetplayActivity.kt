@@ -52,6 +52,24 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
         // travels with the team submission, so no extra session state exists.
         val modelOptions = BattleStyleBridge.modelTable()
 
+        // HOST only: the host's own Submit Team sheet opens on the stored
+        // "Your model" pick, and the room's Music & Location dialog needs its
+        // two tables and stored picks. Read once, like the launcher does; the
+        // screen tracks whatever the host applies after that. A joiner never
+        // sees any of it, so nothing is fetched for one.
+        val isHosting = viewModel.isHosting
+        val musicOptions =
+            if (isHosting) BattleStyleBridge.musicTable() else emptyList()
+        val venueOptions =
+            if (isHosting) BattleStyleBridge.venueTable() else emptyList()
+        val initialHostModelId =
+            if (isHosting) BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_HOST_MODEL)
+            else 0
+        val initialMusicId =
+            if (isHosting) BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_MUSIC) else 0
+        val initialVenueId =
+            if (isHosting) BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_VENUE) else 0
+
         // Last-submitted Submit Team sheet state (config-backed), so the sheet
         // opens pre-filled instead of empty. Read once: while this activity
         // lives, the sheet's own drafts already hold anything newer.
@@ -66,6 +84,7 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
 
         setContent {
             DolphinTheme {
+                val hostActionResult = viewModel.hostActionResult.collectAsState().value
                 NetplayScreen(
                     onBackClicked = { finish() },
                     isHosting = viewModel.isHosting,
@@ -85,6 +104,18 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
                     orreFormatLocal = orreFormatLocal,
                     localFormatName = localFormatName,
                     validateTeamForFormat = FormatBridge::validateShowdown,
+                    onSubmitHostTeam = viewModel::submitHostTeam,
+                    initialHostModelId = initialHostModelId,
+                    musicOptions = musicOptions,
+                    venueOptions = venueOptions,
+                    initialMusicId = initialMusicId,
+                    initialVenueId = initialVenueId,
+                    onSetMusicAndLocation = viewModel::setMusicAndLocation,
+                    // Only the host has controls that grey out on it, so only a
+                    // host subscribes (the flow polls while subscribed).
+                    gameRunning = isHosting && viewModel.gameRunning.collectAsState().value,
+                    hostResultText = hostActionResult?.text ?: "",
+                    hostResultOk = hostActionResult?.ok ?: true,
                     game = viewModel.game.collectAsState().value,
                     onStartGame = viewModel::startGame,
                     onGameSelected = viewModel::changeGame,

@@ -73,6 +73,7 @@
 #include "DolphinQt/Settings.h"
 #include "DolphinQt/Settings/GameCubePane.h"
 #include "DolphinQt/XDNetplay/XDNetplayConfig.h"
+#include "DolphinQt/XDNetplay/XDStyleCombo.h"
 
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/GameFile.h"
@@ -111,6 +112,17 @@ QString InetAddressToString(const Common::TraversalInetAddress& addr)
   }
 
   return QStringLiteral("%1:%2").arg(ip, QString::number(ntohs(addr.port)));
+}
+
+// The pokepast.es link a Submit Team box starts with, or an empty string when
+// the text is not such a link (then it is the team itself). One definition for
+// the joiner's and the host's sheet, so both accept exactly the same links.
+QString PokepasteLink(const QString& text)
+{
+  static const QRegularExpression pokepaste_re(
+      QStringLiteral("^https?://pokepast\\.es/[A-Za-z0-9]+"));
+  const QRegularExpressionMatch match = pokepaste_re.match(text);
+  return match.hasMatch() ? match.captured(0) : QString();
 }
 }  // namespace
 
@@ -307,15 +319,23 @@ void NetPlayDialog::CreateChatLayout()
   auto* layout = new QGridLayout;
 
   // XD Netplay: a joiner can hand their own team to the host, which writes it
-  // into the save it syncs at start. Hidden for the host (who edits its saves
-  // directly in the team editor) and shown once connected as a client.
+  // into the save it syncs at start. The host has the same button for its own
+  // team, written straight into its GBA port 2 save (OnSubmitHostTeam). The
+  // tooltip differs per role, so show() sets it.
   m_submit_team_button = new QPushButton(tr("Submit Team..."));
-  m_submit_team_button->setToolTip(
-      tr("Send your own Showdown team to the host, so you play your own Pokémon.\n"
-         "Applies to the next battle the host starts."));
   m_submit_team_button->setDefault(false);
   m_submit_team_button->setAutoDefault(false);
   m_submit_team_button->hide();
+
+  // XD Netplay, host side: battle music and location without a trip back to
+  // the launcher. Same config keys as the launcher's Battle Style group.
+  // Shown only while hosting.
+  m_style_button = new QPushButton(tr("Music && Location..."));
+  m_style_button->setToolTip(tr("Change the battle music and the battle location.\n"
+                                "Applies to the next battle you start."));
+  m_style_button->setDefault(false);
+  m_style_button->setAutoDefault(false);
+  m_style_button->hide();
 
   // XD Netplay, host side: the joiner sets its in-game name in the Submit Team
   // sheet; the host sets its own here (written into the GBA port 2 save the
@@ -333,7 +353,13 @@ void NetPlayDialog::CreateChatLayout()
   layout->addWidget(m_chat_edit, 0, 0, 1, -1);
   layout->addWidget(m_chat_type_edit, 1, 0);
   layout->addWidget(m_chat_send_button, 1, 1);
-  layout->addWidget(m_submit_team_button, 2, 0, 1, -1);
+  // One row for both buttons. A hidden widget takes no room in a box layout,
+  // so a joiner (no Music & Location button) still gets a full-width Submit
+  // Team button.
+  auto* team_row = new QHBoxLayout;
+  team_row->addWidget(m_submit_team_button, 1);
+  team_row->addWidget(m_style_button, 1);
+  layout->addLayout(team_row, 2, 0, 1, -1);
   layout->addWidget(m_host_name_edit, 3, 0);
   layout->addWidget(m_host_name_button, 3, 1);
 
@@ -403,6 +429,7 @@ void NetPlayDialog::ConnectWidgets()
   connect(m_chat_send_button, &QPushButton::clicked, this, &NetPlayDialog::OnChat);
   connect(m_chat_type_edit, &QLineEdit::returnPressed, this, &NetPlayDialog::OnChat);
   connect(m_submit_team_button, &QPushButton::clicked, this, &NetPlayDialog::OnSubmitTeam);
+  connect(m_style_button, &QPushButton::clicked, this, &NetPlayDialog::OnStyleSettings);
   connect(m_host_name_button, &QPushButton::clicked, this, &NetPlayDialog::OnSetHostName);
   connect(m_host_name_edit, &QLineEdit::returnPressed, this, &NetPlayDialog::OnSetHostName);
   connect(m_chat_type_edit, &QLineEdit::textChanged, this,
@@ -625,8 +652,21 @@ void NetPlayDialog::show(std::string nickname, bool use_traversal)
 #else
   m_hide_remote_gbas_action->setVisible(false);
 #endif
-  // Only a joiner submits a team; the host edits its own saves directly.
-  m_submit_team_button->setHidden(is_hosting);
+  // Both roles submit a team: a joiner sends it to the host, the host writes
+  // its own into its GBA port 2 save. Music and location are host picks. This
+  // dialog is reused across rooms, so put back the enabled state a previous
+  // hosted game may have left off; SetOptionsEnabled below only manages these
+  // two for a host.
+  m_submit_team_button->setHidden(false);
+  m_submit_team_button->setEnabled(true);
+  m_submit_team_button->setToolTip(
+      is_hosting ?
+          tr("Set your own team from a Showdown paste. Written to your GBA port 2 save for the "
+             "next battle you start.") :
+          tr("Send your own Showdown team to the host, so you play your own Pokémon.\n"
+             "Applies to the next battle the host starts."));
+  m_style_button->setHidden(!is_hosting);
+  m_style_button->setEnabled(true);
   m_host_name_edit->setHidden(!is_hosting);
   m_host_name_button->setHidden(!is_hosting);
   if (is_hosting)
@@ -967,6 +1007,10 @@ void NetPlayDialog::OnRoomClosed()
 
 void NetPlayDialog::OnSetHostName()
 {
+  // Rewrites the GBA port 2 save, like the host's Submit Team.
+  if (!HostWriteAllowed())
+    return;
+
   std::string status;
   const bool ok =
       XDNetplay::RenameHostTrainer(m_host_name_edit->text().trimmed().toStdString(), &status);
@@ -977,6 +1021,14 @@ void NetPlayDialog::OnSetHostName()
 
 void NetPlayDialog::OnSubmitTeam()
 {
+  // The host's button opens the host's own sheet: its team goes straight into
+  // its GBA port 2 save, nothing travels over netplay.
+  if (IsHosting())
+  {
+    OnSubmitHostTeam();
+    return;
+  }
+
   // Joiner side. A pokepast.es link is resolved HERE, on the submitting
   // client, so the host only ever parses plain text it was handed -- it never
   // fetches a URL a stranger chose.
@@ -1320,10 +1372,8 @@ void NetPlayDialog::OnSubmitTeam()
     return;
   }
 
-  const QRegularExpression pokepaste_re(
-      QStringLiteral("^https?://pokepast\\.es/[A-Za-z0-9]+"));
-  const QRegularExpressionMatch match = pokepaste_re.match(text);
-  if (!match.hasMatch())
+  const QString paste_link = PokepasteLink(text);
+  if (paste_link.isEmpty())
   {
     Settings::Instance().GetNetPlayClient()->SendTeamSubmission(
         XDNetplay::BuildTeamSubmissionPayload(text.toStdString(), trainer_name, model, raise));
@@ -1332,8 +1382,8 @@ void NetPlayDialog::OnSubmitTeam()
     return;
   }
 
-  const std::string url = match.captured(0).toStdString() + "/raw";
-  DisplayMessage(tr("Fetching %1…").arg(match.captured(0)), "");
+  const std::string url = paste_link.toStdString() + "/raw";
+  DisplayMessage(tr("Fetching %1…").arg(paste_link), "");
   // The fetch is asynchronous and the submission is committed from the user's
   // point of view, so persist NOW rather than in the deferred lambda: if a
   // flaky network fails the fetch, the link prefilling on the next open is
@@ -1362,6 +1412,283 @@ void NetPlayDialog::OnSubmitTeam()
       }
     });
   }).detach();
+}
+
+void NetPlayDialog::OnSubmitHostTeam()
+{
+  // Host side. The joiner's sheet minus "Use my save": the host's save already
+  // is the source, so there is nothing to bundle and no privacy note to show.
+  // Nothing here goes over netplay. The team is written into the GBA port 2
+  // save the room syncs at Start (XDNetplay::SubmitHostTeam), and the model
+  // pick is the launcher's "Your model" key.
+  QDialog dialog(this);
+  dialog.setWindowTitle(tr("Submit Team"));
+
+  auto* dialog_layout = new QVBoxLayout(&dialog);
+  dialog_layout->addWidget(new QLabel(
+      tr("Paste a Showdown team export or a pokepast.es link to replace your team.\n"
+         "With an imported save, the change lasts for this room only."),
+      &dialog));
+
+  // In-game name, prefilled with what the port 2 save says right now. It comes
+  // from the save, so it is already something a Gen 3 save can hold.
+  const std::string current_name = XDNetplay::HostTrainerName();
+  auto* name_layout = new QHBoxLayout;
+  auto* name_edit = new QLineEdit(QString::fromStdString(current_name), &dialog);
+  name_edit->setMaxLength(static_cast<int>(XDNetplay::EmeraldSave::TRAINER_NAME_LEN));
+  name_edit->setPlaceholderText(tr("In-game name"));
+  name_layout->addWidget(new QLabel(tr("In-game name (max 7):"), &dialog));
+  name_layout->addWidget(name_edit, 1);
+  dialog_layout->addLayout(name_layout);
+
+  // The HOST model: the same key and the same list as "Your model" in the
+  // launcher, "Game default" first. A stored id the table no longer carries
+  // shows as "Game default", which is also what BattleCustomizer makes of it.
+  auto* model_layout = new QHBoxLayout;
+  auto* model_combo = new QComboBox(&dialog);
+  model_combo->setToolTip(
+      tr("How you appear in battle. The same setting as \"Your model\" in the launcher."));
+  XDNetplay::StyleCombo::Populate(model_combo, XDNetplay::StyleCombo::Table::Model);
+  XDNetplay::StyleCombo::SelectId(model_combo, Config::Get(Config::MAIN_XD_STYLE_HOST_MODEL));
+  const int shown_model = model_combo->currentData().toInt();
+  model_layout->addWidget(new QLabel(tr("Trainer model:"), &dialog));
+  model_layout->addWidget(model_combo, 1);
+  dialog_layout->addLayout(model_layout);
+
+  // Same opt-in as the joiner's sheet: applied only when the room's format is
+  // a Lv. 100 format, and it only ever raises.
+  auto* raise_check =
+      new QCheckBox(tr("Raise my team to Lv. 100 (Lv. 100 formats only, never lowers)"), &dialog);
+  raise_check->setToolTip(tr("Only in Lv. 100 formats. It never lowers a Pokémon."));
+  dialog_layout->addWidget(raise_check);
+
+  // Starts EMPTY on purpose, unlike the joiner's sheet. This write is permanent
+  // and the port 2 team may have been edited in the Team Editor since the last
+  // paste, so a prefilled old paste would overwrite that on a plain Apply.
+  // Empty means "keep my team": only a changed name or model is applied then.
+  auto* team_edit = new QPlainTextEdit(&dialog);
+  team_edit->setPlaceholderText(
+      tr("Showdown export or pokepast.es link. Leave empty to keep your current team."));
+  dialog_layout->addWidget(team_edit, 1);
+
+  // The same live "not <format> legal" note as the joiner's sheet. Here the
+  // format is the room's own, and SubmitHostTeam refuses what the note flags.
+  // A pokepast.es link parses to no sets and draws no note. With the format on
+  // Free none of this exists.
+  if (const int format = Config::Get(Config::MAIN_XD_FORMAT);
+      XDNetplay::FormatRules::HasTeamRules(format))
+  {
+    std::shared_ptr<const XDNetplay::Gen3Data> format_data;
+    if (auto loaded = XDNetplay::Gen3Data::LoadBundled())
+      format_data = std::make_shared<const XDNetplay::Gen3Data>(std::move(*loaded));
+    if (format_data)
+    {
+      auto* format_note = new QLabel(&dialog);
+      format_note->setWordWrap(true);
+      format_note->hide();
+      dialog_layout->addWidget(format_note);
+      // Captured by value; the connection dies with the stack dialog.
+      connect(team_edit, &QPlainTextEdit::textChanged, &dialog,
+              [format_note, team_edit, format_data, format] {
+                const XDNetplay::FormatRules::Verdict verdict =
+                    XDNetplay::FormatRules::ValidateSets(
+                        format,
+                        XDNetplay::ShowdownParser::ParseTeam(
+                            team_edit->toPlainText().toStdString()),
+                        *format_data);
+                if (!verdict.ok)
+                {
+                  format_note->setText(
+                      tr("note: this team is not %1 legal - %2")
+                          .arg(QString::fromUtf8(
+                              XDNetplay::FormatRules::FormatDisplayName(format)))
+                          .arg(QString::fromStdString(verdict.reason)));
+                }
+                format_note->setVisible(!verdict.ok);
+              });
+    }
+  }
+
+  auto* buttons =
+      new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+  buttons->button(QDialogButtonBox::Ok)->setText(tr("Apply"));
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  dialog_layout->addWidget(buttons);
+
+  dialog.resize(500, 420);
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+  // The room can close, or a battle can start, while the dialog is open.
+  if (!HostWriteAllowed())
+    return;
+
+  // The model is its own setting, independent of the team: apply it first so a
+  // refused team does not take the model pick down with it. Same idiom as the
+  // launcher's Battle Style keys, plus the rebuild of the synced block that
+  // OnTeamSubmission does for the guest's model.
+  if (const int model_id = model_combo->currentData().toInt(); model_id != shown_model)
+  {
+    Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_HOST_MODEL, model_id);
+    Config::Save();
+    XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
+    DisplayMessage(tr("Trainer model set to %1.").arg(model_combo->currentText()), "green");
+  }
+
+  const QString text = team_edit->toPlainText().trimmed();
+  const std::string typed_name = name_edit->text().trimmed().toStdString();
+  const bool raise = raise_check->isChecked();
+
+  if (text.isEmpty())
+  {
+    // No team: at most a rename, through the same call as the Set Name button.
+    const std::string new_name = XDNetplay::EmeraldSave::SanitizeTrainerName(typed_name);
+    if (new_name.empty())
+    {
+      if (!typed_name.empty())
+      {
+        DisplayMessage(tr("That in-game name has no Gen 3 equivalent. Name not changed."),
+                       "red");
+      }
+      return;
+    }
+    if (new_name == current_name)
+      return;
+    std::string status;
+    const bool ok = XDNetplay::RenameHostTrainer(new_name, &status);
+    DisplayMessage(QString::fromStdString(status), ok ? "green" : "red");
+    if (ok)
+      m_host_name_edit->setText(QString::fromStdString(XDNetplay::HostTrainerName()));
+    return;
+  }
+
+  const QString paste_link = PokepasteLink(text);
+  if (paste_link.isEmpty())
+  {
+    ApplyHostTeam(text.toStdString(), typed_name, raise);
+    return;
+  }
+
+  // Same fetch as the joiner's sheet: off the UI thread, and back onto it
+  // before anything touches a widget or the save. Everything the deferred
+  // lambdas need is captured by value; the stack dialog is gone by then.
+  const std::string url = paste_link.toStdString() + "/raw";
+  DisplayMessage(tr("Fetching %1…").arg(paste_link), "");
+  QPointer<NetPlayDialog> self(this);
+  std::thread([self, url, typed_name, raise] {
+    Common::HttpRequest request;
+    request.FollowRedirects();
+    Common::HttpRequest::Response response = request.Get(url);
+    if (!self)
+      return;
+    QueueOnObject(self.data(), [self, typed_name, raise, response = std::move(response)] {
+      if (!self)
+        return;
+      if (!response)
+      {
+        self->DisplayMessage(tr("Could not fetch that paste (network error)."), "red");
+        return;
+      }
+      self->ApplyHostTeam(std::string(response->begin(), response->end()), typed_name, raise);
+    });
+  }).detach();
+}
+
+bool NetPlayDialog::HostWriteAllowed()
+{
+  // UI thread only. Start reads the host's GBA saves and the Battle Style block
+  // on this same thread and sends them to the other player, so a write that
+  // passes this check cannot land in the middle of that read. Anything later
+  // would leave the two players booting different data.
+  const auto server = Settings::Instance().GetNetPlayServer();
+  if (!server)
+  {
+    DisplayMessage(tr("The room has closed. Nothing was changed."), "red");
+    return false;
+  }
+  if (server->IsStartingOrRunning())
+  {
+    DisplayMessage(tr("A battle is starting. Try again after it ends."), "red");
+    return false;
+  }
+  return true;
+}
+
+void NetPlayDialog::ApplyHostTeam(const std::string& showdown_text,
+                                  const std::string& trainer_name, bool raise_to_level_100)
+{
+  // UI thread only. A pokepast.es fetch can outlive the room: once the room
+  // has closed, the port 2 save may be the host's imported personal save again
+  // (DisposableSave), and that one is not this button's to rewrite. The host
+  // can also have pressed Start while the fetch ran.
+  if (!HostWriteAllowed())
+    return;
+
+  // trainer_name goes in as typed: SubmitHostTeam sanitizes it and says in the
+  // status line when a name could not be used.
+  std::string status;
+  const bool ok =
+      XDNetplay::SubmitHostTeam(showdown_text, trainer_name, &status, raise_to_level_100);
+  DisplayMessage(ok ? QString::fromStdString(status) :
+                      tr("Team not applied: %1").arg(QString::fromStdString(status)),
+                 ok ? "green" : "red");
+  // The write may have renamed the trainer; keep the room's name field in step.
+  if (ok)
+    m_host_name_edit->setText(QString::fromStdString(XDNetplay::HostTrainerName()));
+}
+
+void NetPlayDialog::OnStyleSettings()
+{
+  // Host only. The launcher's Battle Style music and location picks, reachable
+  // from the room: same keys, same lists, same labels (StyleCombo). Both ride
+  // the "$OrreLink Battle Style" block that netplay syncs at Start, so the
+  // block is rebuilt right away, the way OnTeamSubmission does it for the
+  // guest's model.
+  QDialog dialog(this);
+  dialog.setWindowTitle(tr("Music & Location"));
+
+  auto* dialog_layout = new QVBoxLayout(&dialog);
+  auto* grid = new QGridLayout;
+
+  auto* music_combo = new QComboBox(&dialog);
+  XDNetplay::StyleCombo::Populate(music_combo, XDNetplay::StyleCombo::Table::Music);
+  XDNetplay::StyleCombo::SelectId(music_combo, Config::Get(Config::MAIN_XD_STYLE_MUSIC));
+  grid->addWidget(new QLabel(tr("Battle music:"), &dialog), 0, 0);
+  grid->addWidget(music_combo, 0, 1);
+
+  auto* venue_combo = new QComboBox(&dialog);
+  venue_combo->setToolTip(
+      tr("Locations that alter Nature Power, Camouflage or Secret Power say so in their name.\n"
+         "Everything else is purely cosmetic."));
+  XDNetplay::StyleCombo::Populate(venue_combo, XDNetplay::StyleCombo::Table::Venue);
+  XDNetplay::StyleCombo::SelectId(venue_combo, Config::Get(Config::MAIN_XD_STYLE_VENUE));
+  grid->addWidget(new QLabel(tr("Battle location:"), &dialog), 1, 0);
+  grid->addWidget(venue_combo, 1, 1);
+
+  grid->setColumnStretch(1, 1);
+  dialog_layout->addLayout(grid);
+  dialog_layout->addWidget(
+      new QLabel(tr("Applies to the next battle you start, for both players."), &dialog));
+
+  auto* buttons =
+      new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+  buttons->button(QDialogButtonBox::Ok)->setText(tr("Apply"));
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  dialog_layout->addWidget(buttons);
+
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+  if (!HostWriteAllowed())
+    return;
+
+  Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_MUSIC, music_combo->currentData().toInt());
+  Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_VENUE, venue_combo->currentData().toInt());
+  Config::Save();
+  XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
+  DisplayMessage(tr("Music: %1. Location: %2. Applies to the next battle you start.")
+                     .arg(music_combo->currentText(), venue_combo->currentText()),
+                 "green");
 }
 
 void NetPlayDialog::OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,
@@ -1412,6 +1739,11 @@ void NetPlayDialog::SetOptionsEnabled(bool enabled)
     m_host_input_authority_action->setEnabled(enabled);
     m_golf_mode_action->setEnabled(enabled);
     m_fixed_delay_action->setEnabled(enabled);
+    // Host-side team and style picks only apply at the next Start, and the
+    // live GBA core owns the port 2 save while a game runs. A joiner's Submit
+    // Team button is left alone here, as before.
+    m_submit_team_button->setEnabled(enabled);
+    m_style_button->setEnabled(enabled);
   }
 
   m_record_input_action->setEnabled(enabled);

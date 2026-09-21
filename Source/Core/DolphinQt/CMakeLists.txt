@@ -430,6 +430,8 @@ add_executable(dolphin-emu
   XDNetplay/XDLauncherDialog.h
   XDNetplay/XDNetplayConfig.cpp
   XDNetplay/XDNetplayConfig.h
+  XDNetplay/XDStyleCombo.cpp
+  XDNetplay/XDStyleCombo.h
 )
 
 if (WIN32)

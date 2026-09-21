@@ -11,21 +11,27 @@ import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.dolphinemu.dolphinemu.NativeLibrary
 import org.dolphinemu.dolphinemu.features.netplay.NetplaySession
 import org.dolphinemu.dolphinemu.features.settings.model.BooleanSetting
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
 import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
+import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.EmeraldSave
 import org.dolphinemu.dolphinemu.model.GameFile
 import org.dolphinemu.dolphinemu.services.GameFileCacheManager
@@ -130,15 +136,41 @@ class NetplayViewModel(
 
     fun startGame() {
         if (netplaySession.doAllPlayersHaveGame()) {
-            netplaySession.startGame()
+            requestStart()
         } else {
             _notAllPlayersHaveGame.trySend(Unit)
         }
     }
 
     fun confirmStartGame() {
-        netplaySession.startGame()
+        requestStart()
     }
+
+    /**
+     * Start reads the host's GBA saves and the Battle Style block and sends
+     * them to the other player. From this tap on, the host's in-room team and
+     * style controls are off ([gameRunning]); native refuses late writes too.
+     * If the start falls through (a save fails to sync, a player leaves), the
+     * flag drops again after [START_REQUEST_HOLD_MS] so the host is not locked
+     * out of their own room.
+     */
+    private fun requestStart() {
+        if (netplaySession.isClosed) {
+            return
+        }
+        val stamp = System.nanoTime()
+        startRequestedAt.value = stamp
+        netplaySession.startGame()
+        viewModelScope.launch {
+            delay(START_REQUEST_HOLD_MS)
+            if (startRequestedAt.value == stamp) {
+                startRequestedAt.value = 0L
+            }
+        }
+    }
+
+    /** nanoTime stamp of the last Start tap still being waited on, 0 if none. */
+    private val startRequestedAt = MutableStateFlow(0L)
 
     /** Default in-game name offered in the submit sheet: this player's netplay
      *  nickname, cut down to what a Gen 3 save can actually hold. */
@@ -246,6 +278,136 @@ class NetplayViewModel(
             withContext(Dispatchers.Main) {
                 hostTrainerName.value = current
                 netplaySession.showLocalMessage(status)
+            }
+        }
+    }
+
+    /**
+     * True from the moment a netplay game is handed to the emulation screen
+     * until the core is fully shut down again. The host's in-room team and
+     * battle style controls grey out on it: the emulated GBA owns its save
+     * while it runs, and a style change only applies at the next Start. This
+     * is the same "core is not uninitialized" test shared core refuses on, so
+     * the button state and the native answer cannot disagree. Polled, because
+     * the core state has no Kotlin-side event on this screen.
+     */
+    val gameRunning = flow {
+        while (true) {
+            emit(netplaySession.isLaunching || !NativeLibrary.IsUninitialized())
+            delay(GAME_RUNNING_POLL_MS)
+        }
+    }
+        .flowOn(Dispatchers.Default)
+        // The Start tap counts at once, without waiting for the next poll.
+        .combine(startRequestedAt) { running, startRequested ->
+            running || startRequested != 0L
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false)
+
+    /** Result line of the host's last in-room action, shown green or red. */
+    data class HostActionResult(val ok: Boolean, val text: String)
+
+    private val _hostActionResult = MutableStateFlow<HostActionResult?>(null)
+    val hostActionResult = _hostActionResult.asStateFlow()
+
+    private fun postHostActionResult(ok: Boolean, text: String) {
+        _hostActionResult.value = HostActionResult(ok, text)
+        netplaySession.showLocalMessage(text)
+    }
+
+    /**
+     * Host only: the host's counterpart of [submitTeam]. The team is written
+     * into the host's own GBA port 2 save, the one the room syncs at Start;
+     * nothing travels over netplay. A pokepast.es link is resolved here first,
+     * exactly as for a joiner.
+     *
+     * An empty [text] is allowed: then only a changed [trainerName] and/or a
+     * changed [modelId] is applied and the party is left alone. An unchanged
+     * name is never rewritten, and a name with no Gen 3 equivalent is dropped
+     * rather than failing the team.
+     *
+     * [modelId] is the HOST trainer model (0 = game default), stored in the
+     * same key the launcher's "Your model" dropdown uses.
+     *
+     * The host's team draft is deliberately NOT stored in the MAIN_XD_SUBMIT_*
+     * keys: those belong to the joiner's sheet.
+     */
+    fun submitHostTeam(
+        text: String,
+        trainerName: String,
+        modelId: Int,
+        raiseToLevel100: Boolean = false
+    ) {
+        val trimmed = text.trim()
+        val sanitized = EmeraldSave.sanitizeTrainerName(trainerName)
+        if (sanitized.isEmpty() && trainerName.isNotBlank()) {
+            netplaySession.showLocalMessage(
+                "That in-game name has no Gen 3 equivalent, so your current name is kept."
+            )
+        }
+        val name = if (sanitized == hostTrainerName.value) "" else sanitized
+        val pokepaste = Regex("^https?://pokepast\\.es/[A-Za-z0-9]+").find(trimmed)?.value
+        viewModelScope.launch(Dispatchers.IO) {
+            val modelChanged =
+                BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_HOST_MODEL) != modelId
+            if (trimmed.isEmpty() && name.isEmpty() && !modelChanged) {
+                return@launch
+            }
+            val teamText = if (pokepaste == null) {
+                trimmed
+            } else {
+                try {
+                    java.net.URL("$pokepaste/raw").readText()
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            if (teamText == null) {
+                withContext(Dispatchers.Main) {
+                    postHostActionResult(false, "Could not fetch that paste (network error).")
+                }
+                return@launch
+            }
+            // The fetch above can outlive the room. Native checks again under
+            // its own lock; this just spares a closed session the call.
+            if (netplaySession.isClosed) {
+                return@launch
+            }
+            val result = netplaySession.submitHostTeam(
+                teamText,
+                name,
+                if (modelChanged) modelId else -1,
+                raiseToLevel100
+            )
+            val current = netplaySession.hostTrainerName()
+            withContext(Dispatchers.Main) {
+                hostTrainerName.value = current
+                postHostActionResult(result.ok, result.status)
+            }
+        }
+    }
+
+    /**
+     * Host only: change the battle music and battle location from the room.
+     * Both are ordinary MAIN_XD_STYLE_* picks (0 = game default), the same
+     * keys the launcher's dropdowns write; the Battle Style block is rebuilt
+     * right after so the room syncs the new picks at the next Start.
+     */
+    fun setMusicAndLocation(musicId: Int, venueId: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (netplaySession.isClosed) {
+                return@launch
+            }
+            val refused = netplaySession.setMusicAndLocation(musicId, venueId)
+            withContext(Dispatchers.Main) {
+                if (refused == null) {
+                    postHostActionResult(
+                        true,
+                        "Music and location set. They apply at the next Start."
+                    )
+                } else {
+                    postHostActionResult(false, refused)
+                }
             }
         }
     }
@@ -419,6 +581,18 @@ class NetplayViewModel(
         GlobalScope.launch {
             netplaySession.close()
         }
+    }
+
+    private companion object {
+        /** How often [gameRunning] re-reads the core state, in milliseconds. */
+        const val GAME_RUNNING_POLL_MS = 500L
+
+        /**
+         * How long a Start tap keeps the host's in-room controls off on its
+         * own. A save sync takes a few seconds; once the game is handed over,
+         * isLaunching and the core state carry [gameRunning] from there.
+         */
+        const val START_REQUEST_HOLD_MS = 30_000L
     }
 
     class Factory(

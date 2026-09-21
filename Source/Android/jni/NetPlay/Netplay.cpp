@@ -1,8 +1,11 @@
 // Copyright 2026 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -50,6 +53,32 @@ static NetPlay::NetPlayServer* GetServerPointer(JNIEnv* env, jobject obj)
 {
   return reinterpret_cast<NetPlay::NetPlayServer*>(
       env->GetLongField(obj, IDCache::GetNetPlayServerPointer()));
+}
+
+// XD Netplay, host side. Start reads the host's GBA saves and the Battle Style
+// block and sends them to the other player. The room's Submit Team and
+// Music & Location actions rewrite exactly those, from another thread. This
+// mutex makes the two exclusive: a write that is already under way finishes
+// before Start reads anything, and once Start has begun the write is refused
+// (NetPlayServer::IsStartingOrRunning). Without it the two players could boot
+// with different saves, which desyncs the battle.
+static std::mutex s_host_write_mutex;
+
+static constexpr const char* HOST_WRITE_BUSY = "A battle is starting. Try again after it ends.";
+static constexpr const char* HOST_WRITE_NO_ROOM = "The room has closed. Nothing was changed.";
+
+// Call with s_host_write_mutex held. Returns why a host write must not happen
+// right now, or nullptr when it may. Kotlin zeroes the client pointer before
+// it releases the client, and releasing the client is what puts the host's own
+// save back (OnRoomClosed), so a missing client means the room is closing.
+static const char* HostWriteRefusal(JNIEnv* env, jobject obj)
+{
+  auto* server = GetServerPointer(env, obj);
+  if (!server || !GetClientPointer(env, obj))
+    return HOST_WRITE_NO_ROOM;
+  if (server->IsStartingOrRunning())
+    return HOST_WRITE_BUSY;
+  return nullptr;
 }
 
 // The save file this player's OWN GBA slot (port 2, device 1) will play with:
@@ -115,11 +144,124 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeHostTrainer
 
 JNIEXPORT jstring JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetHostTrainerName(
-    JNIEnv* env, jobject, jstring jname)
+    JNIEnv* env, jobject obj, jstring jname)
 {
+  // Rewrites the GBA port 2 save, so it follows the same rules as the host's
+  // Submit Team: never while a battle is starting or running, never once the
+  // room is closing.
+  std::lock_guard lk(s_host_write_mutex);
+  if (const char* refusal = HostWriteRefusal(env, obj))
+    return ToJString(env, refusal);
+
   std::string status;
   XDNetplay::RenameHostTrainer(GetJString(env, jname), &status);
   return ToJString(env, status);
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitHostTeam(
+    JNIEnv* env, jobject obj, jstring jteam, jstring jname, jint jmodel, jboolean jraise)
+{
+  // XD Netplay, HOST side of "Submit Team": the host's own team lives in the
+  // GBA port 2 save, so nothing travels over netplay here. The write goes
+  // straight into that save through shared core (TeamInjector.h), which
+  // refuses while a game runs and applies the host's own format gate first.
+  //
+  // jmodel is the HOST trainer model (0 = game default); a negative value
+  // means "leave the model alone". An id that is not in the model table is
+  // stored as 0, never clamped, the same rule BattleStyleBridge follows.
+  //
+  // A blank team with a name is a rename only. A blank team and a blank name
+  // is a model change only.
+  //
+  // Returns two strings: "1" or "0" (did the team or name write succeed), then
+  // the one-line status. The flag only colours the result line in the room.
+  const std::string team = GetJString(env, jteam);
+  const std::string name = GetJString(env, jname);
+  const auto is_blank = [](const std::string& text) {
+    return text.find_first_not_of(" \t\r\n") == std::string::npos;
+  };
+
+  const auto reply = [env](bool success, const std::string& line) {
+    const std::array<std::string, 2> result{success ? "1" : "0", line};
+    return SpanToJStringArray(env, std::span<const std::string>(result));
+  };
+
+  // Held for the whole write, so Start cannot read a half-written save.
+  std::lock_guard lk(s_host_write_mutex);
+
+  // A pokepast.es fetch can outlive the room. With the room gone the port 2
+  // save may be the host's own imported save again, which is not ours to touch.
+  if (const char* refusal = HostWriteRefusal(env, obj))
+    return reply(false, refusal);
+
+  // The model is its own setting, independent of the team, the same as on
+  // desktop: a refused team does not take the model pick down with it. The
+  // status line says so either way.
+  bool model_updated = false;
+  if (jmodel >= 0)
+  {
+    const int model = XDNetplay::BattleCustomizer::IsValidModelId(jmodel) ? jmodel : 0;
+    Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_HOST_MODEL, model);
+    Config::Save();
+    // Rebuild the "$OrreLink Battle Style" block now, so the host model picked
+    // here is already in the block the room syncs at Start.
+    XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
+    model_updated = true;
+  }
+
+  bool ok = true;
+  std::string status;
+  if (!is_blank(team))
+  {
+    ok = XDNetplay::SubmitHostTeam(team, name, &status, jraise == JNI_TRUE);
+    if (!ok)
+      status = "Team not applied: " + status;
+  }
+  else if (!is_blank(name))
+  {
+    ok = XDNetplay::RenameHostTrainer(name, &status);
+    if (!ok)
+      status = "Name not changed: " + status;
+  }
+
+  if (model_updated)
+  {
+    if (!status.empty() && status.back() != '.')
+      status += '.';
+    status += status.empty() ? "Trainer model updated." : " Trainer model updated.";
+  }
+  else if (status.empty())
+  {
+    status = "Nothing to change.";
+  }
+
+  return reply(ok, status);
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetMusicAndLocation(
+    JNIEnv* env, jobject obj, jint jmusic, jint jvenue)
+{
+  // XD Netplay, host side: the room's "Music & Location" dialog. Both picks
+  // are ordinary MAIN_XD_STYLE_* keys (0 = game default), the same ones the
+  // launcher's dropdowns write. The Battle Style block is rebuilt right away so
+  // what the room syncs at Start matches what the host sees selected. An id
+  // that is not in its table is stored as 0, never clamped.
+  //
+  // Returns an empty string on success, or the one-line reason nothing changed.
+  std::lock_guard lk(s_host_write_mutex);
+
+  if (const char* refusal = HostWriteRefusal(env, obj))
+    return ToJString(env, refusal);
+
+  const int music = XDNetplay::BattleCustomizer::IsValidMusicId(jmusic) ? jmusic : 0;
+  const int venue = XDNetplay::BattleCustomizer::IsValidVenueId(jvenue) ? jvenue : 0;
+  Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_MUSIC, music);
+  Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_VENUE, venue);
+  Config::Save();
+  XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
+  return ToJString(env, std::string());
 }
 
 JNIEXPORT jstring JNICALL
@@ -380,6 +522,10 @@ JNIEXPORT void JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(JNIEnv* env,
                                                                                jobject obj)
 {
+  // Waits for a Submit Team or Music & Location write that is still going, and
+  // keeps new ones out until RequestStartGame has raised its start flag.
+  std::lock_guard lk(s_host_write_mutex);
+
   auto* server = GetServerPointer(env, obj);
   if (!server)
     return;
@@ -495,6 +641,10 @@ JNIEXPORT void JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeReleaseClient(JNIEnv*, jobject,
                                                                                    jlong pointer)
 {
+  // Releasing the client puts the host's own save back (OnRoomClosed). Waiting
+  // here lets a host write that is already under way finish first; any later
+  // one sees the zeroed client pointer and is refused.
+  std::lock_guard lk(s_host_write_mutex);
   delete reinterpret_cast<NetPlay::NetPlayClient*>(pointer);
 }
 
@@ -502,6 +652,8 @@ JNIEXPORT void JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeReleaseServer(JNIEnv*, jobject,
                                                                                    jlong pointer)
 {
+  // Never free the server under a host write or a Start that still uses it.
+  std::lock_guard lk(s_host_write_mutex);
   delete reinterpret_cast<NetPlay::NetPlayServer*>(pointer);
 }
 
