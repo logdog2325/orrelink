@@ -57,6 +57,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Switch
@@ -172,27 +173,61 @@ fun NetplayScreen(
      * one reason. Injected so previews need no native library.
      */
     validateTeamForFormat: (String) -> String,
+    /**
+     * HOST only: write the host's own team, name and model
+     * (NetplayViewModel.submitHostTeam). The team goes into the host's own
+     * GBA port 2 save; nothing is sent over netplay.
+     */
+    onSubmitHostTeam: (String, String, Int, Boolean) -> Unit = { _, _, _, _ -> },
+    /** HOST only: the stored "Your model" pick the host's sheet opens on. */
+    initialHostModelId: Int = 0,
+    /** HOST only: tables and stored picks for the Music & Location dialog. */
+    musicOptions: List<BattleStyleBridge.StyleOption> = emptyList(),
+    venueOptions: List<BattleStyleBridge.StyleOption> = emptyList(),
+    initialMusicId: Int = 0,
+    initialVenueId: Int = 0,
+    onSetMusicAndLocation: (Int, Int) -> Unit = { _, _ -> },
+    /**
+     * True while a netplay game is running (NetplayViewModel.gameRunning). The
+     * host's team and battle style controls grey out on it: the emulated GBA
+     * owns its save, and a style change only applies at the next Start.
+     */
+    gameRunning: Boolean = false,
+    /** HOST only: result line of the last in-room host action ("" = none yet). */
+    hostResultText: String = "",
+    hostResultOk: Boolean = true,
 ) {
     val scrollState = rememberScrollState()
     // XD Netplay: joiner's "Submit Team" sheet. Every field opens pre-filled
     // with the last-submitted values (the initial* parameters, config-backed
     // via NetplayViewModel.submitPrefill) and is stored back on a successful
     // submit, so nothing has to be retyped next session.
+    //
+    // The HOST opens the same sheet in host mode. isHosting never changes while
+    // this screen lives, so the drafts below are simply seeded differently for
+    // a host: the team starts EMPTY (the host's save already holds a team, and
+    // an empty team means "change only my name or model"), the model is the
+    // stored "Your model" pick, and "Use my save" does not exist.
     var showSubmitTeam by rememberSaveable { mutableStateOf(false) }
-    var teamDraft by rememberSaveable { mutableStateOf(initialTeamText) }
+    var teamDraft by rememberSaveable { mutableStateOf(if (isHosting) "" else initialTeamText) }
     // In-game name: the stored one, else the netplay nickname (already cut
     // down to what a Gen 3 save can hold) so the common case is zero typing.
     var nameDraft by rememberSaveable { mutableStateOf(initialTrainerName) }
     // Cosmetic trainer-model pick, travelling as a "Model:" header in the same
     // TeamData payload as the team. 0 = "No preference": no header is sent and
     // the host's Guest-model fallback dropdown decides.
-    var modelDraft by rememberSaveable { mutableIntStateOf(initialModelId) }
+    var modelDraft by rememberSaveable {
+        mutableIntStateOf(if (isHosting) initialHostModelId else initialModelId)
+    }
+    // HOST only: the name field tracks the save's current trainer name (it is
+    // re-seeded when that loads or changes).
+    var hostNameDraft by rememberSaveable(hostTrainerName) { mutableStateOf(hostTrainerName) }
     // "Use my save": submit the party straight from this player's own save as
     // a bundle -- real mon bytes, real trainer identity -- instead of the
     // Showdown paste. The name and team fields do not apply in that mode (the
     // save's real trainer name always wins; see NetplaySession), so both grey
     // out. The model pick stays meaningful either way.
-    var useMySave by rememberSaveable { mutableStateOf(initialUseMySave) }
+    var useMySave by rememberSaveable { mutableStateOf(initialUseMySave && !isHosting) }
     // Opt-in: ask the host to raise every under-level mon to Lv. 100 (host
     // applies it only in a level-100 format; only ever raises).
     var raiseTo100 by rememberSaveable { mutableStateOf(false) }
@@ -202,36 +237,46 @@ fun NetplayScreen(
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text(
-                        "Paste a Showdown team export, or a pokepast.es link. " +
-                            "The host writes it into the save you'll play with."
+                        if (isHosting) {
+                            stringResource(R.string.xd_host_submit_intro)
+                        } else {
+                            "Paste a Showdown team export, or a pokepast.es link. " +
+                                "The host writes it into the save you'll play with."
+                        }
                     )
-                    Spacer(Modifier.height(12.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(stringResource(R.string.xd_submit_use_save))
+                    // "Use my save" is joiner-only: the host's save already IS
+                    // the source, so host mode has neither the row nor the
+                    // privacy note.
+                    if (!isHosting) {
+                        Spacer(Modifier.height(12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(stringResource(R.string.xd_submit_use_save))
+                                Text(
+                                    stringResource(R.string.xd_submit_use_save_hint),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(checked = useMySave, onCheckedChange = { useMySave = it })
+                        }
+                        if (useMySave) {
+                            Spacer(Modifier.height(4.dp))
                             Text(
-                                stringResource(R.string.xd_submit_use_save_hint),
+                                stringResource(R.string.xd_submit_privacy_note),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Switch(checked = useMySave, onCheckedChange = { useMySave = it })
-                    }
-                    if (useMySave) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            stringResource(R.string.xd_submit_privacy_note),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
                     }
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(
-                        value = nameDraft,
+                        value = if (isHosting) hostNameDraft else nameDraft,
                         // Reject unencodable keystrokes as they are typed, and
                         // stop at the Gen 3 limit of seven characters.
                         onValueChange = {
-                            nameDraft = Gen3Text.sanitize(it, EmeraldSave.TRAINER_NAME_LEN)
+                            val typed = Gen3Text.sanitize(it, EmeraldSave.TRAINER_NAME_LEN)
+                            if (isHosting) hostNameDraft = typed else nameDraft = typed
                         },
                         // A bundle always plays under the save's own trainer
                         // name (renaming would split the trainer from the
@@ -250,14 +295,26 @@ fun NetplayScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(12.dp))
+                    // Host mode: this is the HOST model (the launcher's "Your
+                    // model" pick), so its first entry is "Game default" and
+                    // no guest-fallback wording applies.
                     BattleStyleDropdown(
-                        label = stringResource(R.string.xd_style_submit_model_label),
+                        label = stringResource(
+                            if (isHosting) R.string.xd_style_your_model
+                            else R.string.xd_style_submit_model_label
+                        ),
                         options = modelOptions,
                         selectedId = modelDraft,
-                        defaultLabel = stringResource(R.string.xd_style_no_preference),
+                        defaultLabel = stringResource(
+                            if (isHosting) R.string.xd_style_game_default
+                            else R.string.xd_style_no_preference
+                        ),
                         onSelected = { modelDraft = it },
                         modifier = Modifier.fillMaxWidth(),
-                        supportingText = stringResource(R.string.xd_style_submit_model_hint)
+                        supportingText = stringResource(
+                            if (isHosting) R.string.xd_host_submit_model_hint
+                            else R.string.xd_style_submit_model_hint
+                        )
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(
@@ -267,7 +324,10 @@ fun NetplayScreen(
                         Column(Modifier.weight(1f)) {
                             Text(stringResource(R.string.xd_submit_raise_100))
                             Text(
-                                stringResource(R.string.xd_submit_raise_100_hint),
+                                stringResource(
+                                    if (isHosting) R.string.xd_host_submit_raise_100_hint
+                                    else R.string.xd_submit_raise_100_hint
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -307,18 +367,37 @@ fun NetplayScreen(
                 }
             },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        if (useMySave) {
-                            onSubmitSaveBundle(modelDraft, raiseTo100)
-                        } else {
-                            onSubmitTeam(teamDraft.trim(), nameDraft.trim(), modelDraft, raiseTo100)
-                        }
-                        showSubmitTeam = false
-                    },
-                    enabled = useMySave || teamDraft.isNotBlank()
-                ) {
-                    Text("Send")
+                if (isHosting) {
+                    // Host mode writes locally. An empty team is fine: then
+                    // only a changed name or model is applied, and the view
+                    // model drops an Apply that changes nothing.
+                    TextButton(
+                        onClick = {
+                            onSubmitHostTeam(
+                                teamDraft.trim(), hostNameDraft.trim(), modelDraft, raiseTo100
+                            )
+                            showSubmitTeam = false
+                        },
+                        enabled = !gameRunning
+                    ) {
+                        Text(stringResource(R.string.xd_room_apply))
+                    }
+                } else {
+                    TextButton(
+                        onClick = {
+                            if (useMySave) {
+                                onSubmitSaveBundle(modelDraft, raiseTo100)
+                            } else {
+                                onSubmitTeam(
+                                    teamDraft.trim(), nameDraft.trim(), modelDraft, raiseTo100
+                                )
+                            }
+                            showSubmitTeam = false
+                        },
+                        enabled = useMySave || teamDraft.isNotBlank()
+                    ) {
+                        Text("Send")
+                    }
                 }
             },
             dismissButton = {
@@ -328,6 +407,71 @@ fun NetplayScreen(
             },
             onDismissRequest = { showSubmitTeam = false },
         )
+    }
+
+    // XD Netplay, HOST only: change the battle music and battle location from
+    // the room. The drafts are re-seeded from the applied picks every time the
+    // dialog opens, so Cancel really does discard.
+    var showMusicLocation by rememberSaveable { mutableStateOf(false) }
+    var appliedMusic by rememberSaveable { mutableIntStateOf(initialMusicId) }
+    var appliedVenue by rememberSaveable { mutableIntStateOf(initialVenueId) }
+    var musicDraft by rememberSaveable { mutableIntStateOf(initialMusicId) }
+    var venueDraft by rememberSaveable { mutableIntStateOf(initialVenueId) }
+    if (showMusicLocation) {
+        AlertDialog(
+            title = { Text(stringResource(R.string.xd_room_music_location)) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        stringResource(R.string.xd_room_music_location_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    BattleStyleDropdown(
+                        label = stringResource(R.string.xd_style_music),
+                        options = musicOptions,
+                        selectedId = musicDraft,
+                        defaultLabel = stringResource(R.string.xd_style_game_default),
+                        onSelected = { musicDraft = it },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    BattleStyleDropdown(
+                        label = stringResource(R.string.xd_style_venue),
+                        options = venueOptions,
+                        selectedId = venueDraft,
+                        defaultLabel = stringResource(R.string.xd_style_game_default),
+                        onSelected = { venueDraft = it },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onSetMusicAndLocation(musicDraft, venueDraft)
+                        appliedMusic = musicDraft
+                        appliedVenue = venueDraft
+                        showMusicLocation = false
+                    },
+                    enabled = !gameRunning
+                ) {
+                    Text(stringResource(R.string.xd_room_apply))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMusicLocation = false }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+            onDismissRequest = { showMusicLocation = false },
+        )
+    }
+    val onShowMusicLocation = {
+        musicDraft = appliedMusic
+        venueDraft = appliedVenue
+        showMusicLocation = true
     }
 
     DolphinScaffold(
@@ -379,6 +523,11 @@ fun NetplayScreen(
                 isHosting = isHosting,
                 onSetHostName = onSetHostName,
                 hostTrainerName = hostTrainerName,
+                onShowSubmitTeam = { showSubmitTeam = true },
+                onShowMusicLocation = onShowMusicLocation,
+                gameRunning = gameRunning,
+                hostResultText = hostResultText,
+                hostResultOk = hostResultOk,
                 messages = messages,
                 onSendMessage = onSendMessage,
                 showChat = showChat,
@@ -410,6 +559,11 @@ fun NetplayScreen(
                 isHosting = isHosting,
                 onSetHostName = onSetHostName,
                 hostTrainerName = hostTrainerName,
+                onShowSubmitTeam = { showSubmitTeam = true },
+                onShowMusicLocation = onShowMusicLocation,
+                gameRunning = gameRunning,
+                hostResultText = hostResultText,
+                hostResultOk = hostResultOk,
                 messages = messages,
                 onSendMessage = onSendMessage,
                 showChat = showChat,
@@ -533,6 +687,11 @@ private fun PortraitContent(
     isHosting: Boolean,
     onSetHostName: (String) -> Unit = {},
     hostTrainerName: String = "",
+    onShowSubmitTeam: () -> Unit = {},
+    onShowMusicLocation: () -> Unit = {},
+    gameRunning: Boolean = false,
+    hostResultText: String = "",
+    hostResultOk: Boolean = true,
     messages: List<NetplayMessage>,
     onSendMessage: (String) -> Unit,
     showChat: Boolean,
@@ -596,6 +755,11 @@ private fun PortraitContent(
             isHosting = isHosting,
             onSetHostName = onSetHostName,
             hostTrainerName = hostTrainerName,
+            onShowSubmitTeam = onShowSubmitTeam,
+            onShowMusicLocation = onShowMusicLocation,
+            gameRunning = gameRunning,
+            hostResultText = hostResultText,
+            hostResultOk = hostResultOk,
             joinAddresses = joinAddresses,
             selectedJoinInfoType = selectedJoinInfoType,
             onSelectedJoinInfoTypeChanged = onSelectedJoinInfoTypeChanged,
@@ -614,6 +778,11 @@ private fun LandscapeContent(
     isHosting: Boolean,
     onSetHostName: (String) -> Unit = {},
     hostTrainerName: String = "",
+    onShowSubmitTeam: () -> Unit = {},
+    onShowMusicLocation: () -> Unit = {},
+    gameRunning: Boolean = false,
+    hostResultText: String = "",
+    hostResultOk: Boolean = true,
     messages: List<NetplayMessage>,
     onSendMessage: (String) -> Unit,
     showChat: Boolean,
@@ -689,6 +858,11 @@ private fun LandscapeContent(
                 isHosting = isHosting,
                 onSetHostName = onSetHostName,
                 hostTrainerName = hostTrainerName,
+                onShowSubmitTeam = onShowSubmitTeam,
+                onShowMusicLocation = onShowMusicLocation,
+                gameRunning = gameRunning,
+                hostResultText = hostResultText,
+                hostResultOk = hostResultOk,
                 joinAddresses = joinAddresses,
                 selectedJoinInfoType = selectedJoinInfoType,
                 onSelectedJoinInfoTypeChanged = onSelectedJoinInfoTypeChanged,
@@ -708,7 +882,11 @@ private fun LandscapeContent(
  * save the room syncs at start (with the party's OT names re-stamped).
  */
 @Composable
-private fun HostTrainerNameSection(onSetHostName: (String) -> Unit, hostTrainerName: String) {
+private fun HostTrainerNameSection(
+    onSetHostName: (String) -> Unit,
+    hostTrainerName: String,
+    gameRunning: Boolean = false
+) {
     // Prefilled with the save's current name; re-seeded when that loads or changes.
     var name by rememberSaveable(hostTrainerName) { mutableStateOf(hostTrainerName) }
     Column(
@@ -740,11 +918,102 @@ private fun HostTrainerNameSection(onSetHostName: (String) -> Unit, hostTrainerN
             Spacer(Modifier.width(8.dp))
             Button(
                 onClick = { onSetHostName(name.trim()) },
-                enabled = name.isNotBlank()
+                enabled = name.isNotBlank() && !gameRunning
             ) {
                 Text(stringResource(R.string.xd_host_name_set))
             }
         }
+    }
+}
+
+/**
+ * XD Netplay, host side: the host's own "Submit Team" (the joiner has the
+ * floating button; the host's floating button is Start) and the in-room
+ * "Music & Location" picker, plus the result line of the last such action.
+ * Both buttons grey out while a game runs: the emulated GBA owns its save
+ * then, and a style change only applies at the next Start anyway.
+ */
+@Composable
+private fun HostBattleSetupSection(
+    onShowSubmitTeam: () -> Unit,
+    onShowMusicLocation: () -> Unit,
+    gameRunning: Boolean,
+    resultText: String,
+    resultOk: Boolean,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = DolphinTheme.scaffoldPadding)
+    ) {
+        @Suppress("UnusedBoxWithConstraintsScope")
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            // Side by side where both labels fit on one line, stacked otherwise.
+            if (maxWidth > 312.dp) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    HostSetupButton(
+                        text = stringResource(R.string.xd_room_submit_team),
+                        onClick = onShowSubmitTeam,
+                        enabled = !gameRunning,
+                        modifier = Modifier.weight(1f)
+                    )
+                    HostSetupButton(
+                        text = stringResource(R.string.xd_room_music_location),
+                        onClick = onShowMusicLocation,
+                        enabled = !gameRunning,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            } else {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    HostSetupButton(
+                        text = stringResource(R.string.xd_room_submit_team),
+                        onClick = onShowSubmitTeam,
+                        enabled = !gameRunning,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    HostSetupButton(
+                        text = stringResource(R.string.xd_room_music_location),
+                        onClick = onShowMusicLocation,
+                        enabled = !gameRunning,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+        if (resultText.isNotEmpty()) {
+            val isDark = isSystemInDarkTheme()
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = resultText,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (resultOk) {
+                    if (isDark) Color(0xFFA5D6A7) else Color(0xFF2E7D32)
+                } else {
+                    MaterialTheme.colorScheme.error
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun HostSetupButton(
+    text: String,
+    onClick: () -> Unit,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        modifier = modifier
+    ) {
+        Text(text = text, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -768,6 +1037,11 @@ private fun PlayersAndSettings(
     isHosting: Boolean,
     onSetHostName: (String) -> Unit = {},
     hostTrainerName: String = "",
+    onShowSubmitTeam: () -> Unit = {},
+    onShowMusicLocation: () -> Unit = {},
+    gameRunning: Boolean = false,
+    hostResultText: String = "",
+    hostResultOk: Boolean = true,
     joinAddresses: Map<JoinInfoType, JoinAddress>,
     selectedJoinInfoType: JoinInfoType,
     onSelectedJoinInfoTypeChanged: (JoinInfoType) -> Unit,
@@ -790,7 +1064,18 @@ private fun PlayersAndSettings(
 
             HostTrainerNameSection(
                 onSetHostName = onSetHostName,
-                hostTrainerName = hostTrainerName
+                hostTrainerName = hostTrainerName,
+                gameRunning = gameRunning
+            )
+
+            MenuSpacer()
+
+            HostBattleSetupSection(
+                onShowSubmitTeam = onShowSubmitTeam,
+                onShowMusicLocation = onShowMusicLocation,
+                gameRunning = gameRunning,
+                resultText = hostResultText,
+                resultOk = hostResultOk
             )
 
             MenuSpacer()
@@ -1680,6 +1965,16 @@ private fun PreviewNetplayScreen() {
         modelOptions = emptyList(),
         orreFormatLocal = false,
         validateTeamForFormat = { "" },
+        onSubmitHostTeam = { _, _, _, _ -> },
+        initialHostModelId = 0,
+        musicOptions = emptyList(),
+        venueOptions = emptyList(),
+        initialMusicId = 0,
+        initialVenueId = 0,
+        onSetMusicAndLocation = { _, _ -> },
+        gameRunning = false,
+        hostResultText = "team written to GBA port 2",
+        hostResultOk = true,
 //        saveTransferProgress = SaveTransferProgress(
 //            title = "Title",
 //            totalSize = 1024L,

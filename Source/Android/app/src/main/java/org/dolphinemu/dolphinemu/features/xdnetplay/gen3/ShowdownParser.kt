@@ -106,6 +106,7 @@ object ShowdownParser {
         var happiness: Int? = null
         val evs = IntArray(6)
         val ivs = IntArray(6) { 31 }
+        val ivsGiven = BooleanArray(6)
         val moves = ArrayList<String>()
 
         for (i in 1 until lines.size) {
@@ -128,7 +129,7 @@ object ShowdownParser {
                     parseStatList(line.substring("EVs:".length), evs)
                 }
                 line.startsWith("IVs:") -> {
-                    parseStatList(line.substring("IVs:".length), ivs)
+                    parseStatList(line.substring("IVs:".length), ivs, ivsGiven)
                 }
                 line.startsWith("Happiness:") -> {
                     line.substring("Happiness:".length).trim().toIntOrNull()?.let {
@@ -153,6 +154,7 @@ object ShowdownParser {
             }
         }
 
+        applyHiddenPowerIvs(moves, ivs, ivsGiven)
         return ShowdownSet(
             species = speciesName,
             nickname = nickname,
@@ -170,7 +172,7 @@ object ShowdownParser {
     }
 
     /** Parse "252 Atk / 4 Def / 252 Spe" into [out]; unknown tokens ignored. */
-    private fun parseStatList(text: String, out: IntArray) {
+    private fun parseStatList(text: String, out: IntArray, given: BooleanArray? = null) {
         for (part in text.split("/")) {
             val tokens = part.trim().split(Regex("\\s+"))
             if (tokens.size < 2) {
@@ -179,6 +181,127 @@ object ShowdownParser {
             val value = tokens[0].toIntOrNull() ?: continue
             val index = STAT_INDEX[tokens[1].lowercase()] ?: continue
             out[index] = value
+            given?.set(index, true)
+        }
+    }
+
+    // ---- Hidden Power ----
+    //
+    // Gen 3 and Gen 4 store no Hidden Power type. The game derives it from the
+    // low bit of each IV:
+    //   type = (hp + 2*atk + 4*def + 8*spe + 16*spa + 32*spd) * 15 / 63
+    // A paste names the type ("Hidden Power [Ice]", "Hidden Power Ice") and
+    // very often carries no IVs line at all, or only "IVs: 0 Atk". Left at 31s
+    // such a set would come out as Hidden Power Dark, so the IVs are made to
+    // match the type the paste asks for, the way Showdown's own importer does.
+    // Kept in step with ShowdownParser.cpp, which proves the table at compile
+    // time.
+
+    /** Low-bit weight of each stat, in Showdown order hp/atk/def/spa/spd/spe. */
+    private val HP_BIT_WEIGHT = intArrayOf(1, 2, 4, 16, 32, 8)
+
+    /** The 16 types in the order the formula numbers them. */
+    private val HP_TYPE_NAMES = listOf(
+        "fighting", "flying", "poison", "ground", "rock", "bug", "ghost", "steel",
+        "fire", "water", "grass", "electric", "psychic", "ice", "dragon", "dark"
+    )
+
+    /**
+     * Showdown's standard spread per type (its HPivs table): bit i set means
+     * stat i (Showdown order) is 30, every other stat is 31. All of them give
+     * 70 power. Indexed like [HP_TYPE_NAMES].
+     */
+    private val HP_STANDARD_EVEN_MASK = intArrayOf(
+        0b111100, // fighting: def spa spd spe
+        0b011111, // flying:   hp atk def spa spd
+        0b011100, // poison:   def spa spd
+        0b011000, // ground:   spa spd
+        0b110100, // rock:     def spd spe
+        0b010110, // bug:      atk def spd
+        0b010100, // ghost:    def spd
+        0b010000, // steel:    spd
+        0b101010, // fire:     atk spa spe
+        0b001110, // water:    atk def spa
+        0b001010, // grass:    atk spa
+        0b001000, // electric: spa
+        0b100010, // psychic:  atk spe
+        0b000110, // ice:      atk def
+        0b000010, // dragon:   atk
+        0b000000, // dark:     all 31
+    )
+
+    /** Type index the game derives from a parity pattern: bit i set = stat i odd. */
+    private fun hiddenPowerTypeOfOddMask(oddMask: Int): Int {
+        var sum = 0
+        for (i in 0 until 6) {
+            if (oddMask and (1 shl i) != 0) {
+                sum += HP_BIT_WEIGHT[i]
+            }
+        }
+        return sum * 15 / 63
+    }
+
+    /** Type index named by a move line, or -1: not Hidden Power, or no type named. */
+    private fun namedHiddenPowerType(move: String): Int {
+        val letters = move.filter { it in 'a'..'z' || it in 'A'..'Z' }.lowercase()
+        if (!letters.startsWith("hiddenpower")) {
+            return -1
+        }
+        return HP_TYPE_NAMES.indexOf(letters.substring("hiddenpower".length))
+    }
+
+    /**
+     * Makes [ivs] produce the Hidden Power type that [moves] name.
+     *  - IVs already right: nothing changes.
+     *  - No IVs line: Showdown's standard spread for the type.
+     *  - Some IVs given: the fewest low-bit flips that reach the type. A stat
+     *    the paste named is only touched when no other stat can do it, Speed is
+     *    the next most protected, and ties go to the pattern nearest the
+     *    standard spread. A flip moves a value by one (31 to 30, 0 to 1), so
+     *    "0 Atk" stays a minimum Attack set.
+     */
+    private fun applyHiddenPowerIvs(moves: List<String>, ivs: IntArray, given: BooleanArray) {
+        val wanted = moves.map { namedHiddenPowerType(it) }.firstOrNull { it >= 0 } ?: return
+
+        var oddMask = 0
+        for (i in 0 until 6) {
+            ivs[i] = ivs[i].coerceIn(0, 31)
+            if (ivs[i] and 1 != 0) {
+                oddMask = oddMask or (1 shl i)
+            }
+        }
+        if (hiddenPowerTypeOfOddMask(oddMask) == wanted) {
+            return
+        }
+
+        val standardOddMask = 0b111111 and HP_STANDARD_EVEN_MASK[wanted].inv()
+        var target = standardOddMask
+        if (given.any { it }) {
+            val spe = 5
+            var bestCost = -1
+            for (candidate in 0 until 64) {
+                if (hiddenPowerTypeOfOddMask(candidate) != wanted) {
+                    continue
+                }
+                val flips = candidate xor oddMask
+                var cost = 0
+                for (i in 0 until 6) {
+                    if (flips and (1 shl i) != 0) {
+                        cost += if (given[i]) 1000 else if (i == spe) 30 else 10
+                    }
+                }
+                cost += Integer.bitCount(candidate xor standardOddMask)
+                if (bestCost < 0 || cost < bestCost) {
+                    bestCost = cost
+                    target = candidate
+                }
+            }
+        }
+
+        for (i in 0 until 6) {
+            if (((target xor oddMask) shr i) and 1 != 0) {
+                ivs[i] = ivs[i] xor 1
+            }
         }
     }
 }
