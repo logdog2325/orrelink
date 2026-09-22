@@ -1,23 +1,140 @@
-From ffdacbe2032aeda7bd6efc03c412318efa3e6347 Mon Sep 17 00:00:00 2001
+From 70998b5d3ed2c8443e62c59eedb965fe84156399 Mon Sep 17 00:00:00 2001
 From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
 Date: Tue, 22 Sep 2026 11:50:25 -0700
-Subject: [PATCH] XD Netplay v1.6.3: the update check follows redirects
+Subject: [PATCH] XD Netplay v1.6.3: the update check follows redirects, says
+ why it failed, and finds Android 14's certificates
 
 Common::HttpRequest does not follow redirects unless asked, and the update
 check never asked. The repository was renamed after 1.6.0 shipped, so every
 1.6.0 install now sends its check to the old name, gets a 301 from GitHub, and
 shows "GitHub replied with HTTP 301 to the update check" with no way to the
 release page. 1.6.1 and 1.6.2 already carry the new name and are not affected.
-
 The check now follows up to three redirects, so a build keeps working through
 a rename. The 1.6.0 builds that are already out cannot be changed from here.
----
- Source/Core/UICommon/XDNetplay/UpdateCheck.cpp | 7 +++++++
- Source/Core/UICommon/XDNetplay/Version.h       | 2 +-
- 2 files changed, 8 insertions(+), 1 deletion(-)
 
+When curl itself fails, the dialog now carries curl's one-line reason
+(HttpRequest::GetLastErrorString), so a report of "could not reach GitHub"
+says whether it was DNS, a certificate or a captive portal.
+
+curl on Android is built with CURL_CA_PATH = /system/etc/security/cacerts.
+Android 14 moved the system root certificates into the Conscrypt module and
+leaves that directory empty, which fails every HTTPS request. HttpRequest now
+points curl at whichever of the two directories holds certificates; a device
+that still has them in the old place is left alone.
+---
+ Source/Core/Common/HttpRequest.cpp            | 44 +++++++++++++++++++
+ Source/Core/Common/HttpRequest.h              |  4 ++
+ .../Core/UICommon/XDNetplay/UpdateCheck.cpp   | 17 ++++++-
+ Source/Core/UICommon/XDNetplay/Version.h      |  2 +-
+ 4 files changed, 64 insertions(+), 3 deletions(-)
+
+diff --git a/Source/Core/Common/HttpRequest.cpp b/Source/Core/Common/HttpRequest.cpp
+index 94a4664..a478f9a 100644
+--- a/Source/Core/Common/HttpRequest.cpp
++++ b/Source/Core/Common/HttpRequest.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include <chrono>
+ #include <cstddef>
++#include <filesystem>
+ #include <mutex>
+ 
+ #include <curl/curl.h>
+@@ -32,6 +33,7 @@ public:
+   void UseIPv4();
+   void FollowRedirects(long max);
+   s32 GetLastResponseCode();
++  std::string GetLastErrorString() const;
+   Response Fetch(const std::string& url, Method method, const Headers& headers, const u8* payload,
+                  size_t size, AllowedReturnCodes codes = AllowedReturnCodes::Ok_Only,
+                  std::span<Multiform> multiform = {});
+@@ -75,6 +77,11 @@ void HttpRequest::FollowRedirects(long max)
+   m_impl->FollowRedirects(max);
+ }
+ 
++std::string HttpRequest::GetLastErrorString() const
++{
++  return m_impl->GetLastErrorString();
++}
++
+ std::string HttpRequest::EscapeComponent(const std::string& string)
+ {
+   return m_impl->EscapeComponent(string);
+@@ -117,6 +124,29 @@ int HttpRequest::Impl::CurlProgressCallback(Impl* impl, curl_off_t dltotal, curl
+                            static_cast<s64>(ultotal), static_cast<s64>(ulnow));
+ }
+ 
++#ifdef ANDROID
++static const std::string& AndroidCaPath()
++{
++  static const std::string path = [] {
++    static constexpr const char* CANDIDATES[] = {
++        "/system/etc/security/cacerts",
++        "/apex/com.android.conscrypt/cacerts",
++    };
++    for (const char* candidate : CANDIDATES)
++    {
++      std::error_code ec;
++      for (const auto& entry : std::filesystem::directory_iterator(candidate, ec))
++      {
++        if (entry.is_regular_file(ec))
++          return std::string(candidate);
++      }
++    }
++    return std::string(CANDIDATES[0]);
++  }();
++  return path;
++}
++#endif
++
+ HttpRequest::Impl::Impl(std::chrono::milliseconds timeout_ms, ProgressCallback callback)
+     : m_callback(std::move(callback))
+ {
+@@ -147,6 +177,14 @@ HttpRequest::Impl::Impl(std::chrono::milliseconds timeout_ms, ProgressCallback c
+       m_curl.get(), CURLOPT_LOW_SPEED_TIME,
+       static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(timeout_ms).count()));
+   curl_easy_setopt(m_curl.get(), CURLOPT_LOW_SPEED_LIMIT, 1);
++
++#ifdef ANDROID
++  // curl is built with CURL_CA_PATH = /system/etc/security/cacerts. Android 14 moved the
++  // system root certificates into the Conscrypt module and leaves that directory empty, which
++  // fails every HTTPS request with "SSL certificate problem". Point curl at wherever the
++  // certificates actually are; a device that still has them in the old place is left alone.
++  curl_easy_setopt(m_curl.get(), CURLOPT_CAPATH, AndroidCaPath().c_str());
++#endif
+ }
+ 
+ bool HttpRequest::Impl::IsValid() const
+@@ -178,6 +216,12 @@ HttpRequest::Response HttpRequest::PostMultiform(const std::string& url,
+   return m_impl->Fetch(url, Impl::Method::POST, headers, nullptr, 0, codes, multiform);
+ }
+ 
++std::string HttpRequest::Impl::GetLastErrorString() const
++{
++  // The buffer is CURL_ERROR_SIZE bytes; the text ends at the first NUL.
++  return std::string(m_error_string.c_str());
++}
++
+ void HttpRequest::Impl::FollowRedirects(long max)
+ {
+   curl_easy_setopt(m_curl.get(), CURLOPT_FOLLOWLOCATION, 1);
+diff --git a/Source/Core/Common/HttpRequest.h b/Source/Core/Common/HttpRequest.h
+index b92fa2f..41110e5 100644
+--- a/Source/Core/Common/HttpRequest.h
++++ b/Source/Core/Common/HttpRequest.h
+@@ -47,6 +47,10 @@ public:
+   void UseIPv4();
+   void FollowRedirects(long max = 1);
+   s32 GetLastResponseCode() const;
++  // libcurl's one-line reason for the last failed transfer ("SSL certificate problem: ..."),
++  // empty after a transfer that reached the server. For messages shown to the user, so a report
++  // says what went wrong instead of only that something did.
++  std::string GetLastErrorString() const;
+   std::string EscapeComponent(const std::string& string);
+   std::string GetHeaderValue(std::string_view name) const;
+   Response Get(const std::string& url, const Headers& headers = {},
 diff --git a/Source/Core/UICommon/XDNetplay/UpdateCheck.cpp b/Source/Core/UICommon/XDNetplay/UpdateCheck.cpp
-index 3036e2b..13af053 100644
+index 3036e2b..3c838d2 100644
 --- a/Source/Core/UICommon/XDNetplay/UpdateCheck.cpp
 +++ b/Source/Core/UICommon/XDNetplay/UpdateCheck.cpp
 @@ -142,6 +142,13 @@ UpdateCheckResult CheckForUpdate()
@@ -34,6 +151,23 @@ index 3036e2b..13af053 100644
    // AllowedReturnCodes::All so the status code below can be read and explained; Ok_Only would
    // collapse a rate limit and an unreachable server into the same empty response.
    const Common::HttpRequest::Response response =
+@@ -151,8 +158,14 @@ UpdateCheckResult CheckForUpdate()
+ 
+   if (!response)
+   {
+-    return MakeNetworkError(
+-        "Could not reach GitHub to check for updates. Check your connection and try again.");
++    // The curl reason goes in the message on purpose: "could not reach" alone has meant a
++    // missing certificate store, a DNS failure and a captive portal, and only the reason tells
++    // them apart in a report.
++    std::string message =
++        "Could not reach GitHub to check for updates. Check your connection and try again.";
++    if (const std::string reason = request.GetLastErrorString(); !reason.empty())
++      message += fmt::format(" ({})", reason);
++    return MakeNetworkError(std::move(message));
+   }
+ 
+   const s32 code = request.GetLastResponseCode();
 diff --git a/Source/Core/UICommon/XDNetplay/Version.h b/Source/Core/UICommon/XDNetplay/Version.h
 index adecca8..9ba99b1 100644
 --- a/Source/Core/UICommon/XDNetplay/Version.h
