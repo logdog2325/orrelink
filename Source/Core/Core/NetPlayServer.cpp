@@ -1448,6 +1448,19 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
         SendToClients(spac);
 
         m_desync_detected = true;
+
+        // The host's own session log gets the raw numbers: how far apart the time bases were
+        // and which pid stood alone. The client-side "desync" line carries the frame too.
+#ifdef HAS_LIBMGBA
+        {
+          std::string bases;
+          for (const auto& [pid, base] : timebases)
+            bases += fmt::format(" pid{}={:#x}", pid, base);
+          GBADetectLog::LogPostSession(fmt::format(
+              "desync-detected frame={} spread={} tolerance={} blamed_pid={}{}", frame, spread,
+              tolerance, pid_to_blame, bases));
+        }
+#endif
       }
       m_timebase_by_frame.erase(frame);
     }
