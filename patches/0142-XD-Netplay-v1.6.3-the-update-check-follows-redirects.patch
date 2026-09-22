@@ -1,0 +1,50 @@
+From ffdacbe2032aeda7bd6efc03c412318efa3e6347 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Tue, 22 Sep 2026 11:50:25 -0700
+Subject: [PATCH] XD Netplay v1.6.3: the update check follows redirects
+
+Common::HttpRequest does not follow redirects unless asked, and the update
+check never asked. The repository was renamed after 1.6.0 shipped, so every
+1.6.0 install now sends its check to the old name, gets a 301 from GitHub, and
+shows "GitHub replied with HTTP 301 to the update check" with no way to the
+release page. 1.6.1 and 1.6.2 already carry the new name and are not affected.
+
+The check now follows up to three redirects, so a build keeps working through
+a rename. The 1.6.0 builds that are already out cannot be changed from here.
+---
+ Source/Core/UICommon/XDNetplay/UpdateCheck.cpp | 7 +++++++
+ Source/Core/UICommon/XDNetplay/Version.h       | 2 +-
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/Source/Core/UICommon/XDNetplay/UpdateCheck.cpp b/Source/Core/UICommon/XDNetplay/UpdateCheck.cpp
+index 3036e2b..13af053 100644
+--- a/Source/Core/UICommon/XDNetplay/UpdateCheck.cpp
++++ b/Source/Core/UICommon/XDNetplay/UpdateCheck.cpp
+@@ -142,6 +142,13 @@ UpdateCheckResult CheckForUpdate()
+   if (!request.IsValid())
+     return MakeNetworkError("Could not start the update check on this system.");
+ 
++  // Follow redirects. HttpRequest does not by default, and that is how every 1.6.0 install lost
++  // its update check: the repository was renamed after that build shipped, GitHub answers the old
++  // name with a 301, and the build reported "HTTP 301" instead of the newest release. With this a
++  // build keeps working through a rename, and a build that predates the fix cannot be helped from
++  // here. Three hops is more than a rename ever needs.
++  request.FollowRedirects(3);
++
+   // AllowedReturnCodes::All so the status code below can be read and explained; Ok_Only would
+   // collapse a rate limit and an unreachable server into the same empty response.
+   const Common::HttpRequest::Response response =
+diff --git a/Source/Core/UICommon/XDNetplay/Version.h b/Source/Core/UICommon/XDNetplay/Version.h
+index adecca8..9ba99b1 100644
+--- a/Source/Core/UICommon/XDNetplay/Version.h
++++ b/Source/Core/UICommon/XDNetplay/Version.h
+@@ -11,5 +11,5 @@ namespace XDNetplay
+ // fork's release, so it cannot answer "which XD Netplay am I?" -- this constant is the only thing
+ // that can. It MUST be bumped in the same patch that a release is tagged from: ship a tag ahead of
+ // this string and every user of that release is told they are out of date forever.
+-constexpr char VERSION[] = "1.6.2";
++constexpr char VERSION[] = "1.6.3";
+ }  // namespace XDNetplay
+-- 
+2.39.5 (Apple Git-154)
+
