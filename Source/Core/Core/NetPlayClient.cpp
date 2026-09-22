@@ -1169,6 +1169,13 @@ void NetPlayClient::OnDesyncDetected(sf::Packet& packet)
   }
 
   INFO_LOG_FMT(NETPLAY, "Player {} ({}) desynced!", player, pid_to_blame);
+#ifdef HAS_LIBMGBA
+  // Into the session log, so a desync report can be placed against the xd/wseq lines without
+  // anyone having to remember the frame from the chat message.
+  GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "desync",
+                         fmt::format("frame={} blamed_pid={} wall={}", frame, pid_to_blame,
+                                     WallClockHHMMSS()));
+#endif
 
   m_dialog->OnDesync(frame, player);
 }

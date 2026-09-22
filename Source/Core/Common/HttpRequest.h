@@ -47,6 +47,10 @@ public:
   void UseIPv4();
   void FollowRedirects(long max = 1);
   s32 GetLastResponseCode() const;
+  // libcurl's one-line reason for the last failed transfer ("SSL certificate problem: ..."),
+  // empty after a transfer that reached the server. For messages shown to the user, so a report
+  // says what went wrong instead of only that something did.
+  std::string GetLastErrorString() const;
   std::string EscapeComponent(const std::string& string);
   std::string GetHeaderValue(std::string_view name) const;
   Response Get(const std::string& url, const Headers& headers = {},
