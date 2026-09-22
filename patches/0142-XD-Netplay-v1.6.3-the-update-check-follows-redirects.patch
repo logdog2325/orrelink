@@ -1,4 +1,4 @@
-From 70998b5d3ed2c8443e62c59eedb965fe84156399 Mon Sep 17 00:00:00 2001
+From 6bbc402666c0cf3f8d49718c2dcdfdf6473ba9f8 Mon Sep 17 00:00:00 2001
 From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
 Date: Tue, 22 Sep 2026 11:50:25 -0700
 Subject: [PATCH] XD Netplay v1.6.3: the update check follows redirects, says
@@ -21,12 +21,19 @@ Android 14 moved the system root certificates into the Conscrypt module and
 leaves that directory empty, which fails every HTTPS request. HttpRequest now
 points curl at whichever of the two directories holds certificates; a device
 that still has them in the old place is left alone.
+
+A detected desync is now written to the session log on both ends: the host
+logs "desync-detected" with the frame, the time base spread against the
+tolerance and each player's raw time base; every client logs "desync" with
+the frame and the wall time. Until now the only trace was the chat message.
 ---
  Source/Core/Common/HttpRequest.cpp            | 44 +++++++++++++++++++
  Source/Core/Common/HttpRequest.h              |  4 ++
+ Source/Core/Core/NetPlayClient.cpp            |  7 +++
+ Source/Core/Core/NetPlayServer.cpp            | 13 ++++++
  .../Core/UICommon/XDNetplay/UpdateCheck.cpp   | 17 ++++++-
  Source/Core/UICommon/XDNetplay/Version.h      |  2 +-
- 4 files changed, 64 insertions(+), 3 deletions(-)
+ 6 files changed, 84 insertions(+), 3 deletions(-)
 
 diff --git a/Source/Core/Common/HttpRequest.cpp b/Source/Core/Common/HttpRequest.cpp
 index 94a4664..a478f9a 100644
@@ -133,6 +140,48 @@ index b92fa2f..41110e5 100644
    std::string EscapeComponent(const std::string& string);
    std::string GetHeaderValue(std::string_view name) const;
    Response Get(const std::string& url, const Headers& headers = {},
+diff --git a/Source/Core/Core/NetPlayClient.cpp b/Source/Core/Core/NetPlayClient.cpp
+index 9f2d446..28c371f 100644
+--- a/Source/Core/Core/NetPlayClient.cpp
++++ b/Source/Core/Core/NetPlayClient.cpp
+@@ -1169,6 +1169,13 @@ void NetPlayClient::OnDesyncDetected(sf::Packet& packet)
+   }
+ 
+   INFO_LOG_FMT(NETPLAY, "Player {} ({}) desynced!", player, pid_to_blame);
++#ifdef HAS_LIBMGBA
++  // Into the session log, so a desync report can be placed against the xd/wseq lines without
++  // anyone having to remember the frame from the chat message.
++  GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "desync",
++                         fmt::format("frame={} blamed_pid={} wall={}", frame, pid_to_blame,
++                                     WallClockHHMMSS()));
++#endif
+ 
+   m_dialog->OnDesync(frame, player);
+ }
+diff --git a/Source/Core/Core/NetPlayServer.cpp b/Source/Core/Core/NetPlayServer.cpp
+index 6b409a2..1244ee9 100644
+--- a/Source/Core/Core/NetPlayServer.cpp
++++ b/Source/Core/Core/NetPlayServer.cpp
+@@ -1448,6 +1448,19 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
+         SendToClients(spac);
+ 
+         m_desync_detected = true;
++
++        // The host's own session log gets the raw numbers: how far apart the time bases were
++        // and which pid stood alone. The client-side "desync" line carries the frame too.
++#ifdef HAS_LIBMGBA
++        {
++          std::string bases;
++          for (const auto& [pid, base] : timebases)
++            bases += fmt::format(" pid{}={:#x}", pid, base);
++          GBADetectLog::LogPostSession(fmt::format(
++              "desync-detected frame={} spread={} tolerance={} blamed_pid={}{}", frame, spread,
++              tolerance, pid_to_blame, bases));
++        }
++#endif
+       }
+       m_timebase_by_frame.erase(frame);
+     }
 diff --git a/Source/Core/UICommon/XDNetplay/UpdateCheck.cpp b/Source/Core/UICommon/XDNetplay/UpdateCheck.cpp
 index 3036e2b..3c838d2 100644
 --- a/Source/Core/UICommon/XDNetplay/UpdateCheck.cpp
