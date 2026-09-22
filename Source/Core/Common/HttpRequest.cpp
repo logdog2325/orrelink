@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <filesystem>
 #include <mutex>
 
 #include <curl/curl.h>
@@ -32,6 +33,7 @@ public:
   void UseIPv4();
   void FollowRedirects(long max);
   s32 GetLastResponseCode();
+  std::string GetLastErrorString() const;
   Response Fetch(const std::string& url, Method method, const Headers& headers, const u8* payload,
                  size_t size, AllowedReturnCodes codes = AllowedReturnCodes::Ok_Only,
                  std::span<Multiform> multiform = {});
@@ -73,6 +75,11 @@ void HttpRequest::UseIPv4()
 void HttpRequest::FollowRedirects(long max)
 {
   m_impl->FollowRedirects(max);
+}
+
+std::string HttpRequest::GetLastErrorString() const
+{
+  return m_impl->GetLastErrorString();
 }
 
 std::string HttpRequest::EscapeComponent(const std::string& string)
@@ -117,6 +124,29 @@ int HttpRequest::Impl::CurlProgressCallback(Impl* impl, curl_off_t dltotal, curl
                            static_cast<s64>(ultotal), static_cast<s64>(ulnow));
 }
 
+#ifdef ANDROID
+static const std::string& AndroidCaPath()
+{
+  static const std::string path = [] {
+    static constexpr const char* CANDIDATES[] = {
+        "/system/etc/security/cacerts",
+        "/apex/com.android.conscrypt/cacerts",
+    };
+    for (const char* candidate : CANDIDATES)
+    {
+      std::error_code ec;
+      for (const auto& entry : std::filesystem::directory_iterator(candidate, ec))
+      {
+        if (entry.is_regular_file(ec))
+          return std::string(candidate);
+      }
+    }
+    return std::string(CANDIDATES[0]);
+  }();
+  return path;
+}
+#endif
+
 HttpRequest::Impl::Impl(std::chrono::milliseconds timeout_ms, ProgressCallback callback)
     : m_callback(std::move(callback))
 {
@@ -147,6 +177,14 @@ HttpRequest::Impl::Impl(std::chrono::milliseconds timeout_ms, ProgressCallback c
       m_curl.get(), CURLOPT_LOW_SPEED_TIME,
       static_cast<long>(std::chrono::duration_cast<std::chrono::seconds>(timeout_ms).count()));
   curl_easy_setopt(m_curl.get(), CURLOPT_LOW_SPEED_LIMIT, 1);
+
+#ifdef ANDROID
+  // curl is built with CURL_CA_PATH = /system/etc/security/cacerts. Android 14 moved the
+  // system root certificates into the Conscrypt module and leaves that directory empty, which
+  // fails every HTTPS request with "SSL certificate problem". Point curl at wherever the
+  // certificates actually are; a device that still has them in the old place is left alone.
+  curl_easy_setopt(m_curl.get(), CURLOPT_CAPATH, AndroidCaPath().c_str());
+#endif
 }
 
 bool HttpRequest::Impl::IsValid() const
@@ -176,6 +214,12 @@ HttpRequest::Response HttpRequest::PostMultiform(const std::string& url,
                                                  const Headers& headers, AllowedReturnCodes codes)
 {
   return m_impl->Fetch(url, Impl::Method::POST, headers, nullptr, 0, codes, multiform);
+}
+
+std::string HttpRequest::Impl::GetLastErrorString() const
+{
+  // The buffer is CURL_ERROR_SIZE bytes; the text ends at the first NUL.
+  return std::string(m_error_string.c_str());
 }
 
 void HttpRequest::Impl::FollowRedirects(long max)

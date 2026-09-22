@@ -142,6 +142,13 @@ UpdateCheckResult CheckForUpdate()
   if (!request.IsValid())
     return MakeNetworkError("Could not start the update check on this system.");
 
+  // Follow redirects. HttpRequest does not by default, and that is how every 1.6.0 install lost
+  // its update check: the repository was renamed after that build shipped, GitHub answers the old
+  // name with a 301, and the build reported "HTTP 301" instead of the newest release. With this a
+  // build keeps working through a rename, and a build that predates the fix cannot be helped from
+  // here. Three hops is more than a rename ever needs.
+  request.FollowRedirects(3);
+
   // AllowedReturnCodes::All so the status code below can be read and explained; Ok_Only would
   // collapse a rate limit and an unreachable server into the same empty response.
   const Common::HttpRequest::Response response =
@@ -151,8 +158,14 @@ UpdateCheckResult CheckForUpdate()
 
   if (!response)
   {
-    return MakeNetworkError(
-        "Could not reach GitHub to check for updates. Check your connection and try again.");
+    // The curl reason goes in the message on purpose: "could not reach" alone has meant a
+    // missing certificate store, a DNS failure and a captive portal, and only the reason tells
+    // them apart in a report.
+    std::string message =
+        "Could not reach GitHub to check for updates. Check your connection and try again.";
+    if (const std::string reason = request.GetLastErrorString(); !reason.empty())
+      message += fmt::format(" ({})", reason);
+    return MakeNetworkError(std::move(message));
   }
 
   const s32 code = request.GetLastResponseCode();
