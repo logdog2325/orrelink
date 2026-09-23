@@ -227,8 +227,9 @@ protected:
   std::array<GCPadStatus, 4> m_last_pad_status{};
   std::array<bool, 4> m_first_pad_status_received{};
   // Set by OnStartGame (netplay thread) once it has emptied the pad queues for the game it is
-  // announcing, so the later StartGame() on the GUI thread does not empty them a second time and
-  // throw away input that has already arrived. See the comment in OnStartGame.
+  // announcing. StartGame() on the GUI thread only asserts on it: it must never clear them a
+  // second time, because the netplay thread is pushing into those queues by then. See the
+  // comments in OnStartGame and StartGame.
   // Atomic: written on the netplay thread, read on the GUI thread that boots the game.
   std::atomic<bool> m_input_reset_for_game{false};
   // One "padpop" diagnostic line per pad per game: how deep that pad's queue was at its first pop.
