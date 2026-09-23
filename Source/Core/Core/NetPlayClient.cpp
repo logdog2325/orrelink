@@ -1116,6 +1116,11 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
   // GBA cores and halved the buffer's round-trip budget, so the game crawled at about half speed
   // on a link that could carry it. Clearing on this thread orders the clear before any PadData of
   // the new game on every platform, because both ride the same ordered channel.
+  //
+  // Safe to pop here even though the CPU thread is the other consumer: every route that stops a
+  // game goes through StopGame() -> NetPlay_Disable(), which takes the same crit_netplay_client
+  // that NetPlay_GetInput holds for the whole of GetNetPads, so no previous game's CPU thread can
+  // still be inside GetNetPads once a later StartGame message is handled on this thread.
   ClearBuffers();
   m_first_pad_status_received.fill(false);
   m_first_pop_logged.fill(false);
@@ -2038,16 +2043,13 @@ bool NetPlayClient::StartGame(const std::string& path)
   m_is_running.Set();
   NetPlay_Enable(this);
 
-  // Normally already done by OnStartGame on the netplay thread, which is the only ordering that
-  // cannot discard input that has already arrived. This is the fallback for a path that reaches
-  // here without that message.
-  if (!m_input_reset_for_game.load(std::memory_order_acquire))
-  {
-    ClearBuffers();
-    m_first_pad_status_received.fill(false);
-    m_first_pop_logged.fill(false);
-  }
-  m_input_reset_for_game.store(false, std::memory_order_relaxed);
+  // The per-game input reset is NOT done here. OnStartGame does it on the netplay thread, which
+  // is the only ordering that cannot discard input that has already arrived, and this function is
+  // only ever reached from OnMsgStartGame a few lines later in that same handler. Clearing here as
+  // well would be worse than redundant: ClearBuffers pops, the netplay thread pushes in OnPadData,
+  // and Common::SPSCQueue::Pop deletes a node, so a second consumer on this thread is a use after
+  // free rather than a harmless repeat.
+  DEBUG_ASSERT(m_input_reset_for_game.load(std::memory_order_acquire));
 
   if (m_dialog->IsRecording())
   {
@@ -2710,11 +2712,18 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
       !m_first_pop_logged[pad_nb])
   {
     m_first_pop_logged[pad_nb] = true;
-    const PadDetails details = GetPadDetails(pad_nb);
+    // Same locking note as DescribePadOwner(): nothing here may take crit_netplay_client, because
+    // NetPlay_GetInput holds it for the whole of GetNetPads and it is a plain std::mutex. The two
+    // reads below need no lock at all (pad_map is fixed for the game, m_local_player for the
+    // session), and the netlat line above has always logged from inside this call.
+    const PlayerId owner = static_cast<size_t>(pad_nb) < m_net_settings.pad_map.size() ?
+                               m_net_settings.pad_map[pad_nb] :
+                               0;
     GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "padpop",
-                           fmt::format("pad={} depth={} target={} local={}", pad_nb,
-                                       m_pad_buffer[pad_nb].Size(), m_target_buffer_size,
-                                       details.is_local ? 1 : 0));
+                           fmt::format("pad={} depth={} target={} owner={} local={}", pad_nb,
+                                       m_pad_buffer[pad_nb].Size(), m_target_buffer_size, owner,
+                                       (m_local_player && owner == m_local_player->pid) ? 1 : 0),
+                           false);  // never flush under this lock; the summary line does it
   }
 #endif
 
