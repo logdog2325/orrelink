@@ -1105,6 +1105,22 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     m_net_settings.is_hosting = m_local_player->IsHost();
   }
 
+  // Empty the pad queues HERE, on the netplay thread, in message order, before the UI is told to
+  // boot. The clear used to live in StartGame(), which Qt runs later on the GUI thread
+  // (NetPlayDialog::OnMsgStartGame posts it with QueueOnObject) while this thread keeps taking
+  // packets: OnPadData pushes whatever arrives, ungated, so the first PadData packet of the new
+  // game (the sender's whole initial fill, buffer size + 1 entries for each pad it owns) landed in
+  // the queues and was then discarded by that late clear. The victim's copies of those pads ran
+  // one full fill ahead of the owner's for the rest of the session: every GBA reset and every
+  // button press reached the two machines at different emulated polls, which both desynced the
+  // GBA cores and halved the buffer's round-trip budget, so the game crawled at about half speed
+  // on a link that could carry it. Clearing on this thread orders the clear before any PadData of
+  // the new game on every platform, because both ride the same ordered channel.
+  ClearBuffers();
+  m_first_pad_status_received.fill(false);
+  m_first_pop_logged.fill(false);
+  m_input_reset_for_game.store(true, std::memory_order_release);
+
   m_dialog->OnMsgStartGame();
 }
 
@@ -2022,9 +2038,16 @@ bool NetPlayClient::StartGame(const std::string& path)
   m_is_running.Set();
   NetPlay_Enable(this);
 
-  ClearBuffers();
-
-  m_first_pad_status_received.fill(false);
+  // Normally already done by OnStartGame on the netplay thread, which is the only ordering that
+  // cannot discard input that has already arrived. This is the fallback for a path that reaches
+  // here without that message.
+  if (!m_input_reset_for_game.load(std::memory_order_acquire))
+  {
+    ClearBuffers();
+    m_first_pad_status_received.fill(false);
+    m_first_pop_logged.fill(false);
+  }
+  m_input_reset_for_game.store(false, std::memory_order_relaxed);
 
   if (m_dialog->IsRecording())
   {
@@ -2676,6 +2699,24 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
         bkt = 0;
     }
   }
+
+#ifdef HAS_LIBMGBA
+  // One line per pad per game: how many entries this pad's queue holds at its first pop. Both an
+  // owned pad (PollLocalPad has just topped it up) and a pad whose owner's opening fill arrived
+  // intact read buffer size + 1. A small depth on a pad this machine does not own means that fill
+  // was lost and this machine will run a whole fill ahead of the owner, the fault behind the
+  // 2026-09-22 desync.
+  if (pad_nb >= 0 && static_cast<size_t>(pad_nb) < m_first_pop_logged.size() &&
+      !m_first_pop_logged[pad_nb])
+  {
+    m_first_pop_logged[pad_nb] = true;
+    const PadDetails details = GetPadDetails(pad_nb);
+    GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "padpop",
+                           fmt::format("pad={} depth={} target={} local={}", pad_nb,
+                                       m_pad_buffer[pad_nb].Size(), m_target_buffer_size,
+                                       details.is_local ? 1 : 0));
+  }
+#endif
 
   m_pad_buffer[pad_nb].Pop(*pad_status);
 
