@@ -189,6 +189,7 @@ void ApplyStartForcing(NetPlay::NetPlayServer* server)
   // snapshots MAIN_ENABLE_CHEATS (SetupNetSettings) and re-reads the local
   // GXXE01.ini off disk (SyncCodes).
   BattleCustomizer::PrepareForStart();
+  BattleCustomizer::BeginLiveStyleForStart();
 
   // SetGBAConfig(update_rom=true) reads MAIN_GBA_ROM_PATHS[1]/[2] to fill each
   // enabled slot's hash/title, which the guest hash-matches against its local
