@@ -218,6 +218,7 @@ enum class MessageID : u8
   ClientCapabilities = 0xA5,
   HostInputAuthority = 0xA6,
   PowerButton = 0xA7,
+  LiveStyle = 0xA8,  // XD Netplay: host changes the running game's battle style
 
   TimeBase = 0xB0,
   DesyncDetected = 0xB1,

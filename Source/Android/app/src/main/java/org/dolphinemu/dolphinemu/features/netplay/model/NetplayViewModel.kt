@@ -398,16 +398,9 @@ class NetplayViewModel(
             if (netplaySession.isClosed) {
                 return@launch
             }
-            val refused = netplaySession.setMusicAndLocation(musicId, venueId)
+            val result = netplaySession.setMusicAndLocation(musicId, venueId)
             withContext(Dispatchers.Main) {
-                if (refused == null) {
-                    postHostActionResult(
-                        true,
-                        "Music and location set. They apply at the next Start."
-                    )
-                } else {
-                    postHostActionResult(false, refused)
-                }
+                postHostActionResult(result.ok, result.status)
             }
         }
     }
