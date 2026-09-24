@@ -102,6 +102,11 @@
                 android:text="@string/emulation_gba_packs" />
 
             <Button
+                android:id="@+id/menu_xd_music_location"
+                style="@style/InGameMenuOption"
+                android:text="@string/xd_room_music_location" />
+
+            <Button
                 android:id="@+id/menu_refresh_wiimotes"
                 android:text="@string/emulation_refresh_wiimotes"
                 style="@style/InGameMenuOption" />

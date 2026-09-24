@@ -184,8 +184,9 @@ fun NetplayScreen(
     /** HOST only: tables and stored picks for the Music & Location dialog. */
     musicOptions: List<BattleStyleBridge.StyleOption> = emptyList(),
     venueOptions: List<BattleStyleBridge.StyleOption> = emptyList(),
-    initialMusicId: Int = 0,
-    initialVenueId: Int = 0,
+    /** Reads the stored music and location picks; called each time the dialog opens, because the
+     *  in-game menu can change them while this screen is in the background. */
+    readMusicLocation: () -> Pair<Int, Int> = { 0 to 0 },
     onSetMusicAndLocation: (Int, Int) -> Unit = { _, _ -> },
     /**
      * True while a netplay game is running (NetplayViewModel.gameRunning). The
@@ -413,10 +414,8 @@ fun NetplayScreen(
     // the room. The drafts are re-seeded from the applied picks every time the
     // dialog opens, so Cancel really does discard.
     var showMusicLocation by rememberSaveable { mutableStateOf(false) }
-    var appliedMusic by rememberSaveable { mutableIntStateOf(initialMusicId) }
-    var appliedVenue by rememberSaveable { mutableIntStateOf(initialVenueId) }
-    var musicDraft by rememberSaveable { mutableIntStateOf(initialMusicId) }
-    var venueDraft by rememberSaveable { mutableIntStateOf(initialVenueId) }
+    var musicDraft by rememberSaveable { mutableIntStateOf(0) }
+    var venueDraft by rememberSaveable { mutableIntStateOf(0) }
     if (showMusicLocation) {
         AlertDialog(
             title = { Text(stringResource(R.string.xd_room_music_location)) },
@@ -451,11 +450,10 @@ fun NetplayScreen(
                 TextButton(
                     onClick = {
                         onSetMusicAndLocation(musicDraft, venueDraft)
-                        appliedMusic = musicDraft
-                        appliedVenue = venueDraft
                         showMusicLocation = false
                     },
-                    enabled = !gameRunning
+                    // Also while a game runs: it applies live then (native decides).
+                    enabled = true
                 ) {
                     Text(stringResource(R.string.xd_room_apply))
                 }
@@ -469,8 +467,11 @@ fun NetplayScreen(
         )
     }
     val onShowMusicLocation = {
-        musicDraft = appliedMusic
-        venueDraft = appliedVenue
+        // From the stored picks every time: they only change once native has accepted a change,
+        // and the in-game menu can change them too.
+        val (music, venue) = readMusicLocation()
+        musicDraft = music
+        venueDraft = venue
         showMusicLocation = true
     }
 
@@ -963,7 +964,7 @@ private fun HostBattleSetupSection(
                     HostSetupButton(
                         text = stringResource(R.string.xd_room_music_location),
                         onClick = onShowMusicLocation,
-                        enabled = !gameRunning,
+                        enabled = true,
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -978,7 +979,7 @@ private fun HostBattleSetupSection(
                     HostSetupButton(
                         text = stringResource(R.string.xd_room_music_location),
                         onClick = onShowMusicLocation,
-                        enabled = !gameRunning,
+                        enabled = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -1969,8 +1970,6 @@ private fun PreviewNetplayScreen() {
         initialHostModelId = 0,
         musicOptions = emptyList(),
         venueOptions = emptyList(),
-        initialMusicId = 0,
-        initialVenueId = 0,
         onSetMusicAndLocation = { _, _ -> },
         gameRunning = false,
         hostResultText = "team written to GBA port 2",

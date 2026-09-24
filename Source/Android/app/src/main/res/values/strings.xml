@@ -1175,7 +1175,8 @@ It can efficiently compress both junk data and encrypted Wii data.
          music and location picker. Result lines come from the shared core. -->
     <string name="xd_room_submit_team">Submit Team</string>
     <string name="xd_room_music_location">Music &amp; Location</string>
-    <string name="xd_room_music_location_hint">Applies at the next Start.</string>
+    <string name="xd_room_music_location_hint">Applies from the next battle, for both players. Works while XD is running too.</string>
+    <string name="xd_live_style_no_room">Only the host of an open room can change this.</string>
     <string name="xd_room_apply">Apply</string>
     <string name="xd_host_submit_intro">Paste a Showdown team export or a pokepast.es link. It replaces the team in your GBA port 2 save. With an imported save, the change lasts for this room only. Leave it empty to change only your name or model.</string>
     <string name="xd_host_submit_model_hint">How you appear in battle.</string>

@@ -229,15 +229,19 @@ class NetplaySession(
     }
 
     /**
-     * Host only: store the battle music and location picks (0 = game default)
-     * and rebuild the Battle Style block, so a change made in the room is in
-     * what the room syncs at the next Start. Native refuses while a battle is
-     * starting or running and once the room is gone. Returns null on success,
-     * or the one-line reason nothing changed. Writes a small INI file, so call
-     * off the main thread.
+     * Host only: change the battle music and location (0 = game default). Between games the picks
+     * are stored and the Battle Style block rebuilt for the next Start; while a game runs they are
+     * applied live, on both machines at the same moment, from the next battle. Native refuses
+     * while a battle is starting and once the room is gone. Writes config (and between games a
+     * small INI file), so call off the main thread.
      */
-    fun setMusicAndLocation(musicId: Int, venueId: Int): String? =
-        nativeSetMusicAndLocation(musicId, venueId).ifEmpty { null }
+    fun setMusicAndLocation(musicId: Int, venueId: Int): HostSubmitResult {
+        val result = nativeSetMusicAndLocation(musicId, venueId)
+        return HostSubmitResult(
+            ok = result.getOrNull(0) == "1",
+            status = result.getOrNull(1).orEmpty()
+        )
+    }
 
     /**
      * "Use my save": submit the party from this player's OWN local save (their
@@ -376,8 +380,8 @@ class NetplaySession(
         raiseToLevel100: Boolean
     ): Array<String>
 
-    /** Returns "" on success, else why nothing changed. */
-    private external fun nativeSetMusicAndLocation(musicId: Int, venueId: Int): String
+    /** Returns ["1" or "0", the one-line result]; see [setMusicAndLocation]. */
+    private external fun nativeSetMusicAndLocation(musicId: Int, venueId: Int): Array<String>
 
     private external fun nativeSetHostInputAuthority(enable: Boolean)
 

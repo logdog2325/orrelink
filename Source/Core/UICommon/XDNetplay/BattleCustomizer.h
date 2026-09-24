@@ -6,6 +6,10 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
+#include <vector>
+
+#include "Common/CommonTypes.h"
 
 namespace XDNetplay::BattleCustomizer
 {
@@ -237,6 +241,31 @@ bool RegenerateFromConfig(std::string* status);
 // A submission that arrives after this point is rejected by the server while
 // the battle runs, so the synced set can never diverge mid-session.
 void PrepareForStart();
+
+// A music and location change for a game that is already running (the room's Music & Location
+// while XD is open). The netplay client installs these lines at the same emulated moment on
+// every machine and runs them after the Start block every frame, so they win on any address
+// both write. Each call returns the complete live set and replaces the previous one.
+struct LiveStyle
+{
+  std::vector<std::pair<u32, u32>> ops;  // Action Replay write lines: (address word, value)
+  // True when the pick was "Game default" for the location but a location is pinned for the
+  // rest of this session (the Start block pinned one, and it keeps writing it every frame), so
+  // the current location stays and the default applies at the next Start.
+  bool location_waits_for_next_start = false;
+  // The location the live set pins once installed (-1 = none). Recorded by CommitLiveStyle.
+  int next_live_venue = -1;
+};
+// music and venue as in Selection: 0 = game default, otherwise a table id. An id that is not in
+// its table is treated as game default. Changes nothing: call CommitLiveStyle once the netplay
+// client has accepted the set. Host only; call both from one thread at a time.
+LiveStyle MakeLiveStyle(int music, int venue);
+void CommitLiveStyle(const LiveStyle& live);
+// The netplay host's Start paths only (desktop ApplyStartForcing, Android nativeStartGame), right
+// after PrepareForStart: records what the new Start block pins and forgets the previous game's
+// live set. Not in PrepareForStart itself, which solo boots call too, and not gated on the core
+// state: an Android host can press Start while its previous game is still closing.
+void BeginLiveStyleForStart();
 
 // End-of-session cleanup, next to RestoreHostTeam in the OnRoomClosed hooks:
 // clears the guest stash, removes the block/enabled/disabled lines (pure

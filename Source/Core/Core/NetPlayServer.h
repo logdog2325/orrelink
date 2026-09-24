@@ -90,6 +90,11 @@ public:
   // StartGame() raises m_is_running before it clears m_start_pending, so there
   // is no instant where a start is in flight and both read false.
   bool IsStartingOrRunning() const { return m_start_pending.load() || m_is_running.load(); }
+  // Separately, for the room's live battle style: a start in flight still refuses (the saves and
+  // codes are being sent), a running game takes the change live. StartGame raises running before
+  // it clears pending, so a caller testing pending first never sees neither during the switch.
+  bool IsStartPending() const { return m_start_pending.load(); }
+  bool IsGameRunning() const { return m_is_running.load(); }
 
   void SetHostInputAuthority(bool enable);
 

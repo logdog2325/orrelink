@@ -25,6 +25,7 @@
 #include <bit>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -85,6 +86,8 @@ enum
 // General lock. Protects codes list and internal log.
 static std::mutex s_lock;
 static std::vector<ARCode> s_active_codes;
+// See SetLiveCode. Guarded by s_lock.
+static std::optional<ARCode> s_live_code;
 static std::vector<ARCode> s_synced_codes;
 static std::vector<std::string> s_internal_log;
 static std::atomic<bool> s_use_internal_log{false};
@@ -1011,19 +1014,49 @@ static bool RunCodeLocked(const Core::CPUThreadGuard& guard, const ARCode& arcod
 
 void RunAllActive(const Core::CPUThreadGuard& cpu_guard)
 {
-  if (!Config::AreCheatsEnabled())
-    return;
+  const bool cheats = Config::AreCheatsEnabled();
 
   // If the mutex is idle then acquiring it should be cheap, fast mutexes
   // are only atomic ops unless contested. It should be rare for this to
   // be contested.
   std::lock_guard guard(s_lock);
-  std::erase_if(s_active_codes, [&cpu_guard](const ARCode& code) {
-    const bool success = RunCodeLocked(cpu_guard, code);
-    LogInfo("\n");
-    return !success;
-  });
+  if (!cheats && !s_live_code)
+    return;
+
+  if (cheats)
+  {
+    std::erase_if(s_active_codes, [&cpu_guard](const ARCode& code) {
+      const bool success = RunCodeLocked(cpu_guard, code);
+      LogInfo("\n");
+      return !success;
+    });
+  }
+
+  // After the active codes, so it wins on any address both write. A code that fails to run is
+  // dropped, the same rule as the active codes; both machines run identical ops on identical
+  // memory, so they drop it together. No per-machine check belongs here: whether a live change
+  // may exist at all is decided once, by the host, from synced settings (hardcore mode among
+  // them, NetPlayClient::RequestLiveStyle), and anything local, such as this machine's
+  // RetroAchievements login, could let one machine run it and the other not.
+  if (s_live_code && !RunCodeLocked(cpu_guard, *s_live_code))
+    s_live_code.reset();
   s_disable_logging = true;
+}
+
+void SetLiveCode(std::vector<AREntry> ops)
+{
+  ARCode code;
+  code.name = "OrreLink live battle style";
+  code.ops = std::move(ops);
+  code.enabled = true;
+  std::lock_guard guard(s_lock);
+  s_live_code = std::move(code);
+}
+
+void ClearLiveCode()
+{
+  std::lock_guard guard(s_lock);
+  s_live_code.reset();
 }
 
 }  // namespace ActionReplay
