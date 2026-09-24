@@ -223,6 +223,13 @@ bool WantsDeterminism()
   return s_wants_determinism;
 }
 
+static std::atomic<u64> s_boot_sequence{0};
+
+u64 GetBootSequence()
+{
+  return s_boot_sequence.load(std::memory_order_acquire);
+}
+
 // This is called from the GUI thread. See the booting call schedule in
 // BootManager.cpp
 bool Init(Core::System& system, std::unique_ptr<BootParameters> boot, const WindowSystemInfo& wsi)
@@ -254,7 +261,9 @@ bool Init(Core::System& system, std::unique_ptr<BootParameters> boot, const Wind
   WindowSystemInfo prepared_wsi(wsi);
   g_video_backend->PrepareWindow(prepared_wsi);
 
-  // Start the emu thread
+  // Start the emu thread. The boot sequence moves first, so everything the new core's threads
+  // do sees the new number (std::thread construction happens-before the thread function).
+  s_boot_sequence.fetch_add(1, std::memory_order_acq_rel);
   s_state.store(State::Starting);
   s_emu_thread = std::thread(EmuThread, std::ref(system), std::move(boot), prepared_wsi);
   return true;

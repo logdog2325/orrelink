@@ -189,6 +189,8 @@ private:
   bool m_use_traversal = false;
   bool m_is_copy_button_retry = false;
   bool m_got_stop_request = true;
+  // Set once this game's core has reported a running state (see the EmulationStateChanged hook).
+  bool m_game_core_seen = false;
   int m_buffer_size = 0;
   int m_player_count = 0;
   int m_old_player_count = 0;

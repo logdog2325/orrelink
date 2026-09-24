@@ -73,8 +73,15 @@ NetPlayUICallbacks::NetPlayUICallbacks(jobject netplay_session,
       m_games(std::move(games))
 {
   m_state_changed_hook = Core::AddOnStateChangedCallback([this](Core::State state) {
+    // Runs on the core's own emu thread. A core announces Starting first and Uninitialized last,
+    // even when its boot fails, and the next core cannot start until this one has finished
+    // announcing (Core::Init joins its thread). So a Stopping or Uninitialized before this game's
+    // Starting belongs to the previous game's core, still closing after Start was pressed;
+    // stopping on it would end the new game for every player.
+    if (state != Core::State::Uninitialized && state != Core::State::Stopping)
+      m_game_core_seen.store(true);
     if ((state == Core::State::Uninitialized || state == Core::State::Stopping) &&
-        !m_got_stop_request)
+        !m_got_stop_request && m_game_core_seen.load())
     {
       WithSession([](JNIEnv* env, jobject session) {
         auto* client = reinterpret_cast<NetPlay::NetPlayClient*>(
@@ -101,6 +108,7 @@ void NetPlayUICallbacks::BootGame(const std::string& filename,
                                   std::unique_ptr<BootSessionData> boot_session_data)
 {
   m_got_stop_request = false;
+  m_game_core_seen.store(false);
 
   WithSession([&](JNIEnv* env, jobject session) {
     env->CallVoidMethod(session, IDCache::GetNetplayOnBootGame(), ToJString(env, filename),
