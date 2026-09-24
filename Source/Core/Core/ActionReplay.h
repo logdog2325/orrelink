@@ -45,6 +45,16 @@ struct ARCode
 
 void RunAllActive(const Core::CPUThreadGuard& cpu_guard);
 
+// XD Netplay live battle style: one extra code that netplay installs at the same emulated moment
+// on every machine (NetPlayClient applies it at a numbered pad pop). RunAllActive runs it after the
+// active codes every frame, so for an address both touch it has the last word, and it runs whether
+// or not cheats are enabled, because it only ever comes from netplay and the room decides it. It is
+// held apart from the active codes so nothing that rebuilds those (the cheat manager, a code sync)
+// can drop it. The host refuses live changes in hardcore mode (a synced setting), so nothing
+// here consults this machine's own achievements state. Cleared by PatchEngine::Shutdown.
+void SetLiveCode(std::vector<AREntry> ops);
+void ClearLiveCode();
+
 void ApplyCodes(std::span<const ARCode> codes, const std::string& game_id, u16 revision);
 void SetSyncedCodesAsActive();
 void UpdateSyncedCodes(std::span<const ARCode> codes);

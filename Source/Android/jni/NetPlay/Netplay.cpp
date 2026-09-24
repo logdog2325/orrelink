@@ -239,29 +239,63 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitHostT
   return reply(ok, status);
 }
 
-JNIEXPORT jstring JNICALL
+JNIEXPORT jobjectArray JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetMusicAndLocation(
     JNIEnv* env, jobject obj, jint jmusic, jint jvenue)
 {
-  // XD Netplay, host side: the room's "Music & Location" dialog. Both picks
-  // are ordinary MAIN_XD_STYLE_* keys (0 = game default), the same ones the
-  // launcher's dropdowns write. The Battle Style block is rebuilt right away so
-  // what the room syncs at Start matches what the host sees selected. An id
-  // that is not in its table is stored as 0, never clamped.
+  // XD Netplay, host side: the room's "Music & Location" dialog and the in-game menu's entry of
+  // the same name. Both picks are ordinary MAIN_XD_STYLE_* keys (0 = game default), the same ones
+  // the launcher's dropdowns write. An id that is not in its table is stored as 0, never clamped.
   //
-  // Returns an empty string on success, or the one-line reason nothing changed.
+  // Between games the Battle Style block is rebuilt right away, so what the room syncs at Start
+  // matches what the host sees. While a game runs the change goes live instead (NetPlayClient::
+  // RequestLiveStyle): both machines install it at the same emulated moment, and the INI is left
+  // alone, because nothing may change what this machine would boot while a game started from it
+  // is still running. The saved keys carry the picks into the next Start.
+  //
+  // Returns two strings: "1" or "0", then the one-line result.
+  const auto reply = [env](bool ok, const std::string& line) {
+    const std::array<std::string, 2> result{ok ? "1" : "0", line};
+    return SpanToJStringArray(env, std::span<const std::string>(result));
+  };
+
   std::lock_guard lk(s_host_write_mutex);
 
-  if (const char* refusal = HostWriteRefusal(env, obj))
-    return ToJString(env, refusal);
+  auto* server = GetServerPointer(env, obj);
+  auto* client = GetClientPointer(env, obj);
+  if (!server || !client)
+    return reply(false, HOST_WRITE_NO_ROOM);
+  // Pending first: StartGame raises running before it clears pending.
+  if (server->IsStartPending())
+    return reply(false, "A battle is starting. Try again after it has loaded.");
 
   const int music = XDNetplay::BattleCustomizer::IsValidMusicId(jmusic) ? jmusic : 0;
   const int venue = XDNetplay::BattleCustomizer::IsValidVenueId(jvenue) ? jvenue : 0;
+
+  if (server->IsGameRunning())
+  {
+    XDNetplay::BattleCustomizer::LiveStyle live =
+        XDNetplay::BattleCustomizer::MakeLiveStyle(music, venue);
+    std::string reason;
+    if (!client->RequestLiveStyle(std::move(live.ops), &reason))
+      return reply(false, "Music and location not changed: " + reason);
+    // Only now: a refused set must not become what the next one builds on.
+    XDNetplay::BattleCustomizer::CommitLiveStyle(live);
+    Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_MUSIC, music);
+    Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_VENUE, venue);
+    Config::Save();
+    return reply(true, live.location_waits_for_next_start ?
+                           "Music changed. Applies from the next battle. Game default location "
+                           "applies from the next Start." :
+                           "Music and location changed. They apply from the next battle, for "
+                           "both players.");
+  }
+
   Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_MUSIC, music);
   Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_VENUE, venue);
   Config::Save();
   XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
-  return ToJString(env, std::string());
+  return reply(true, "Music and location set. They apply at the next Start.");
 }
 
 JNIEXPORT jstring JNICALL
@@ -593,6 +627,7 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
   // RequestStartGame: that is what snapshots MAIN_ENABLE_CHEATS
   // (SetupNetSettings) and re-reads the local GXXE01.ini off disk (SyncCodes).
   XDNetplay::BattleCustomizer::PrepareForStart();
+  XDNetplay::BattleCustomizer::BeginLiveStyleForStart();
 
   server->RequestStartGame();
 }
