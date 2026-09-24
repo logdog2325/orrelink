@@ -392,6 +392,9 @@ bool ApplyFramePatches(Core::System& system)
 void Shutdown()
 {
   s_on_frame.clear();
+  // Unconditional: ApplyCodes below returns early when cheats are off, and the live battle style
+  // code runs whether or not they are on.
+  ActionReplay::ClearLiveCode();
   ActionReplay::ApplyCodes({}, "", 0);
   Gecko::Shutdown();
 }

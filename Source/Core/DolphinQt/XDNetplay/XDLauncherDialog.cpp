@@ -49,6 +49,8 @@
 #include "Common/Version.h"
 
 #include "Core/Config/MainSettings.h"
+#include "Core/Core.h"
+#include "Core/System.h"
 #include "Core/Config/NetplaySettings.h"
 #include "Core/HW/GBACore.h"
 
@@ -1193,6 +1195,16 @@ void XDLauncherDialog::OnTeamEditor()
 
 void XDLauncherDialog::OnBootSolo()
 {
+  // The launcher stays open beside a room it hosted, so this can be pressed during a netplay game.
+  // PrepareForStart below would rewrite GXXE01.ini and could set the cheats flag on this machine
+  // alone mid-game, so refuse while any game runs.
+  if (!Core::IsUninitialized(Core::System::GetInstance()))
+  {
+    ModalMessageBox::information(this, tr("OrreLink"),
+                                 tr("A game is running. Boot solo after it ends."));
+    return;
+  }
+
   const auto game = FindXdGame();
   if (!game)
   {

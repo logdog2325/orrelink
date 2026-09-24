@@ -1225,8 +1225,104 @@ bool RegenerateFromConfig(std::string* status)
   return RegenerateIni(ConfigSelection(), ou_enabled, status);
 }
 
+// ---------------------------------------------------------------------------
+// Live battle style (MakeLiveStyle). Host only.
+// ---------------------------------------------------------------------------
+
+// The random-stage sprite's five W/H words that the location lines blank, and their value in a
+// clean GXXE01 main.dol (data section at 0x802FBF00; all five read 0x011600A7). Written back when
+// a location pinned only by a live change is released, so the row shows its sprite again.
+constexpr u32 STAGE_ROW_SPRITE_LINES[] = {0x0430CE2C, 0x0430CE38, 0x0430CE44, 0x0430CE50,
+                                          0x0430CE5C};
+constexpr u32 STAGE_ROW_SPRITE_VANILLA = 0x011600A7;
+// staBGM_tunaide's value in a clean main.dol (see MUSIC_LINES): "Game default" music written back.
+constexpr u32 MUSIC_VANILLA = 0x000004F3;
+// The four link-battle records' own BGM field (+0x10, u32; records as in VENUE_LINES). Battle
+// setup (0x8004D45C) copies staBGM_tunaide there, and the battle reads the record once, at its
+// start (GetBattleBGM 0x801F11D0). A rematch re-runs setup only when XD's stage row is on
+// Random, so a live music change is written here too or a rematch on a fixed stage would keep
+// the old music. For "Game default", 0x4F3 is exactly what setup would have copied.
+constexpr u32 MUSIC_RECORD_LINES[] = {0x04B1CF1C, 0x04B1CF58, 0x04B1CF94, 0x04B1CFD0};
+
+// What the running game's Start block pinned (PrepareForStart), and what the live set currently
+// pins on top of it. 0 / -1 = nothing.
+static int s_start_venue = 0;
+static int s_live_venue = -1;
+
+LiveStyle MakeLiveStyle(int music, int venue)
+{
+  LiveStyle result;
+  const auto add = [&result](u32 addr_word, u32 value) {
+    result.ops.emplace_back(addr_word, value);
+  };
+
+  // Music: always part of the set, so a change back to "Game default" overrides a Start pin with
+  // the vanilla table value rather than leaving it.
+  const u32 music_value = !IsValidMusicId(music) ? MUSIC_VANILLA :
+                          music == MUSIC_SILENT_ID ? 0u :
+                                                     (static_cast<u32>(music) & 0xFFFF);
+  for (const u32 addr : MUSIC_LINES)
+    add(addr, music_value);
+  for (const u32 addr : MUSIC_RECORD_LINES)
+    add(addr, music_value);
+
+  const auto add_location = [&add](int id) {
+    // Exactly the Start block's location lines (GenerateCodeBlock): the four link-battle
+    // records, the stage row pinned to "random", and the row's sprite blanked.
+    for (const u32 addr : VENUE_LINES)
+      add(addr, static_cast<u32>(id) & 0xFFFF);
+    constexpr u32 STAGE_ROW_RANDOM = 6;
+    add(0x044349F4, STAGE_ROW_RANDOM);
+    add(0x044349F8, STAGE_ROW_RANDOM);
+    add(0x04434A74, STAGE_ROW_RANDOM);
+    for (const u32 addr : STAGE_ROW_SPRITE_LINES)
+      add(addr, 0);
+  };
+
+  result.next_live_venue = s_live_venue;
+  if (IsValidVenueId(venue))
+  {
+    add_location(venue);
+    result.next_live_venue = venue;
+  }
+  else if (s_start_venue > 0)
+  {
+    // The Start block pins its location every frame for the rest of the session and a live
+    // line can only override it, not lift it. Keep whatever is showing now.
+    if (s_live_venue > 0)
+      add_location(s_live_venue);
+    result.location_waits_for_next_start = true;
+  }
+  else
+  {
+    // Nothing pinned at Start, so none pinned live either once this set is in: the game writes
+    // the record's battlefield itself at every battle start from its own stage row, and the next
+    // battle is the game's choice again. The row's sprite is put back every time, not only on
+    // the set that lifts a pin: a set can be replaced by a newer one before it is sent, and
+    // writing the vanilla value again is harmless. The row stays on "random" until someone
+    // moves it in XD.
+    for (const u32 addr : STAGE_ROW_SPRITE_LINES)
+      add(addr, STAGE_ROW_SPRITE_VANILLA);
+    result.next_live_venue = -1;
+  }
+  return result;
+}
+
+void CommitLiveStyle(const LiveStyle& live)
+{
+  s_live_venue = live.next_live_venue;
+}
+
+void BeginLiveStyleForStart()
+{
+  const Selection start = ConfigSelection();
+  s_start_venue = IsValidVenueId(start.venue) ? start.venue : 0;
+  s_live_venue = -1;
+}
+
 void PrepareForStart()
 {
+
   // Solo boots have no room-closed event, so their cleanup rides the emulation
   // state instead: when the core reaches Uninitialized outside a netplay
   // session, the session is over by definition. Registered once, stands down
