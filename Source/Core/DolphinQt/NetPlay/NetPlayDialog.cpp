@@ -499,8 +499,14 @@ void NetPlayDialog::ConnectWidgets()
     if (isVisible())
     {
       GameStatusChanged(state != Core::State::Uninitialized);
+      // A core announces Starting first and Uninitialized last, even when its boot fails, and
+      // events arrive here in the order they were posted. So a Stopping or Uninitialized seen
+      // before this game's Starting belongs to the previous game's core, still closing after
+      // Start was pressed; stopping on it would end the new game for every player.
+      if (state != Core::State::Uninitialized && state != Core::State::Stopping)
+        m_game_core_seen = true;
       if ((state == Core::State::Uninitialized || state == Core::State::Stopping) &&
-          !m_got_stop_request)
+          !m_got_stop_request && m_game_core_seen)
       {
         Settings::Instance().GetNetPlayClient()->RequestStopGame();
       }
@@ -901,6 +907,7 @@ void NetPlayDialog::BootGame(const std::string& filename,
                              std::unique_ptr<BootSessionData> boot_session_data)
 {
   m_got_stop_request = false;
+  m_game_core_seen = false;
   m_start_game_callback(filename, std::move(boot_session_data));
 }
 

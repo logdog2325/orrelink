@@ -1231,6 +1231,18 @@ void MainWindow::StartGame(std::unique_ptr<BootParameters>&& parameters)
   // If we're running, only start a new game once we've stopped the last.
   if (!Core::IsUninitialized(m_system))
   {
+    // XD Netplay: the host pressed Start while this machine's previous game is still closing.
+    // Asking "stop the current emulation?" about a game that is already stopping would only
+    // strand this boot: if the old core finished while the question was open, OnStopComplete
+    // would run before m_pending_boot was set. Park the boot instead; the Uninitialized that ends
+    // the old game reaches OnStopComplete (InitCoreCallbacks), which starts it.
+    if (Settings::Instance().GetNetPlayClient() &&
+        (m_stop_requested || Core::GetState(m_system) == Core::State::Stopping))
+    {
+      m_pending_boot = std::move(parameters);
+      return;
+    }
+
     if (!RequestStop())
       return;
 

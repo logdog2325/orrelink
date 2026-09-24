@@ -587,8 +587,11 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
             diag->reset_count.fetch_add(1, std::memory_order_relaxed);
         }
         else if (const NetPlay::PadDetails details = NetPlay::GetPadDetails(m_device_number);
-                 details.is_local && details.local_pad < 4)
+                 details.is_local && details.local_pad < 4 &&
+                 NetPlay::IsCurrentGameCore())
         {
+          // (IsCurrentGameCore: a previous game's core that is still closing must not queue a
+          // reset on the shared GBA pad, where the next game's opening fill would pick it up.)
           // Netplay: resetting only the local mirror of this core would desync
           // the other players' copies of it. Ride the input stream instead --
           // the pad's owner injects the X-button reset signal (the same path
@@ -636,7 +639,8 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
           diag->reset_count.fetch_add(1, std::memory_order_relaxed);
       }
       else if (const NetPlay::PadDetails details = NetPlay::GetPadDetails(m_device_number);
-               details.is_local && details.local_pad < 4)
+               details.is_local && details.local_pad < 4 &&
+                 NetPlay::IsCurrentGameCore())
       {
         Pad::SetGBAReset(details.local_pad, true);
         if (GBALinkDiag* diag = DiagSlot(m_device_number))
