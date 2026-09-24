@@ -17,6 +17,10 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup.MarginLayoutParams
 import android.view.WindowManager
+import android.widget.ArrayAdapter
+import android.widget.LinearLayout
+import android.widget.Spinner
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -46,6 +50,7 @@ import org.dolphinemu.dolphinemu.features.infinitybase.ui.FigureSlot
 import org.dolphinemu.dolphinemu.features.infinitybase.ui.FigureSlotAdapter
 import org.dolphinemu.dolphinemu.features.input.model.ControllerInterface
 import org.dolphinemu.dolphinemu.features.input.model.DolphinSensorEventListener
+import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
 import org.dolphinemu.dolphinemu.features.settings.model.BooleanSetting
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
 import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
@@ -57,6 +62,7 @@ import org.dolphinemu.dolphinemu.features.skylanders.SkylanderConfig
 import org.dolphinemu.dolphinemu.features.skylanders.model.Skylander
 import org.dolphinemu.dolphinemu.features.skylanders.ui.SkylanderSlot
 import org.dolphinemu.dolphinemu.features.skylanders.ui.SkylanderSlotAdapter
+import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
 import org.dolphinemu.dolphinemu.fragments.EmulationFragment
 import org.dolphinemu.dolphinemu.fragments.GbaPacksFragment
 import org.dolphinemu.dolphinemu.fragments.MenuFragment
@@ -347,6 +353,78 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
 
     fun shouldShowGbaPacksMenu(): Boolean = isGameCubeWithEmulatedGbaPort()
 
+    /**
+     * OrreLink: the room's Music & Location, reachable during a netplay game. Host only. Leaving
+     * this screen for the room would pause the core and freeze the other player, so the host gets
+     * the same picks here, over the running game.
+     */
+    fun shouldShowXdMusicLocationMenu(): Boolean =
+        isGameCubeWithEmulatedGbaPort() &&
+            // Throws if the core finishes shutting down between these checks.
+            runCatching { NativeLibrary.GetCurrentGameID() }.getOrNull() == "GXXE01" &&
+            NetplayManager.activeSession?.let { it.isHosting && !it.isClosed } == true
+
+    private fun showXdMusicLocationDialog() {
+        val session = NetplayManager.activeSession
+        if (session == null || !session.isHosting || session.isClosed) {
+            Toast.makeText(this, R.string.xd_live_style_no_room, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val defaultLabel = getString(R.string.xd_style_game_default)
+        val musicOptions = listOf(0 to defaultLabel) +
+            BattleStyleBridge.musicTable().map { it.id to it.name }
+        val venueOptions = listOf(0 to defaultLabel) +
+            BattleStyleBridge.venueTable().map { it.id to it.name }
+
+        val padding = (16 * resources.displayMetrics.density).toInt()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding * 3 / 2, padding / 2, padding * 3 / 2, 0)
+        }
+        fun addPicker(labelRes: Int, options: List<Pair<Int, String>>, current: Int): Spinner {
+            content.addView(TextView(this).apply { setText(labelRes) })
+            val spinner = Spinner(this).apply {
+                adapter = ArrayAdapter(
+                    this@EmulationActivity,
+                    android.R.layout.simple_spinner_dropdown_item,
+                    options.map { it.second }
+                )
+                setSelection(options.indexOfFirst { it.first == current }.coerceAtLeast(0))
+            }
+            content.addView(spinner)
+            return spinner
+        }
+        val musicSpinner = addPicker(
+            R.string.xd_style_music, musicOptions,
+            BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_MUSIC)
+        )
+        val venueSpinner = addPicker(
+            R.string.xd_style_venue, venueOptions,
+            BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_VENUE)
+        )
+        content.addView(TextView(this).apply {
+            setText(R.string.xd_room_music_location_hint)
+            setPadding(0, padding / 2, 0, 0)
+        })
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.xd_room_music_location)
+            .setView(content)
+            .setPositiveButton(R.string.xd_room_apply) { _, _ ->
+                val music = musicOptions[musicSpinner.selectedItemPosition].first
+                val venue = venueOptions[venueSpinner.selectedItemPosition].first
+                // Native writes config and talks to the netplay client: off the main thread.
+                Thread {
+                    val result = session.setMusicAndLocation(music, venue)
+                    runOnUiThread {
+                        Toast.makeText(this, result.status, Toast.LENGTH_LONG).show()
+                    }
+                }.start()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         if (hasFocus) {
             enableFullscreenImmersive()
@@ -582,6 +660,7 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
             MENU_ACTION_CHANGE_DISC -> requestChangeDisc.launch("*/*")
             MENU_ACTION_TOGGLE_GBA_SCREEN -> toggleInternalGbaScreen()
             MENU_ACTION_GBA_PACKS -> showGbaPacksSubMenu()
+            MENU_ACTION_XD_MUSIC_LOCATION -> showXdMusicLocationDialog()
 
             MENU_SET_IR_MODE -> setIRMode()
             MENU_ACTION_CHOOSE_DOUBLETAP -> chooseDoubleTapButton()
@@ -1199,6 +1278,7 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
         const val MENU_ACTION_LATCHING_CONTROLS = 38
         const val MENU_ACTION_TOGGLE_GBA_SCREEN = 39
         const val MENU_ACTION_GBA_PACKS = 40
+        const val MENU_ACTION_XD_MUSIC_LOCATION = 41
 
         init {
             buttonsActionsMap.apply {

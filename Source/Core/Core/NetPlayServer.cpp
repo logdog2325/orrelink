@@ -1404,6 +1404,34 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
   }
   break;
 
+  case MessageID::LiveStyle:
+  {
+    // XD Netplay live battle style, from the host's own client only, and only for the game that
+    // is running (the same gate as PadData). Relayed here, synchronously, like PadData, so it
+    // reaches every other player ahead of the host's pad entry that it names: both come from the
+    // same peer on the same ordered channel and leave in the order they arrived.
+    if (!player.IsHost() || !m_is_running || player.current_game != m_current_game)
+      break;
+
+    u32 apply_at = 0;
+    u32 count = 0;
+    packet >> apply_at >> count;
+    if (count > 64)
+      break;
+
+    sf::Packet spac;
+    spac << MessageID::LiveStyle << apply_at << count;
+    for (u32 i = 0; i < count; ++i)
+    {
+      u32 addr_word = 0;
+      u32 value = 0;
+      packet >> addr_word >> value;
+      spac << addr_word << value;
+    }
+    SendToClients(spac, player.pid);
+  }
+  break;
+
   case MessageID::TimeBase:
   {
     u64 timebase = Common::PacketReadU64(packet);

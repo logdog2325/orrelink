@@ -10,10 +10,12 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "Common/CommonTypes.h"
@@ -190,6 +192,15 @@ public:
   bool IsCurrentGameCore() const;
   // Called by the input hook each time it turns a previous game's core away.
   void CountStaleCorePoll() { m_stale_core_polls.fetch_add(1, std::memory_order_relaxed); }
+
+  // XD Netplay, host only: change the running game's battle style (music and location). ops are
+  // Action Replay write lines as (address word, value) pairs, the full live set; each request
+  // replaces the previous one. It is applied at the same emulated moment on every machine: the
+  // host's CPU thread numbers it with the index of the next entry it pushes for the first pad it
+  // owns, sends it ahead of that entry on the same ordered channel, and every machine installs it
+  // right before popping that entry. Returns false with a one-line reason when it cannot be
+  // scheduled. Safe from any thread; takes only m_live_mutex.
+  bool RequestLiveStyle(std::vector<std::pair<u32, u32>> ops, std::string* reason);
   bool IsLocalPlayer(PlayerId pid) const;
   const PlayerId& GetLocalPlayerId() const;
 
@@ -244,6 +255,22 @@ protected:
   std::atomic<u64> m_game_boot_sequence{0};
   // Polls turned away from a previous game's core in this game, reported on the padpop lines.
   std::atomic<u32> m_stale_core_polls{0};
+
+  // XD Netplay live battle style (RequestLiveStyle). m_live_mutex is a leaf lock: nothing is ever
+  // locked while holding it. The counters are CPU-thread only, reset with the pad queues in
+  // OnStartGame; because every machine pushes and pops each pad's entries in the same order, pop
+  // number K of a pad is the same emulated poll everywhere.
+  std::mutex m_live_mutex;
+  std::optional<std::vector<std::pair<u32, u32>>> m_live_request;          // host, not yet numbered
+  std::map<u32, std::vector<std::pair<u32, u32>>> m_live_pending;          // pop index -> ops
+  std::array<u32, 4> m_live_push_count{};
+  std::array<u32, 4> m_live_pop_count{};
+  // The marker pad's pop count, readable from the netplay thread for the LATE log line only.
+  std::atomic<u32> m_live_marker_pops{0};
+  // The first in-game pad the host owns, in a Pokemon XD room; the pad whose entries number live
+  // changes. -1 turns live changes off for the game. Fixed at OnStartGame, the same everywhere.
+  // Atomic: written on the netplay thread, read on the CPU thread and in RequestLiveStyle.
+  std::atomic<int> m_live_marker_pad{-1};
   // One "padpop" diagnostic line per pad per game: how deep that pad's queue was at its first pop.
   std::array<bool, 4> m_first_pop_logged{};
 
@@ -377,6 +404,7 @@ private:
   void OnStartGame(sf::Packet& packet);
   void OnStopGame(sf::Packet& packet);
   void OnPowerButton();
+  void OnLiveStyle(sf::Packet& packet);
   void OnPing(sf::Packet& packet);
   void OnPlayerPingData(sf::Packet& packet);
   void OnDesyncDetected(sf::Packet& packet);

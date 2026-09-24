@@ -53,10 +53,11 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
         val modelOptions = BattleStyleBridge.modelTable()
 
         // HOST only: the host's own Submit Team sheet opens on the stored
-        // "Your model" pick, and the room's Music & Location dialog needs its
-        // two tables and stored picks. Read once, like the launcher does; the
-        // screen tracks whatever the host applies after that. A joiner never
-        // sees any of it, so nothing is fetched for one.
+        // "Your model" pick, read once like the launcher does. The Music &
+        // Location dialog's tables are read once too, but its picks are read
+        // each time it opens (readMusicLocation below), because the in-game
+        // menu can change them while this screen is in the background. A
+        // joiner never sees any of it, so nothing is fetched for one.
         val isHosting = viewModel.isHosting
         val musicOptions =
             if (isHosting) BattleStyleBridge.musicTable() else emptyList()
@@ -65,10 +66,6 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
         val initialHostModelId =
             if (isHosting) BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_HOST_MODEL)
             else 0
-        val initialMusicId =
-            if (isHosting) BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_MUSIC) else 0
-        val initialVenueId =
-            if (isHosting) BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_VENUE) else 0
 
         // Last-submitted Submit Team sheet state (config-backed), so the sheet
         // opens pre-filled instead of empty. Read once: while this activity
@@ -108,8 +105,14 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
                     initialHostModelId = initialHostModelId,
                     musicOptions = musicOptions,
                     venueOptions = venueOptions,
-                    initialMusicId = initialMusicId,
-                    initialVenueId = initialVenueId,
+                    readMusicLocation = {
+                        if (isHosting) {
+                            BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_MUSIC) to
+                                BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_VENUE)
+                        } else {
+                            0 to 0
+                        }
+                    },
                     onSetMusicAndLocation = viewModel::setMusicAndLocation,
                     // Only the host has controls that grey out on it, so only a
                     // host subscribes (the flow polls while subscribed).
