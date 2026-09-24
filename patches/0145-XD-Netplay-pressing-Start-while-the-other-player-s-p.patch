@@ -1,0 +1,427 @@
+From b8cf4f62a87ab70fadbd78227f9a65a15e2dcb74 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 12:33:57 -0700
+Subject: [PATCH 145/146] XD Netplay: pressing Start while the other player's
+ previous battle is still closing no longer ends or desyncs the new one
+
+NetPlayClient::StartGame enables netplay input (NetPlay_Enable) and asks the UI
+to boot. On Qt, MainWindow::StartGame defers that boot while the previous
+game's core is still alive; on Android the old core can also still be closing.
+For that moment netplay is on and the only core running is the old one. Two
+things went wrong there.
+
+The old core's final state change ended the new game. Both platforms' state
+hooks (NetPlayDialog's EmulationStateChanged handler, NetPlayUICallbacks'
+state callback) call RequestStopGame on Stopping or Uninitialized unless a
+stop was already requested, and BootGame had just cleared that flag for the
+new game. So the old core's own Uninitialized asked the server to stop the
+new game for every player. A core announces Starting first and Uninitialized
+last, even when its boot fails, and the next core cannot start until the old
+one has finished announcing (Core::Init joins its thread; on Qt the events
+arrive in posting order). Both hooks now only stop on a Stopping or
+Uninitialized that follows this game's Starting (m_game_core_seen, cleared in
+BootGame), so a failed boot still ends the game as before.
+
+The old core could read the new game's input. Its CPU thread keeps polling
+SI while it closes, reaches NetPlay_GetInput and pops the next game's opening
+fill: the same loss of a whole fill that desynced the GBA cores on
+2026-09-22. Its frame hook also reached SendTimeBase, advancing the new game's
+frame count and sending time bases the server compares. Core now counts the
+cores it creates (Core::GetBootSequence, moved in Core::Init just before the
+emu thread starts, never while a core is alive). OnStartGame parks the game's
+number where no core can match it, and StartGame records the number the
+game's core will have, current + 1, before enabling netplay input; StartGame
+always runs before that core's Init on both platforms. NetPlay_GetInput,
+SendTimeBase and NetPlay_GetWiimoteData turn away any other core, which then
+sees a neutral pad while it finishes closing. The GBA auto-reset paths
+(SI_DeviceGBAEmu) likewise stop an old core from queueing a reset on the
+shared GBA pad through the new free function NetPlay::IsCurrentGameCore; it
+takes crit_netplay_client, so it is only for callers outside
+NetPlay_GetInput, which these are (they already call GetPadDetails there).
+
+On desktop the new game could also simply never start. MainWindow::StartGame
+defers a boot while a core is alive by calling RequestStop, which with the
+default Confirm on Stop asks "A shutdown is already in progress... Force
+stop?". If the old core finished while that question was open, OnStopComplete
+ran before m_pending_boot was set, and the boot was stranded whatever the
+answer. A netplay boot that arrives while a stop is already in progress is now
+parked in m_pending_boot without asking; the Uninitialized that ends the old
+game reaches OnStopComplete, which starts it. Solo play still asks as before.
+
+SendTimeBase also gains the null check it always needed: its caller tests
+IsNetPlayRunning() before taking crit_netplay_client.
+
+The padpop line reports stale=, the polls turned away from an old core in
+this game, so the field logs show whether the race was hit.
+---
+ .../jni/NetPlay/NetPlayUICallbacks.cpp        | 10 +++-
+ .../Android/jni/NetPlay/NetPlayUICallbacks.h  |  4 ++
+ Source/Core/Core/Core.cpp                     | 11 +++-
+ Source/Core/Core/Core.h                       |  5 ++
+ Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp    |  8 ++-
+ Source/Core/Core/NetPlayClient.cpp            | 58 ++++++++++++++++---
+ Source/Core/Core/NetPlayClient.h              | 12 ++++
+ Source/Core/Core/NetPlayProto.h               |  3 +
+ Source/Core/DolphinQt/MainWindow.cpp          | 12 ++++
+ .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  |  9 ++-
+ Source/Core/DolphinQt/NetPlay/NetPlayDialog.h |  2 +
+ 11 files changed, 122 insertions(+), 12 deletions(-)
+
+diff --git a/Source/Android/jni/NetPlay/NetPlayUICallbacks.cpp b/Source/Android/jni/NetPlay/NetPlayUICallbacks.cpp
+index 5505f75..f3d3383 100644
+--- a/Source/Android/jni/NetPlay/NetPlayUICallbacks.cpp
++++ b/Source/Android/jni/NetPlay/NetPlayUICallbacks.cpp
+@@ -73,8 +73,15 @@ NetPlayUICallbacks::NetPlayUICallbacks(jobject netplay_session,
+       m_games(std::move(games))
+ {
+   m_state_changed_hook = Core::AddOnStateChangedCallback([this](Core::State state) {
++    // Runs on the core's own emu thread. A core announces Starting first and Uninitialized last,
++    // even when its boot fails, and the next core cannot start until this one has finished
++    // announcing (Core::Init joins its thread). So a Stopping or Uninitialized before this game's
++    // Starting belongs to the previous game's core, still closing after Start was pressed;
++    // stopping on it would end the new game for every player.
++    if (state != Core::State::Uninitialized && state != Core::State::Stopping)
++      m_game_core_seen.store(true);
+     if ((state == Core::State::Uninitialized || state == Core::State::Stopping) &&
+-        !m_got_stop_request)
++        !m_got_stop_request && m_game_core_seen.load())
+     {
+       WithSession([](JNIEnv* env, jobject session) {
+         auto* client = reinterpret_cast<NetPlay::NetPlayClient*>(
+@@ -101,6 +108,7 @@ void NetPlayUICallbacks::BootGame(const std::string& filename,
+                                   std::unique_ptr<BootSessionData> boot_session_data)
+ {
+   m_got_stop_request = false;
++  m_game_core_seen.store(false);
+ 
+   WithSession([&](JNIEnv* env, jobject session) {
+     env->CallVoidMethod(session, IDCache::GetNetplayOnBootGame(), ToJString(env, filename),
+diff --git a/Source/Android/jni/NetPlay/NetPlayUICallbacks.h b/Source/Android/jni/NetPlay/NetPlayUICallbacks.h
+index cfe5130..8c5f68a 100644
+--- a/Source/Android/jni/NetPlay/NetPlayUICallbacks.h
++++ b/Source/Android/jni/NetPlay/NetPlayUICallbacks.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <atomic>
+ #include <memory>
+ #include <span>
+ #include <string>
+@@ -89,6 +90,9 @@ private:
+   std::string m_current_game_name;
+   Common::EventHook m_state_changed_hook;
+   bool m_got_stop_request = true;
++  // Set once this game's core has reported a running state; written on the core's emu thread
++  // and in BootGame on the netplay thread. See the state hook in the constructor.
++  std::atomic<bool> m_game_core_seen{false};
+ };
+ 
+ }  // namespace NetPlay
+diff --git a/Source/Core/Core/Core.cpp b/Source/Core/Core/Core.cpp
+index 2fb31c7..00a3f92 100644
+--- a/Source/Core/Core/Core.cpp
++++ b/Source/Core/Core/Core.cpp
+@@ -223,6 +223,13 @@ bool WantsDeterminism()
+   return s_wants_determinism;
+ }
+ 
++static std::atomic<u64> s_boot_sequence{0};
++
++u64 GetBootSequence()
++{
++  return s_boot_sequence.load(std::memory_order_acquire);
++}
++
+ // This is called from the GUI thread. See the booting call schedule in
+ // BootManager.cpp
+ bool Init(Core::System& system, std::unique_ptr<BootParameters> boot, const WindowSystemInfo& wsi)
+@@ -254,7 +261,9 @@ bool Init(Core::System& system, std::unique_ptr<BootParameters> boot, const Wind
+   WindowSystemInfo prepared_wsi(wsi);
+   g_video_backend->PrepareWindow(prepared_wsi);
+ 
+-  // Start the emu thread
++  // Start the emu thread. The boot sequence moves first, so everything the new core's threads
++  // do sees the new number (std::thread construction happens-before the thread function).
++  s_boot_sequence.fetch_add(1, std::memory_order_acq_rel);
+   s_state.store(State::Starting);
+   s_emu_thread = std::thread(EmuThread, std::ref(system), std::move(boot), prepared_wsi);
+   return true;
+diff --git a/Source/Core/Core/Core.h b/Source/Core/Core/Core.h
+index 7dff8e1..6fd0470 100644
+--- a/Source/Core/Core/Core.h
++++ b/Source/Core/Core/Core.h
+@@ -138,6 +138,11 @@ bool IsRunningOrStarting(Core::System& system);
+ // Returns true when GetState returns Uninitialized.
+ bool IsUninitialized(Core::System& system);
+ 
++// Counts cores started by Init(). It changes only when a new core is created and never while one
++// is alive, so code on a core's own threads can tell which core it belongs to. Netplay uses it to
++// keep a core that is still shutting down from reading the next game's input.
++u64 GetBootSequence();
++
+ bool IsCPUThread();  // this tells us whether we are the CPU thread.
+ bool IsGPUThread();
+ 
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+index 90ba352..7092223 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+@@ -587,8 +587,11 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
+             diag->reset_count.fetch_add(1, std::memory_order_relaxed);
+         }
+         else if (const NetPlay::PadDetails details = NetPlay::GetPadDetails(m_device_number);
+-                 details.is_local && details.local_pad < 4)
++                 details.is_local && details.local_pad < 4 &&
++                 NetPlay::IsCurrentGameCore())
+         {
++          // (IsCurrentGameCore: a previous game's core that is still closing must not queue a
++          // reset on the shared GBA pad, where the next game's opening fill would pick it up.)
+           // Netplay: resetting only the local mirror of this core would desync
+           // the other players' copies of it. Ride the input stream instead --
+           // the pad's owner injects the X-button reset signal (the same path
+@@ -636,7 +639,8 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
+           diag->reset_count.fetch_add(1, std::memory_order_relaxed);
+       }
+       else if (const NetPlay::PadDetails details = NetPlay::GetPadDetails(m_device_number);
+-               details.is_local && details.local_pad < 4)
++               details.is_local && details.local_pad < 4 &&
++                 NetPlay::IsCurrentGameCore())
+       {
+         Pad::SetGBAReset(details.local_pad, true);
+         if (GBALinkDiag* diag = DiagSlot(m_device_number))
+diff --git a/Source/Core/Core/NetPlayClient.cpp b/Source/Core/Core/NetPlayClient.cpp
+index 83e189f..0767243 100644
+--- a/Source/Core/Core/NetPlayClient.cpp
++++ b/Source/Core/Core/NetPlayClient.cpp
+@@ -48,6 +48,7 @@
+ #include "Core/Config/NetplaySettings.h"
+ #include "Core/Config/SessionSettings.h"
+ #include "Core/ConfigManager.h"
++#include "Core/Core.h"
+ #include "Core/GeckoCode.h"
+ #include "Core/HW/EXI/EXI.h"
+ #include "Core/HW/EXI/EXI_DeviceIPL.h"
+@@ -1124,6 +1125,9 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
+   ClearBuffers();
+   m_first_pad_status_received.fill(false);
+   m_first_pop_logged.fill(false);
++  // Until StartGame records this game's boot sequence (on Qt that is later, on the GUI thread),
++  // no core may pass IsCurrentGameCore: the previous game's number must not linger here.
++  m_game_boot_sequence.store(UINT64_MAX, std::memory_order_release);
+   m_input_reset_for_game.store(true, std::memory_order_release);
+ 
+   m_dialog->OnMsgStartGame();
+@@ -2040,6 +2044,15 @@ bool NetPlayClient::StartGame(const std::string& path)
+   m_stop_requested_ms.store(0, std::memory_order_relaxed);
+   m_session_end.store(SessionEndKind::None, std::memory_order_release);
+ 
++  // The core for this game does not exist yet: StartGame always runs before its Core::Init, and
++  // Init is what moves the boot sequence. Recording it here, before NetPlay_Enable, is what lets
++  // the input hooks turn away the previous game's core. On Qt that core may still be shutting
++  // down when this runs (MainWindow defers the boot until it has stopped), and once netplay is
++  // enabled it would otherwise pop this game's opening input off the queues: the same loss of a
++  // whole fill that desynced the GBAs on 2026-09-22, just from a Start pressed too soon.
++  m_game_boot_sequence.store(Core::GetBootSequence() + 1, std::memory_order_release);
++  m_stale_core_polls.store(0, std::memory_order_relaxed);
++
+   m_is_running.Set();
+   NetPlay_Enable(this);
+ 
+@@ -2720,9 +2733,11 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
+                                m_net_settings.pad_map[pad_nb] :
+                                0;
+     GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "padpop",
+-                           fmt::format("pad={} depth={} target={} owner={} local={}", pad_nb,
+-                                       m_pad_buffer[pad_nb].Size(), m_target_buffer_size, owner,
+-                                       (m_local_player && owner == m_local_player->pid) ? 1 : 0),
++                           fmt::format("pad={} depth={} target={} owner={} local={} stale={}",
++                                       pad_nb, m_pad_buffer[pad_nb].Size(),
++                                       m_target_buffer_size, owner,
++                                       (m_local_player && owner == m_local_player->pid) ? 1 : 0,
++                                       m_stale_core_polls.load(std::memory_order_relaxed)),
+                            false);  // never flush under this lock; the summary line does it
+   }
+ #endif
+@@ -3117,6 +3132,13 @@ std::string NetPlayClient::GetCurrentGolfer()
+   return "";
+ }
+ 
++// called from ---CPU--- thread (under crit_netplay_client). Compares a global counter, which is
++// enough because two cores never exist at once: Core::Init refuses while one is alive.
++bool NetPlayClient::IsCurrentGameCore() const
++{
++  return Core::GetBootSequence() == m_game_boot_sequence.load(std::memory_order_acquire);
++}
++
+ // called from ---GUI--- thread
+ bool NetPlayClient::LocalPlayerHasControllerMapped() const
+ {
+@@ -3238,6 +3260,12 @@ void NetPlayClient::SendTimeBase()
+ {
+   std::lock_guard lk(crit_netplay_client);
+ 
++  // The caller checks IsNetPlayRunning() before taking this lock, so netplay may have been
++  // disabled in between. A previous game's core that is still shutting down must not advance this
++  // game's frame count or send time bases the server would compare against the other player's.
++  if (!netplay_client || !netplay_client->IsCurrentGameCore())
++    return;
++
+   if (netplay_client->m_timebase_frame % 60 == 0)
+   {
+     const u64 timebase = Core::System::GetInstance().GetSystemTimers().GetFakeTimeBase();
+@@ -3431,6 +3459,12 @@ std::string GetGBASavePath(int pad_num)
+   return fmt::format("{}{}{}.sav", File::GetUserPath(D_GBAUSER_IDX), GBA_SAVE_NETPLAY, pad_num + 1);
+ }
+ 
++bool IsCurrentGameCore()
++{
++  std::lock_guard lk(crit_netplay_client);
++  return netplay_client && netplay_client->IsCurrentGameCore();
++}
++
+ PadDetails GetPadDetails(int pad_num)
+ {
+   std::lock_guard lk(crit_netplay_client);
+@@ -3495,17 +3529,27 @@ bool SerialInterface::CSIDevice_GCController::NetPlay_GetInput(int pad_num, GCPa
+ {
+   std::lock_guard lk(NetPlay::crit_netplay_client);
+ 
+-  if (NetPlay::netplay_client)
+-    return NetPlay::netplay_client->GetNetPads(pad_num, NetPlay::s_si_poll_batching, status);
++  if (!NetPlay::netplay_client)
++    return false;
+ 
+-  return false;
++  // A previous game's core can still be polling while it shuts down after this game has enabled
++  // netplay input; it must not pop this game's queues. Returning false leaves its pad status
++  // neutral (IsNetPlayRunning() is true again, so its devices skip their local read), which is
++  // harmless for a core that is closing.
++  if (!NetPlay::netplay_client->IsCurrentGameCore())
++  {
++    NetPlay::netplay_client->CountStaleCorePoll();
++    return false;
++  }
++
++  return NetPlay::netplay_client->GetNetPads(pad_num, NetPlay::s_si_poll_batching, status);
+ }
+ 
+ bool NetPlay::NetPlay_GetWiimoteData(const std::span<NetPlayClient::WiimoteDataBatchEntry>& entries)
+ {
+   std::lock_guard lk(crit_netplay_client);
+ 
+-  if (netplay_client)
++  if (netplay_client && netplay_client->IsCurrentGameCore())
+     return netplay_client->WiimoteUpdate(entries);
+ 
+   return false;
+diff --git a/Source/Core/Core/NetPlayClient.h b/Source/Core/Core/NetPlayClient.h
+index 3dbee60..32d581d 100644
+--- a/Source/Core/Core/NetPlayClient.h
++++ b/Source/Core/Core/NetPlayClient.h
+@@ -185,6 +185,11 @@ public:
+ 
+   bool PlayerHasControllerMapped(PlayerId pid) const;
+   bool LocalPlayerHasControllerMapped() const;
++  // True when the calling thread belongs to the core that was booted for the current game. A core
++  // that is still shutting down from the previous game must not touch this game's input.
++  bool IsCurrentGameCore() const;
++  // Called by the input hook each time it turns a previous game's core away.
++  void CountStaleCorePoll() { m_stale_core_polls.fetch_add(1, std::memory_order_relaxed); }
+   bool IsLocalPlayer(PlayerId pid) const;
+   const PlayerId& GetLocalPlayerId() const;
+ 
+@@ -232,6 +237,13 @@ protected:
+   // comments in OnStartGame and StartGame.
+   // Atomic: written on the netplay thread, read on the GUI thread that boots the game.
+   std::atomic<bool> m_input_reset_for_game{false};
++  // Core::GetBootSequence() of the core this game will run on, recorded in StartGame before
++  // netplay input is enabled. StartGame always runs before that core's Core::Init, whether or not
++  // the previous game's core is still alive, and Init is what moves the sequence, so it is always
++  // the current sequence + 1. See IsCurrentGameCore().
++  std::atomic<u64> m_game_boot_sequence{0};
++  // Polls turned away from a previous game's core in this game, reported on the padpop lines.
++  std::atomic<u32> m_stale_core_polls{0};
+   // One "padpop" diagnostic line per pad per game: how deep that pad's queue was at its first pop.
+   std::array<bool, 4> m_first_pop_logged{};
+ 
+diff --git a/Source/Core/Core/NetPlayProto.h b/Source/Core/Core/NetPlayProto.h
+index 05e16fe..f22cea3 100644
+--- a/Source/Core/Core/NetPlayProto.h
++++ b/Source/Core/Core/NetPlayProto.h
+@@ -297,5 +297,8 @@ void SetSIPollBatching(bool state);
+ void SendPowerButtonEvent();
+ std::string GetGBASavePath(int pad_num);
+ PadDetails GetPadDetails(int pad_num);
++// True when netplay is running and the calling core is the one booted for the current game.
++// Takes crit_netplay_client: never call it from anything NetPlay_GetInput calls.
++bool IsCurrentGameCore();
+ int NumLocalWiimotes();
+ }  // namespace NetPlay
+diff --git a/Source/Core/DolphinQt/MainWindow.cpp b/Source/Core/DolphinQt/MainWindow.cpp
+index 50b9bd7..3256d50 100644
+--- a/Source/Core/DolphinQt/MainWindow.cpp
++++ b/Source/Core/DolphinQt/MainWindow.cpp
+@@ -1231,6 +1231,18 @@ void MainWindow::StartGame(std::unique_ptr<BootParameters>&& parameters)
+   // If we're running, only start a new game once we've stopped the last.
+   if (!Core::IsUninitialized(m_system))
+   {
++    // XD Netplay: the host pressed Start while this machine's previous game is still closing.
++    // Asking "stop the current emulation?" about a game that is already stopping would only
++    // strand this boot: if the old core finished while the question was open, OnStopComplete
++    // would run before m_pending_boot was set. Park the boot instead; the Uninitialized that ends
++    // the old game reaches OnStopComplete (InitCoreCallbacks), which starts it.
++    if (Settings::Instance().GetNetPlayClient() &&
++        (m_stop_requested || Core::GetState(m_system) == Core::State::Stopping))
++    {
++      m_pending_boot = std::move(parameters);
++      return;
++    }
++
+     if (!RequestStop())
+       return;
+ 
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+index fe78f24..e910e84 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+@@ -499,8 +499,14 @@ void NetPlayDialog::ConnectWidgets()
+     if (isVisible())
+     {
+       GameStatusChanged(state != Core::State::Uninitialized);
++      // A core announces Starting first and Uninitialized last, even when its boot fails, and
++      // events arrive here in the order they were posted. So a Stopping or Uninitialized seen
++      // before this game's Starting belongs to the previous game's core, still closing after
++      // Start was pressed; stopping on it would end the new game for every player.
++      if (state != Core::State::Uninitialized && state != Core::State::Stopping)
++        m_game_core_seen = true;
+       if ((state == Core::State::Uninitialized || state == Core::State::Stopping) &&
+-          !m_got_stop_request)
++          !m_got_stop_request && m_game_core_seen)
+       {
+         Settings::Instance().GetNetPlayClient()->RequestStopGame();
+       }
+@@ -901,6 +907,7 @@ void NetPlayDialog::BootGame(const std::string& filename,
+                              std::unique_ptr<BootSessionData> boot_session_data)
+ {
+   m_got_stop_request = false;
++  m_game_core_seen = false;
+   m_start_game_callback(filename, std::move(boot_session_data));
+ }
+ 
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
+index 9dda0c6..59981cf 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
+@@ -189,6 +189,8 @@ private:
+   bool m_use_traversal = false;
+   bool m_is_copy_button_retry = false;
+   bool m_got_stop_request = true;
++  // Set once this game's core has reported a running state (see the EmulationStateChanged hook).
++  bool m_game_core_seen = false;
+   int m_buffer_size = 0;
+   int m_player_count = 0;
+   int m_old_player_count = 0;
+-- 
+2.39.5 (Apple Git-154)
+

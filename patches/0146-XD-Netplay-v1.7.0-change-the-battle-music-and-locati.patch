@@ -1,0 +1,1438 @@
+From a22f7a8988dcf4c940b24c975b7b59c67a078cc2 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 12:47:59 -0700
+Subject: [PATCH 146/146] XD Netplay v1.7.0: change the battle music and
+ location while XD is running
+
+The room's Music & Location used to switch off once a battle was starting,
+because the Battle Style block is synced once, at Start. It now works while
+the game runs: the host picks, and both machines install the change at the
+same emulated moment, taking effect from the next battle.
+
+How it stays in step. Netplay's pad streams are already the session's
+lockstep clock: every machine pops each pad's entries in the same order, so
+pop number K of a pad is the same emulated poll everywhere (this depends on
+the two fixes before it, which stop a machine losing entries at the start of
+a game). A live change is numbered with the index of the next entry the host
+will push for the first pad it owns, and sent right then. That entry leaves
+afterwards on the same ordered channel, so every other machine registers the
+change before the entry can arrive; the host registers it before pushing the
+entry. A change is due from pop K on, and each machine installs it at the
+first due pop where XD is between battles (the battle object's active-battler
+pointer, 0x804AF528, reads 0 from the end of one battle to the first action of
+the next). That memory is identical on every machine at the same
+pop, so every machine picks the same pop, and a change made mid-battle waits
+for the battle to end: XD reads a battle's terrain from the link record when a
+move like Nature Power needs it, so moving the location mid-battle would
+change the rules of the fight in progress. Several changes due at once
+collapse to the newest; each is a full set. One window stays open: the few
+seconds of a battle's intro, after setup has written the record and before the
+first action. A location change landing there makes that battle's terrain
+follow the new location while the old stage shows; both machines agree.
+
+ - MessageID::LiveStyle (0xA8), host -> server -> everyone else. The server
+   accepts it from the host only and only for the running game, the same gate
+   as PadData, and relays it synchronously in arrival order.
+ - NetPlayClient::RequestLiveStyle (any thread) leaves the request for the CPU
+   thread; PollLocalPad numbers and sends it; GetNetPads applies it before the
+   numbered pop. Push and pop counters restart with the pad queues in
+   OnStartGame. m_live_mutex is a leaf lock, never held while taking another,
+   and nothing new runs NetPlay:: free functions under crit_netplay_client.
+   Only 0x04 and 0x02 write lines into main memory are accepted, at most 64.
+   Live changes exist only in Pokemon XD rooms (GXXE01, the room's synced
+   game) and are refused in RetroAchievements hardcore mode, a synced setting.
+ - ActionReplay gets a live code slot, run after the active codes every frame
+   so it wins on shared addresses, whether or not cheats are enabled (it only
+   comes from netplay; a default-style session has cheats off), cleared by
+   PatchEngine::Shutdown. It never looks at this machine's own achievements
+   state, which is local and could let one machine run it and not the other.
+ - BattleCustomizer::MakeLiveStyle builds the live set from the Start block's
+   own music and location lines. "Game default" music writes back the vanilla
+   staBGM_tunaide value (0x4F3, read from a clean main.dol) so it overrides a
+   Start pin. Music also goes into the four link records' own BGM field
+   (+0x10), which the battle reads once at its start: a rematch re-runs battle
+   setup only when XD's stage row is on Random, so otherwise a rematch would
+   keep the old music. A location pinned only live is lifted cleanly: the game writes
+   the link records' battlefield itself at each battle start, and the stage
+   row's blanked sprite is restored to its main.dol value (0x011600A7). A
+   location the Start block pinned cannot be lifted, since that block keeps
+   writing it, so "Game default" then keeps the current location and says it
+   applies from the next Start. MakeLiveStyle changes nothing itself; the
+   callers commit its bookkeeping (CommitLiveStyle) only once the client has
+   accepted the set, and only the netplay host's Start paths reset it
+   (BeginLiveStyleForStart, unconditionally: an Android host can press Start
+   while its previous game is still closing).
+ - The launcher's solo Boot (desktop OnBootSolo, Android nativePrepareForBoot)
+   now does nothing while a game runs. The desktop launcher stays open beside a
+   room it hosted, and PrepareForStart would rewrite GXXE01.ini and could set
+   the cheats flag on one machine only in the middle of a netplay game.
+ - The picks are saved for the next Start, but the INI is not regenerated
+   while a game runs: nothing may change what this machine would boot while a
+   game started from it is still running.
+
+UI. Desktop: the button stays enabled while a game runs, and a start in
+flight is still refused. Android: the room's button likewise, plus a Music &
+Location entry in the in-game menu for the host, because leaving the game
+for the room pauses the core and freezes the other player; that entry shows
+only for the host of a Pokemon XD room. The room's dialog reads the stored
+picks each time it opens, since the in-game menu can change them. No chat
+line is posted when a change arrives: that would come from the netplay thread
+mid-battle, and reach the on-screen chat during the GBA link.
+
+Logs: "livestyle send/recv at=K ops=N sum=..." and "livestyle apply at=K
+pop=P ..." on each machine, so the two logs show the same change landing at
+the same pop P; "livestyle LATE" if a change ever arrived after its pop.
+
+Models, teams and the timer stay between-games only for now.
+---
+ .../activities/EmulationActivity.kt           |  80 +++++++
+ .../features/netplay/NetplaySession.kt        |  24 +-
+ .../netplay/model/NetplayViewModel.kt         |  11 +-
+ .../features/netplay/ui/NetplayActivity.kt    |  23 +-
+ .../features/netplay/ui/NetplayScreen.kt      |  29 ++-
+ .../dolphinemu/fragments/MenuFragment.kt      |   7 +
+ .../main/res/layout/fragment_ingame_menu.xml  |   5 +
+ .../app/src/main/res/values/strings.xml       |   3 +-
+ .../jni/NetPlay/NetPlayIndexBridge.cpp        |   6 +
+ Source/Android/jni/NetPlay/Netplay.cpp        |  55 ++++-
+ Source/Core/Core/ActionReplay.cpp             |  47 +++-
+ Source/Core/Core/ActionReplay.h               |  10 +
+ Source/Core/Core/NetPlayClient.cpp            | 221 ++++++++++++++++++
+ Source/Core/Core/NetPlayClient.h              |  28 +++
+ Source/Core/Core/NetPlayProto.h               |   1 +
+ Source/Core/Core/NetPlayServer.cpp            |  28 +++
+ Source/Core/Core/NetPlayServer.h              |   5 +
+ Source/Core/Core/PatchEngine.cpp              |   3 +
+ .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  |  63 ++++-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  |  12 +
+ .../DolphinQt/XDNetplay/XDNetplayConfig.cpp   |   1 +
+ .../UICommon/XDNetplay/BattleCustomizer.cpp   |  96 ++++++++
+ .../UICommon/XDNetplay/BattleCustomizer.h     |  29 +++
+ Source/Core/UICommon/XDNetplay/Version.h      |   2 +-
+ 24 files changed, 717 insertions(+), 72 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/activities/EmulationActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/activities/EmulationActivity.kt
+index f014394..17a27a2 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/activities/EmulationActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/activities/EmulationActivity.kt
+@@ -17,6 +17,10 @@ import android.view.MotionEvent
+ import android.view.View
+ import android.view.ViewGroup.MarginLayoutParams
+ import android.view.WindowManager
++import android.widget.ArrayAdapter
++import android.widget.LinearLayout
++import android.widget.Spinner
++import android.widget.TextView
+ import android.widget.Toast
+ import androidx.activity.result.contract.ActivityResultContracts
+ import androidx.appcompat.app.AppCompatActivity
+@@ -46,6 +50,7 @@ import org.dolphinemu.dolphinemu.features.infinitybase.ui.FigureSlot
+ import org.dolphinemu.dolphinemu.features.infinitybase.ui.FigureSlotAdapter
+ import org.dolphinemu.dolphinemu.features.input.model.ControllerInterface
+ import org.dolphinemu.dolphinemu.features.input.model.DolphinSensorEventListener
++import org.dolphinemu.dolphinemu.features.netplay.NetplayManager
+ import org.dolphinemu.dolphinemu.features.settings.model.BooleanSetting
+ import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
+ import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
+@@ -57,6 +62,7 @@ import org.dolphinemu.dolphinemu.features.skylanders.SkylanderConfig
+ import org.dolphinemu.dolphinemu.features.skylanders.model.Skylander
+ import org.dolphinemu.dolphinemu.features.skylanders.ui.SkylanderSlot
+ import org.dolphinemu.dolphinemu.features.skylanders.ui.SkylanderSlotAdapter
++import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
+ import org.dolphinemu.dolphinemu.fragments.EmulationFragment
+ import org.dolphinemu.dolphinemu.fragments.GbaPacksFragment
+ import org.dolphinemu.dolphinemu.fragments.MenuFragment
+@@ -347,6 +353,78 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
+ 
+     fun shouldShowGbaPacksMenu(): Boolean = isGameCubeWithEmulatedGbaPort()
+ 
++    /**
++     * OrreLink: the room's Music & Location, reachable during a netplay game. Host only. Leaving
++     * this screen for the room would pause the core and freeze the other player, so the host gets
++     * the same picks here, over the running game.
++     */
++    fun shouldShowXdMusicLocationMenu(): Boolean =
++        isGameCubeWithEmulatedGbaPort() &&
++            // Throws if the core finishes shutting down between these checks.
++            runCatching { NativeLibrary.GetCurrentGameID() }.getOrNull() == "GXXE01" &&
++            NetplayManager.activeSession?.let { it.isHosting && !it.isClosed } == true
++
++    private fun showXdMusicLocationDialog() {
++        val session = NetplayManager.activeSession
++        if (session == null || !session.isHosting || session.isClosed) {
++            Toast.makeText(this, R.string.xd_live_style_no_room, Toast.LENGTH_SHORT).show()
++            return
++        }
++        val defaultLabel = getString(R.string.xd_style_game_default)
++        val musicOptions = listOf(0 to defaultLabel) +
++            BattleStyleBridge.musicTable().map { it.id to it.name }
++        val venueOptions = listOf(0 to defaultLabel) +
++            BattleStyleBridge.venueTable().map { it.id to it.name }
++
++        val padding = (16 * resources.displayMetrics.density).toInt()
++        val content = LinearLayout(this).apply {
++            orientation = LinearLayout.VERTICAL
++            setPadding(padding * 3 / 2, padding / 2, padding * 3 / 2, 0)
++        }
++        fun addPicker(labelRes: Int, options: List<Pair<Int, String>>, current: Int): Spinner {
++            content.addView(TextView(this).apply { setText(labelRes) })
++            val spinner = Spinner(this).apply {
++                adapter = ArrayAdapter(
++                    this@EmulationActivity,
++                    android.R.layout.simple_spinner_dropdown_item,
++                    options.map { it.second }
++                )
++                setSelection(options.indexOfFirst { it.first == current }.coerceAtLeast(0))
++            }
++            content.addView(spinner)
++            return spinner
++        }
++        val musicSpinner = addPicker(
++            R.string.xd_style_music, musicOptions,
++            BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_MUSIC)
++        )
++        val venueSpinner = addPicker(
++            R.string.xd_style_venue, venueOptions,
++            BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_VENUE)
++        )
++        content.addView(TextView(this).apply {
++            setText(R.string.xd_room_music_location_hint)
++            setPadding(0, padding / 2, 0, 0)
++        })
++
++        MaterialAlertDialogBuilder(this)
++            .setTitle(R.string.xd_room_music_location)
++            .setView(content)
++            .setPositiveButton(R.string.xd_room_apply) { _, _ ->
++                val music = musicOptions[musicSpinner.selectedItemPosition].first
++                val venue = venueOptions[venueSpinner.selectedItemPosition].first
++                // Native writes config and talks to the netplay client: off the main thread.
++                Thread {
++                    val result = session.setMusicAndLocation(music, venue)
++                    runOnUiThread {
++                        Toast.makeText(this, result.status, Toast.LENGTH_LONG).show()
++                    }
++                }.start()
++            }
++            .setNegativeButton(R.string.cancel, null)
++            .show()
++    }
++
+     override fun onWindowFocusChanged(hasFocus: Boolean) {
+         if (hasFocus) {
+             enableFullscreenImmersive()
+@@ -582,6 +660,7 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
+             MENU_ACTION_CHANGE_DISC -> requestChangeDisc.launch("*/*")
+             MENU_ACTION_TOGGLE_GBA_SCREEN -> toggleInternalGbaScreen()
+             MENU_ACTION_GBA_PACKS -> showGbaPacksSubMenu()
++            MENU_ACTION_XD_MUSIC_LOCATION -> showXdMusicLocationDialog()
+ 
+             MENU_SET_IR_MODE -> setIRMode()
+             MENU_ACTION_CHOOSE_DOUBLETAP -> chooseDoubleTapButton()
+@@ -1199,6 +1278,7 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
+         const val MENU_ACTION_LATCHING_CONTROLS = 38
+         const val MENU_ACTION_TOGGLE_GBA_SCREEN = 39
+         const val MENU_ACTION_GBA_PACKS = 40
++        const val MENU_ACTION_XD_MUSIC_LOCATION = 41
+ 
+         init {
+             buttonsActionsMap.apply {
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/NetplaySession.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/NetplaySession.kt
+index 57b6797..b19b3d4 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/NetplaySession.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/NetplaySession.kt
+@@ -229,15 +229,19 @@ class NetplaySession(
+     }
+ 
+     /**
+-     * Host only: store the battle music and location picks (0 = game default)
+-     * and rebuild the Battle Style block, so a change made in the room is in
+-     * what the room syncs at the next Start. Native refuses while a battle is
+-     * starting or running and once the room is gone. Returns null on success,
+-     * or the one-line reason nothing changed. Writes a small INI file, so call
+-     * off the main thread.
++     * Host only: change the battle music and location (0 = game default). Between games the picks
++     * are stored and the Battle Style block rebuilt for the next Start; while a game runs they are
++     * applied live, on both machines at the same moment, from the next battle. Native refuses
++     * while a battle is starting and once the room is gone. Writes config (and between games a
++     * small INI file), so call off the main thread.
+      */
+-    fun setMusicAndLocation(musicId: Int, venueId: Int): String? =
+-        nativeSetMusicAndLocation(musicId, venueId).ifEmpty { null }
++    fun setMusicAndLocation(musicId: Int, venueId: Int): HostSubmitResult {
++        val result = nativeSetMusicAndLocation(musicId, venueId)
++        return HostSubmitResult(
++            ok = result.getOrNull(0) == "1",
++            status = result.getOrNull(1).orEmpty()
++        )
++    }
+ 
+     /**
+      * "Use my save": submit the party from this player's OWN local save (their
+@@ -376,8 +380,8 @@ class NetplaySession(
+         raiseToLevel100: Boolean
+     ): Array<String>
+ 
+-    /** Returns "" on success, else why nothing changed. */
+-    private external fun nativeSetMusicAndLocation(musicId: Int, venueId: Int): String
++    /** Returns ["1" or "0", the one-line result]; see [setMusicAndLocation]. */
++    private external fun nativeSetMusicAndLocation(musicId: Int, venueId: Int): Array<String>
+ 
+     private external fun nativeSetHostInputAuthority(enable: Boolean)
+ 
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt
+index 8ce59ae..d13ef3c 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt
+@@ -398,16 +398,9 @@ class NetplayViewModel(
+             if (netplaySession.isClosed) {
+                 return@launch
+             }
+-            val refused = netplaySession.setMusicAndLocation(musicId, venueId)
++            val result = netplaySession.setMusicAndLocation(musicId, venueId)
+             withContext(Dispatchers.Main) {
+-                if (refused == null) {
+-                    postHostActionResult(
+-                        true,
+-                        "Music and location set. They apply at the next Start."
+-                    )
+-                } else {
+-                    postHostActionResult(false, refused)
+-                }
++                postHostActionResult(result.ok, result.status)
+             }
+         }
+     }
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayActivity.kt
+index 4bbe1bd..21bc345 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayActivity.kt
+@@ -53,10 +53,11 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
+         val modelOptions = BattleStyleBridge.modelTable()
+ 
+         // HOST only: the host's own Submit Team sheet opens on the stored
+-        // "Your model" pick, and the room's Music & Location dialog needs its
+-        // two tables and stored picks. Read once, like the launcher does; the
+-        // screen tracks whatever the host applies after that. A joiner never
+-        // sees any of it, so nothing is fetched for one.
++        // "Your model" pick, read once like the launcher does. The Music &
++        // Location dialog's tables are read once too, but its picks are read
++        // each time it opens (readMusicLocation below), because the in-game
++        // menu can change them while this screen is in the background. A
++        // joiner never sees any of it, so nothing is fetched for one.
+         val isHosting = viewModel.isHosting
+         val musicOptions =
+             if (isHosting) BattleStyleBridge.musicTable() else emptyList()
+@@ -65,10 +66,6 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
+         val initialHostModelId =
+             if (isHosting) BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_HOST_MODEL)
+             else 0
+-        val initialMusicId =
+-            if (isHosting) BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_MUSIC) else 0
+-        val initialVenueId =
+-            if (isHosting) BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_VENUE) else 0
+ 
+         // Last-submitted Submit Team sheet state (config-backed), so the sheet
+         // opens pre-filled instead of empty. Read once: while this activity
+@@ -108,8 +105,14 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
+                     initialHostModelId = initialHostModelId,
+                     musicOptions = musicOptions,
+                     venueOptions = venueOptions,
+-                    initialMusicId = initialMusicId,
+-                    initialVenueId = initialVenueId,
++                    readMusicLocation = {
++                        if (isHosting) {
++                            BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_MUSIC) to
++                                BattleStyleBridge.getSelection(BattleStyleBridge.SELECTION_VENUE)
++                        } else {
++                            0 to 0
++                        }
++                    },
+                     onSetMusicAndLocation = viewModel::setMusicAndLocation,
+                     // Only the host has controls that grey out on it, so only a
+                     // host subscribes (the flow polls while subscribed).
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
+index 28a0aeb..4d8b1ec 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
+@@ -184,8 +184,9 @@ fun NetplayScreen(
+     /** HOST only: tables and stored picks for the Music & Location dialog. */
+     musicOptions: List<BattleStyleBridge.StyleOption> = emptyList(),
+     venueOptions: List<BattleStyleBridge.StyleOption> = emptyList(),
+-    initialMusicId: Int = 0,
+-    initialVenueId: Int = 0,
++    /** Reads the stored music and location picks; called each time the dialog opens, because the
++     *  in-game menu can change them while this screen is in the background. */
++    readMusicLocation: () -> Pair<Int, Int> = { 0 to 0 },
+     onSetMusicAndLocation: (Int, Int) -> Unit = { _, _ -> },
+     /**
+      * True while a netplay game is running (NetplayViewModel.gameRunning). The
+@@ -413,10 +414,8 @@ fun NetplayScreen(
+     // the room. The drafts are re-seeded from the applied picks every time the
+     // dialog opens, so Cancel really does discard.
+     var showMusicLocation by rememberSaveable { mutableStateOf(false) }
+-    var appliedMusic by rememberSaveable { mutableIntStateOf(initialMusicId) }
+-    var appliedVenue by rememberSaveable { mutableIntStateOf(initialVenueId) }
+-    var musicDraft by rememberSaveable { mutableIntStateOf(initialMusicId) }
+-    var venueDraft by rememberSaveable { mutableIntStateOf(initialVenueId) }
++    var musicDraft by rememberSaveable { mutableIntStateOf(0) }
++    var venueDraft by rememberSaveable { mutableIntStateOf(0) }
+     if (showMusicLocation) {
+         AlertDialog(
+             title = { Text(stringResource(R.string.xd_room_music_location)) },
+@@ -451,11 +450,10 @@ fun NetplayScreen(
+                 TextButton(
+                     onClick = {
+                         onSetMusicAndLocation(musicDraft, venueDraft)
+-                        appliedMusic = musicDraft
+-                        appliedVenue = venueDraft
+                         showMusicLocation = false
+                     },
+-                    enabled = !gameRunning
++                    // Also while a game runs: it applies live then (native decides).
++                    enabled = true
+                 ) {
+                     Text(stringResource(R.string.xd_room_apply))
+                 }
+@@ -469,8 +467,11 @@ fun NetplayScreen(
+         )
+     }
+     val onShowMusicLocation = {
+-        musicDraft = appliedMusic
+-        venueDraft = appliedVenue
++        // From the stored picks every time: they only change once native has accepted a change,
++        // and the in-game menu can change them too.
++        val (music, venue) = readMusicLocation()
++        musicDraft = music
++        venueDraft = venue
+         showMusicLocation = true
+     }
+ 
+@@ -963,7 +964,7 @@ private fun HostBattleSetupSection(
+                     HostSetupButton(
+                         text = stringResource(R.string.xd_room_music_location),
+                         onClick = onShowMusicLocation,
+-                        enabled = !gameRunning,
++                        enabled = true,
+                         modifier = Modifier.weight(1f)
+                     )
+                 }
+@@ -978,7 +979,7 @@ private fun HostBattleSetupSection(
+                     HostSetupButton(
+                         text = stringResource(R.string.xd_room_music_location),
+                         onClick = onShowMusicLocation,
+-                        enabled = !gameRunning,
++                        enabled = true,
+                         modifier = Modifier.fillMaxWidth()
+                     )
+                 }
+@@ -1969,8 +1970,6 @@ private fun PreviewNetplayScreen() {
+         initialHostModelId = 0,
+         musicOptions = emptyList(),
+         venueOptions = emptyList(),
+-        initialMusicId = 0,
+-        initialVenueId = 0,
+         onSetMusicAndLocation = { _, _ -> },
+         gameRunning = false,
+         hostResultText = "team written to GBA port 2",
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/fragments/MenuFragment.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/fragments/MenuFragment.kt
+index afae139..f0ef802 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/fragments/MenuFragment.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/fragments/MenuFragment.kt
+@@ -66,9 +66,12 @@ class MenuFragment : Fragment(), View.OnClickListener {
+                 if (activity.shouldShowInternalGbaScreenMenu()) View.VISIBLE else View.GONE
+             binding.menuGbaPacks.visibility =
+                 if (activity.shouldShowGbaPacksMenu()) View.VISIBLE else View.GONE
++            binding.menuXdMusicLocation.visibility =
++                if (activity.shouldShowXdMusicLocationMenu()) View.VISIBLE else View.GONE
+         } else {
+             binding.menuToggleGbaScreen.visibility = View.GONE
+             binding.menuGbaPacks.visibility = View.GONE
++            binding.menuXdMusicLocation.visibility = View.GONE
+         }
+ 
+         binding.menuToggleGbaScreen.text =
+@@ -214,6 +217,10 @@ class MenuFragment : Fragment(), View.OnClickListener {
+                 R.id.menu_gba_packs,
+                 EmulationActivity.MENU_ACTION_GBA_PACKS
+             )
++            buttonsActionsMap.append(
++                R.id.menu_xd_music_location,
++                EmulationActivity.MENU_ACTION_XD_MUSIC_LOCATION
++            )
+             buttonsActionsMap.append(
+                 R.id.menu_refresh_wiimotes,
+                 EmulationActivity.MENU_ACTION_REFRESH_WIIMOTES
+diff --git a/Source/Android/app/src/main/res/layout/fragment_ingame_menu.xml b/Source/Android/app/src/main/res/layout/fragment_ingame_menu.xml
+index 65b728b..4ab83f3 100644
+--- a/Source/Android/app/src/main/res/layout/fragment_ingame_menu.xml
++++ b/Source/Android/app/src/main/res/layout/fragment_ingame_menu.xml
+@@ -101,6 +101,11 @@
+                 style="@style/InGameMenuOption"
+                 android:text="@string/emulation_gba_packs" />
+ 
++            <Button
++                android:id="@+id/menu_xd_music_location"
++                style="@style/InGameMenuOption"
++                android:text="@string/xd_room_music_location" />
++
+             <Button
+                 android:id="@+id/menu_refresh_wiimotes"
+                 android:text="@string/emulation_refresh_wiimotes"
+diff --git a/Source/Android/app/src/main/res/values/strings.xml b/Source/Android/app/src/main/res/values/strings.xml
+index 490b14c..a0a9819 100644
+--- a/Source/Android/app/src/main/res/values/strings.xml
++++ b/Source/Android/app/src/main/res/values/strings.xml
+@@ -1175,7 +1175,8 @@ It can efficiently compress both junk data and encrypted Wii data.
+          music and location picker. Result lines come from the shared core. -->
+     <string name="xd_room_submit_team">Submit Team</string>
+     <string name="xd_room_music_location">Music &amp; Location</string>
+-    <string name="xd_room_music_location_hint">Applies at the next Start.</string>
++    <string name="xd_room_music_location_hint">Applies from the next battle, for both players. Works while XD is running too.</string>
++    <string name="xd_live_style_no_room">Only the host of an open room can change this.</string>
+     <string name="xd_room_apply">Apply</string>
+     <string name="xd_host_submit_intro">Paste a Showdown team export or a pokepast.es link. It replaces the team in your GBA port 2 save. With an imported save, the change lasts for this room only. Leave it empty to change only your name or model.</string>
+     <string name="xd_host_submit_model_hint">How you appear in battle.</string>
+diff --git a/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp b/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
+index 8510129..c22ec30 100644
+--- a/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
++++ b/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
+@@ -48,6 +48,8 @@
+ #include "Common/Config/Config.h"
+ #include "Common/Version.h"
+ #include "Core/Config/MainSettings.h"
++#include "Core/Core.h"
++#include "Core/System.h"
+ #include "UICommon/NetPlayIndex.h"
+ #include "UICommon/XDNetplay/BattleCustomizer.h"
+ #include "UICommon/XDNetplay/DisposableSave.h"
+@@ -399,6 +401,10 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativePrepar
+   // boot bypasses that entirely -- without this call a solo session never gets
+   // the Battle Style block at all (the first field test found exactly that).
+   // Cleanup rides the core-state hook PrepareForStart registers.
++  // Never while a game runs: it rewrites GXXE01.ini and may set the cheats flag on this machine
++  // alone, which in a netplay game could make the two machines run different codes.
++  if (!Core::IsUninitialized(Core::System::GetInstance()))
++    return;
+   XDNetplay::BattleCustomizer::PrepareForStart();
+ 
+   // Crash self-heal for the disposable netplay saves (mirrors the desktop
+diff --git a/Source/Android/jni/NetPlay/Netplay.cpp b/Source/Android/jni/NetPlay/Netplay.cpp
+index 4da6926..093a594 100644
+--- a/Source/Android/jni/NetPlay/Netplay.cpp
++++ b/Source/Android/jni/NetPlay/Netplay.cpp
+@@ -239,29 +239,63 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitHostT
+   return reply(ok, status);
+ }
+ 
+-JNIEXPORT jstring JNICALL
++JNIEXPORT jobjectArray JNICALL
+ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetMusicAndLocation(
+     JNIEnv* env, jobject obj, jint jmusic, jint jvenue)
+ {
+-  // XD Netplay, host side: the room's "Music & Location" dialog. Both picks
+-  // are ordinary MAIN_XD_STYLE_* keys (0 = game default), the same ones the
+-  // launcher's dropdowns write. The Battle Style block is rebuilt right away so
+-  // what the room syncs at Start matches what the host sees selected. An id
+-  // that is not in its table is stored as 0, never clamped.
++  // XD Netplay, host side: the room's "Music & Location" dialog and the in-game menu's entry of
++  // the same name. Both picks are ordinary MAIN_XD_STYLE_* keys (0 = game default), the same ones
++  // the launcher's dropdowns write. An id that is not in its table is stored as 0, never clamped.
+   //
+-  // Returns an empty string on success, or the one-line reason nothing changed.
++  // Between games the Battle Style block is rebuilt right away, so what the room syncs at Start
++  // matches what the host sees. While a game runs the change goes live instead (NetPlayClient::
++  // RequestLiveStyle): both machines install it at the same emulated moment, and the INI is left
++  // alone, because nothing may change what this machine would boot while a game started from it
++  // is still running. The saved keys carry the picks into the next Start.
++  //
++  // Returns two strings: "1" or "0", then the one-line result.
++  const auto reply = [env](bool ok, const std::string& line) {
++    const std::array<std::string, 2> result{ok ? "1" : "0", line};
++    return SpanToJStringArray(env, std::span<const std::string>(result));
++  };
++
+   std::lock_guard lk(s_host_write_mutex);
+ 
+-  if (const char* refusal = HostWriteRefusal(env, obj))
+-    return ToJString(env, refusal);
++  auto* server = GetServerPointer(env, obj);
++  auto* client = GetClientPointer(env, obj);
++  if (!server || !client)
++    return reply(false, HOST_WRITE_NO_ROOM);
++  // Pending first: StartGame raises running before it clears pending.
++  if (server->IsStartPending())
++    return reply(false, "A battle is starting. Try again after it has loaded.");
+ 
+   const int music = XDNetplay::BattleCustomizer::IsValidMusicId(jmusic) ? jmusic : 0;
+   const int venue = XDNetplay::BattleCustomizer::IsValidVenueId(jvenue) ? jvenue : 0;
++
++  if (server->IsGameRunning())
++  {
++    XDNetplay::BattleCustomizer::LiveStyle live =
++        XDNetplay::BattleCustomizer::MakeLiveStyle(music, venue);
++    std::string reason;
++    if (!client->RequestLiveStyle(std::move(live.ops), &reason))
++      return reply(false, "Music and location not changed: " + reason);
++    // Only now: a refused set must not become what the next one builds on.
++    XDNetplay::BattleCustomizer::CommitLiveStyle(live);
++    Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_MUSIC, music);
++    Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_VENUE, venue);
++    Config::Save();
++    return reply(true, live.location_waits_for_next_start ?
++                           "Music changed. Applies from the next battle. Game default location "
++                           "applies from the next Start." :
++                           "Music and location changed. They apply from the next battle, for "
++                           "both players.");
++  }
++
+   Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_MUSIC, music);
+   Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_VENUE, venue);
+   Config::Save();
+   XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
+-  return ToJString(env, std::string());
++  return reply(true, "Music and location set. They apply at the next Start.");
+ }
+ 
+ JNIEXPORT jstring JNICALL
+@@ -593,6 +627,7 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
+   // RequestStartGame: that is what snapshots MAIN_ENABLE_CHEATS
+   // (SetupNetSettings) and re-reads the local GXXE01.ini off disk (SyncCodes).
+   XDNetplay::BattleCustomizer::PrepareForStart();
++  XDNetplay::BattleCustomizer::BeginLiveStyleForStart();
+ 
+   server->RequestStartGame();
+ }
+diff --git a/Source/Core/Core/ActionReplay.cpp b/Source/Core/Core/ActionReplay.cpp
+index a7083e9..07624c2 100644
+--- a/Source/Core/Core/ActionReplay.cpp
++++ b/Source/Core/Core/ActionReplay.cpp
+@@ -25,6 +25,7 @@
+ #include <bit>
+ #include <iterator>
+ #include <mutex>
++#include <optional>
+ #include <string>
+ #include <utility>
+ #include <variant>
+@@ -85,6 +86,8 @@ enum
+ // General lock. Protects codes list and internal log.
+ static std::mutex s_lock;
+ static std::vector<ARCode> s_active_codes;
++// See SetLiveCode. Guarded by s_lock.
++static std::optional<ARCode> s_live_code;
+ static std::vector<ARCode> s_synced_codes;
+ static std::vector<std::string> s_internal_log;
+ static std::atomic<bool> s_use_internal_log{false};
+@@ -1011,19 +1014,49 @@ static bool RunCodeLocked(const Core::CPUThreadGuard& guard, const ARCode& arcod
+ 
+ void RunAllActive(const Core::CPUThreadGuard& cpu_guard)
+ {
+-  if (!Config::AreCheatsEnabled())
+-    return;
++  const bool cheats = Config::AreCheatsEnabled();
+ 
+   // If the mutex is idle then acquiring it should be cheap, fast mutexes
+   // are only atomic ops unless contested. It should be rare for this to
+   // be contested.
+   std::lock_guard guard(s_lock);
+-  std::erase_if(s_active_codes, [&cpu_guard](const ARCode& code) {
+-    const bool success = RunCodeLocked(cpu_guard, code);
+-    LogInfo("\n");
+-    return !success;
+-  });
++  if (!cheats && !s_live_code)
++    return;
++
++  if (cheats)
++  {
++    std::erase_if(s_active_codes, [&cpu_guard](const ARCode& code) {
++      const bool success = RunCodeLocked(cpu_guard, code);
++      LogInfo("\n");
++      return !success;
++    });
++  }
++
++  // After the active codes, so it wins on any address both write. A code that fails to run is
++  // dropped, the same rule as the active codes; both machines run identical ops on identical
++  // memory, so they drop it together. No per-machine check belongs here: whether a live change
++  // may exist at all is decided once, by the host, from synced settings (hardcore mode among
++  // them, NetPlayClient::RequestLiveStyle), and anything local, such as this machine's
++  // RetroAchievements login, could let one machine run it and the other not.
++  if (s_live_code && !RunCodeLocked(cpu_guard, *s_live_code))
++    s_live_code.reset();
+   s_disable_logging = true;
+ }
+ 
++void SetLiveCode(std::vector<AREntry> ops)
++{
++  ARCode code;
++  code.name = "OrreLink live battle style";
++  code.ops = std::move(ops);
++  code.enabled = true;
++  std::lock_guard guard(s_lock);
++  s_live_code = std::move(code);
++}
++
++void ClearLiveCode()
++{
++  std::lock_guard guard(s_lock);
++  s_live_code.reset();
++}
++
+ }  // namespace ActionReplay
+diff --git a/Source/Core/Core/ActionReplay.h b/Source/Core/Core/ActionReplay.h
+index deb88fd..ea9ee09 100644
+--- a/Source/Core/Core/ActionReplay.h
++++ b/Source/Core/Core/ActionReplay.h
+@@ -45,6 +45,16 @@ struct ARCode
+ 
+ void RunAllActive(const Core::CPUThreadGuard& cpu_guard);
+ 
++// XD Netplay live battle style: one extra code that netplay installs at the same emulated moment
++// on every machine (NetPlayClient applies it at a numbered pad pop). RunAllActive runs it after the
++// active codes every frame, so for an address both touch it has the last word, and it runs whether
++// or not cheats are enabled, because it only ever comes from netplay and the room decides it. It is
++// held apart from the active codes so nothing that rebuilds those (the cheat manager, a code sync)
++// can drop it. The host refuses live changes in hardcore mode (a synced setting), so nothing
++// here consults this machine's own achievements state. Cleared by PatchEngine::Shutdown.
++void SetLiveCode(std::vector<AREntry> ops);
++void ClearLiveCode();
++
+ void ApplyCodes(std::span<const ARCode> codes, const std::string& game_id, u16 revision);
+ void SetSyncedCodesAsActive();
+ void UpdateSyncedCodes(std::span<const ARCode> codes);
+diff --git a/Source/Core/Core/NetPlayClient.cpp b/Source/Core/Core/NetPlayClient.cpp
+index 0767243..4c0b8b8 100644
+--- a/Source/Core/Core/NetPlayClient.cpp
++++ b/Source/Core/Core/NetPlayClient.cpp
+@@ -14,6 +14,7 @@
+ #include <cstddef>
+ #include <cstring>
+ #include <functional>
++#include <iterator>
+ #include <memory>
+ #include <mutex>
+ #include <span>
+@@ -60,6 +61,7 @@
+ #include "Core/HW/GBAPad.h"
+ #include "Core/HW/GCMemcard/GCMemcard.h"
+ #include "Core/HW/GCPad.h"
++#include "Core/HW/Memmap.h"
+ #include "Core/HW/SI/SI.h"
+ #include "Core/HW/SI/SI_Device.h"
+ #include "Core/HW/SI/SI_DeviceAMBaseboard.h"
+@@ -579,6 +581,10 @@ void NetPlayClient::OnData(sf::Packet& packet)
+     OnPowerButton();
+     break;
+ 
++  case MessageID::LiveStyle:
++    OnLiveStyle(packet);
++    break;
++
+   case MessageID::Ping:
+     OnPing(packet);
+     break;
+@@ -1128,11 +1134,139 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
+   // Until StartGame records this game's boot sequence (on Qt that is later, on the GUI thread),
+   // no core may pass IsCurrentGameCore: the previous game's number must not linger here.
+   m_game_boot_sequence.store(UINT64_MAX, std::memory_order_release);
++  // Live battle style numbering restarts with the queues, for the same reason and on the same
++  // thread: pop number K has to mean the same poll on every machine. The pad map arrived ahead of
++  // this message on the same channel, so it is final here and identical everywhere.
++  m_live_push_count.fill(0);
++  m_live_pop_count.fill(0);
++  m_live_marker_pops.store(0, std::memory_order_relaxed);
++  // Live changes are XD Battle Style lines: in any other game they would write into unrelated
++  // memory. The selected game is the room's, identical on every machine.
++  int marker = -1;
++  if (m_selected_game.game_id == "GXXE01")
++  {
++    for (size_t i = 0; i < m_net_settings.pad_map.size(); ++i)
++    {
++      if (m_net_settings.pad_map[i] == 1)  // the host is always pid 1
++      {
++        marker = static_cast<int>(i);
++        break;
++      }
++    }
++  }
++  m_live_marker_pad.store(marker, std::memory_order_relaxed);
++  {
++    std::lock_guard lk(m_live_mutex);
++    m_live_request.reset();
++    m_live_pending.clear();
++  }
+   m_input_reset_for_game.store(true, std::memory_order_release);
+ 
+   m_dialog->OnMsgStartGame();
+ }
+ 
++// Live battle style lines are plain unconditional writes and nothing else: 0x04 (32-bit) and
++// 0x02 (16-bit) Action Replay write codes into main memory. Anything else is refused on both
++// ends, so a live change can never carry a conditional or a pointer write.
++static bool IsLiveStyleOp(u32 addr_word)
++{
++  const u32 type = addr_word >> 24;
++  return (type == 0x04 || type == 0x02) && (addr_word & 0x00FFFFFF) < 0x01800000;
++}
++
++static constexpr size_t LIVE_STYLE_MAX_OPS = 64;
++
++// A short fingerprint of a live change for the session log, so the two players' "apply" lines
++// can be checked against each other.
++static u32 LiveStyleSum(const std::vector<std::pair<u32, u32>>& ops)
++{
++  u32 sum = 0;
++  for (const auto& [addr_word, value] : ops)
++    sum = (sum * 31u) ^ addr_word ^ (value * 2654435761u);
++  return sum;
++}
++
++bool NetPlayClient::RequestLiveStyle(std::vector<std::pair<u32, u32>> ops, std::string* reason)
++{
++  const auto refuse = [reason](std::string text) {
++    if (reason)
++      *reason = std::move(text);
++    return false;
++  };
++  if (!m_local_player || !m_local_player->IsHost())
++    return refuse("Only the host can change the battle style.");
++  if (!m_is_running.IsSet())
++    return refuse("No battle is running.");
++  // Only Pokemon XD rooms have a marker pad (OnStartGame). Host input authority carries every pad
++  // through the host on its own schedule (PadHostData), not through the owners' pushes that
++  // number a live change; XD rooms never use it.
++  if (m_live_marker_pad.load(std::memory_order_relaxed) < 0 || m_host_input_authority)
++    return refuse("Live changes need Pokemon XD and the usual controller setup.");
++  // Hardcore mode is a synced setting, so this refusal is the same on every machine's view, and
++  // the live code itself never has to look at any machine's own achievements state.
++  if (m_net_settings.enable_hardcore)
++    return refuse("RetroAchievements hardcore mode is on for this game.");
++  if (ops.size() > LIVE_STYLE_MAX_OPS || !std::ranges::all_of(ops, [](const auto& op) {
++        return IsLiveStyleOp(op.first);
++      }))
++  {
++    return refuse("That battle style could not be sent.");
++  }
++
++  // Picked up by the CPU thread at this machine's next poll of the marker pad (PollLocalPad),
++  // which is where it gets its number. A newer request before then simply replaces this one.
++  std::lock_guard lk(m_live_mutex);
++  m_live_request = std::move(ops);
++  return true;
++}
++
++// ---NETPLAY--- thread. Every machine but the host: register the change under its pop number.
++// It arrives ahead of the pad entry that number names, on the same ordered channel, so it is
++// always registered before the CPU thread can reach that pop.
++void NetPlayClient::OnLiveStyle(sf::Packet& packet)
++{
++  u32 apply_at = 0;
++  u32 count = 0;
++  packet >> apply_at >> count;
++  if (count > LIVE_STYLE_MAX_OPS)
++    return;
++  std::vector<std::pair<u32, u32>> ops;
++  ops.reserve(count);
++  for (u32 i = 0; i < count; ++i)
++  {
++    u32 addr_word = 0;
++    u32 value = 0;
++    packet >> addr_word >> value;
++    if (!IsLiveStyleOp(addr_word))
++      return;
++    ops.emplace_back(addr_word, value);
++  }
++
++#ifdef HAS_LIBMGBA
++  // Tick 0: this is the netplay thread, which must not read CoreTiming (see UpdateAutoPadBuffer).
++  GBADetectLog::LogEvent(0, 0, "livestyle",
++                         fmt::format("recv at={} ops={} sum={:08x}", apply_at, ops.size(),
++                                     LiveStyleSum(ops)),
++                         false);
++#endif
++#ifdef HAS_LIBMGBA
++  // The ordering guarantee says this always arrives before its pop. If it ever does not, this
++  // machine applies it later than the others would, silently; say so in the log.
++  if (apply_at < m_live_marker_pops.load(std::memory_order_relaxed))
++  {
++    GBADetectLog::LogEvent(0, 0, "livestyle",
++                           fmt::format("LATE at={} popped={}", apply_at,
++                                       m_live_marker_pops.load(std::memory_order_relaxed)),
++                           false);
++  }
++#endif
++  // No chat line here: this runs mid-battle on the netplay thread, where a chat line would also
++  // reach the on-screen chat (unsynchronized with the video thread, and the fork keeps OSD text
++  // off during the GBA link). The change shows for itself at the next battle.
++  std::lock_guard lk(m_live_mutex);
++  m_live_pending[apply_at] = std::move(ops);
++}
++
+ void NetPlayClient::OnStopGame(sf::Packet& packet)
+ {
+ #ifdef HAS_LIBMGBA
+@@ -2742,7 +2876,62 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
+   }
+ #endif
+ 
++  // Live battle style. A change numbered K becomes due at this pad's pop K, which every machine
++  // reaches at the same emulated poll, and it was registered before its entry could arrive. It is
++  // installed at the first due pop where XD is between battles, read from XD's own memory: the
++  // battle object's active-battler pointer (0x804A1730 + 0xDDF8, the address the GBA logs call
++  // ctx) is 0 from the end of one battle to the first action of the next. That memory is
++  // identical on every machine at the same pop, so every machine makes the same choice, and a
++  // change made mid-battle waits for the battle to end: XD reads a battle's terrain from the link
++  // record at the moment a move like Nature Power needs it, so changing the record mid-battle
++  // would change the rules of the fight in progress. One window stays open: the few seconds of a
++  // battle's intro, after battle setup has written the record and before the first action. A
++  // location change landing there makes that battle's terrain follow the new location while the
++  // old stage shows; both machines agree. Several changes due at once collapse to the newest;
++  // each is a full set.
++  // m_live_mutex is taken and released before ActionReplay's own lock and is never held while
++  // taking another.
++  if (pad_nb == m_live_marker_pad.load(std::memory_order_relaxed))
++  {
++    constexpr u32 XD_ACTIVE_BATTLER_PTR = 0x804AF528;  // XD_CTX_PTR in SI_DeviceGBAEmu.cpp
++    const u32 pop_index = m_live_pop_count[pad_nb];
++    std::optional<std::pair<u32, std::vector<std::pair<u32, u32>>>> due;
++    {
++      std::lock_guard lk(m_live_mutex);
++      const auto end = m_live_pending.upper_bound(pop_index);
++      if (end != m_live_pending.begin() &&
++          Core::System::GetInstance().GetMemory().Read_U32(XD_ACTIVE_BATTLER_PTR) == 0)
++      {
++        auto newest = std::prev(end);
++        due.emplace(newest->first, std::move(newest->second));
++        m_live_pending.erase(m_live_pending.begin(), end);
++      }
++    }
++    if (due)
++    {
++      const auto& [numbered, ops] = *due;
++      std::vector<ActionReplay::AREntry> entries;
++      entries.reserve(ops.size());
++      for (const auto& [addr_word, value] : ops)
++        entries.emplace_back(addr_word, value);
++      ActionReplay::SetLiveCode(std::move(entries));
++#ifdef HAS_LIBMGBA
++      GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(),
++                             "livestyle",
++                             fmt::format("apply at={} pop={} ops={} sum={:08x}", numbered,
++                                         pop_index, ops.size(), LiveStyleSum(ops)),
++                             false);
++#endif
++    }
++  }
++
+   m_pad_buffer[pad_nb].Pop(*pad_status);
++  if (pad_nb >= 0 && static_cast<size_t>(pad_nb) < m_live_pop_count.size())
++  {
++    ++m_live_pop_count[pad_nb];
++    if (pad_nb == m_live_marker_pad.load(std::memory_order_relaxed))
++      m_live_marker_pops.store(m_live_pop_count[pad_nb], std::memory_order_relaxed);
++  }
+ 
+   auto& movie = Core::System::GetInstance().GetMovie();
+   if (movie.IsRecordingInput())
+@@ -2904,12 +3093,44 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
+   }
+   else
+   {
++    // Host, marker pad: give a waiting live style change its number, the index of the next entry
++    // pushed for this pad, and send it now. The PadData packet carrying that entry is sent after
++    // this function returns, so on the ordered channel every other machine receives the change
++    // first. The host registers it for itself before pushing the entry.
++    if (ingame_pad == m_live_marker_pad.load(std::memory_order_relaxed))
++    {
++      std::optional<std::vector<std::pair<u32, u32>>> request;
++      const u32 apply_at = m_live_push_count[ingame_pad];
++      {
++        std::lock_guard lk(m_live_mutex);
++        request.swap(m_live_request);
++        if (request)
++          m_live_pending[apply_at] = *request;
++      }
++      if (request)
++      {
++        sf::Packet live;
++        live << MessageID::LiveStyle << apply_at << static_cast<u32>(request->size());
++        for (const auto& [addr_word, value] : *request)
++          live << addr_word << value;
++        SendAsync(std::move(live));
++#ifdef HAS_LIBMGBA
++        GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(),
++                               "livestyle",
++                               fmt::format("send at={} ops={} sum={:08x}", apply_at,
++                                           request->size(), LiveStyleSum(*request)),
++                               false);
++#endif
++      }
++    }
++
+     // adjust the buffer either up or down
+     // inserting multiple padstates or dropping states
+     while (m_pad_buffer[ingame_pad].Size() <= m_target_buffer_size)
+     {
+       // add to buffer
+       m_pad_buffer[ingame_pad].Push(pad_status);
++      ++m_live_push_count[ingame_pad];
+ 
+       // add to packet
+       AddPadStateToPacket(ingame_pad, pad_status, packet);
+diff --git a/Source/Core/Core/NetPlayClient.h b/Source/Core/Core/NetPlayClient.h
+index 32d581d..2c4af11 100644
+--- a/Source/Core/Core/NetPlayClient.h
++++ b/Source/Core/Core/NetPlayClient.h
+@@ -10,10 +10,12 @@
+ #include <map>
+ #include <memory>
+ #include <mutex>
++#include <optional>
+ #include <span>
+ #include <string>
+ #include <thread>
+ #include <unordered_map>
++#include <utility>
+ #include <vector>
+ 
+ #include "Common/CommonTypes.h"
+@@ -190,6 +192,15 @@ public:
+   bool IsCurrentGameCore() const;
+   // Called by the input hook each time it turns a previous game's core away.
+   void CountStaleCorePoll() { m_stale_core_polls.fetch_add(1, std::memory_order_relaxed); }
++
++  // XD Netplay, host only: change the running game's battle style (music and location). ops are
++  // Action Replay write lines as (address word, value) pairs, the full live set; each request
++  // replaces the previous one. It is applied at the same emulated moment on every machine: the
++  // host's CPU thread numbers it with the index of the next entry it pushes for the first pad it
++  // owns, sends it ahead of that entry on the same ordered channel, and every machine installs it
++  // right before popping that entry. Returns false with a one-line reason when it cannot be
++  // scheduled. Safe from any thread; takes only m_live_mutex.
++  bool RequestLiveStyle(std::vector<std::pair<u32, u32>> ops, std::string* reason);
+   bool IsLocalPlayer(PlayerId pid) const;
+   const PlayerId& GetLocalPlayerId() const;
+ 
+@@ -244,6 +255,22 @@ protected:
+   std::atomic<u64> m_game_boot_sequence{0};
+   // Polls turned away from a previous game's core in this game, reported on the padpop lines.
+   std::atomic<u32> m_stale_core_polls{0};
++
++  // XD Netplay live battle style (RequestLiveStyle). m_live_mutex is a leaf lock: nothing is ever
++  // locked while holding it. The counters are CPU-thread only, reset with the pad queues in
++  // OnStartGame; because every machine pushes and pops each pad's entries in the same order, pop
++  // number K of a pad is the same emulated poll everywhere.
++  std::mutex m_live_mutex;
++  std::optional<std::vector<std::pair<u32, u32>>> m_live_request;          // host, not yet numbered
++  std::map<u32, std::vector<std::pair<u32, u32>>> m_live_pending;          // pop index -> ops
++  std::array<u32, 4> m_live_push_count{};
++  std::array<u32, 4> m_live_pop_count{};
++  // The marker pad's pop count, readable from the netplay thread for the LATE log line only.
++  std::atomic<u32> m_live_marker_pops{0};
++  // The first in-game pad the host owns, in a Pokemon XD room; the pad whose entries number live
++  // changes. -1 turns live changes off for the game. Fixed at OnStartGame, the same everywhere.
++  // Atomic: written on the netplay thread, read on the CPU thread and in RequestLiveStyle.
++  std::atomic<int> m_live_marker_pad{-1};
+   // One "padpop" diagnostic line per pad per game: how deep that pad's queue was at its first pop.
+   std::array<bool, 4> m_first_pop_logged{};
+ 
+@@ -377,6 +404,7 @@ private:
+   void OnStartGame(sf::Packet& packet);
+   void OnStopGame(sf::Packet& packet);
+   void OnPowerButton();
++  void OnLiveStyle(sf::Packet& packet);
+   void OnPing(sf::Packet& packet);
+   void OnPlayerPingData(sf::Packet& packet);
+   void OnDesyncDetected(sf::Packet& packet);
+diff --git a/Source/Core/Core/NetPlayProto.h b/Source/Core/Core/NetPlayProto.h
+index f22cea3..06f9630 100644
+--- a/Source/Core/Core/NetPlayProto.h
++++ b/Source/Core/Core/NetPlayProto.h
+@@ -218,6 +218,7 @@ enum class MessageID : u8
+   ClientCapabilities = 0xA5,
+   HostInputAuthority = 0xA6,
+   PowerButton = 0xA7,
++  LiveStyle = 0xA8,  // XD Netplay: host changes the running game's battle style
+ 
+   TimeBase = 0xB0,
+   DesyncDetected = 0xB1,
+diff --git a/Source/Core/Core/NetPlayServer.cpp b/Source/Core/Core/NetPlayServer.cpp
+index 1244ee9..6835ed8 100644
+--- a/Source/Core/Core/NetPlayServer.cpp
++++ b/Source/Core/Core/NetPlayServer.cpp
+@@ -1404,6 +1404,34 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
+   }
+   break;
+ 
++  case MessageID::LiveStyle:
++  {
++    // XD Netplay live battle style, from the host's own client only, and only for the game that
++    // is running (the same gate as PadData). Relayed here, synchronously, like PadData, so it
++    // reaches every other player ahead of the host's pad entry that it names: both come from the
++    // same peer on the same ordered channel and leave in the order they arrived.
++    if (!player.IsHost() || !m_is_running || player.current_game != m_current_game)
++      break;
++
++    u32 apply_at = 0;
++    u32 count = 0;
++    packet >> apply_at >> count;
++    if (count > 64)
++      break;
++
++    sf::Packet spac;
++    spac << MessageID::LiveStyle << apply_at << count;
++    for (u32 i = 0; i < count; ++i)
++    {
++      u32 addr_word = 0;
++      u32 value = 0;
++      packet >> addr_word >> value;
++      spac << addr_word << value;
++    }
++    SendToClients(spac, player.pid);
++  }
++  break;
++
+   case MessageID::TimeBase:
+   {
+     u64 timebase = Common::PacketReadU64(packet);
+diff --git a/Source/Core/Core/NetPlayServer.h b/Source/Core/Core/NetPlayServer.h
+index 4d8a175..12c757d 100644
+--- a/Source/Core/Core/NetPlayServer.h
++++ b/Source/Core/Core/NetPlayServer.h
+@@ -90,6 +90,11 @@ public:
+   // StartGame() raises m_is_running before it clears m_start_pending, so there
+   // is no instant where a start is in flight and both read false.
+   bool IsStartingOrRunning() const { return m_start_pending.load() || m_is_running.load(); }
++  // Separately, for the room's live battle style: a start in flight still refuses (the saves and
++  // codes are being sent), a running game takes the change live. StartGame raises running before
++  // it clears pending, so a caller testing pending first never sees neither during the switch.
++  bool IsStartPending() const { return m_start_pending.load(); }
++  bool IsGameRunning() const { return m_is_running.load(); }
+ 
+   void SetHostInputAuthority(bool enable);
+ 
+diff --git a/Source/Core/Core/PatchEngine.cpp b/Source/Core/Core/PatchEngine.cpp
+index adf0483..77ad160 100644
+--- a/Source/Core/Core/PatchEngine.cpp
++++ b/Source/Core/Core/PatchEngine.cpp
+@@ -392,6 +392,9 @@ bool ApplyFramePatches(Core::System& system)
+ void Shutdown()
+ {
+   s_on_frame.clear();
++  // Unconditional: ApplyCodes below returns early when cheats are off, and the live battle style
++  // code runs whether or not they are on.
++  ActionReplay::ClearLiveCode();
+   ActionReplay::ApplyCodes({}, "", 0);
+   Gecko::Shutdown();
+ }
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+index e910e84..aa6c778 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+@@ -332,7 +332,7 @@ void NetPlayDialog::CreateChatLayout()
+   // Shown only while hosting.
+   m_style_button = new QPushButton(tr("Music && Location..."));
+   m_style_button->setToolTip(tr("Change the battle music and the battle location.\n"
+-                                "Applies to the next battle you start."));
++                                "Works while XD is running too. Applies from the next battle."));
+   m_style_button->setDefault(false);
+   m_style_button->setAutoDefault(false);
+   m_style_button->hide();
+@@ -1675,7 +1675,7 @@ void NetPlayDialog::OnStyleSettings()
+   grid->setColumnStretch(1, 1);
+   dialog_layout->addLayout(grid);
+   dialog_layout->addWidget(
+-      new QLabel(tr("Applies to the next battle you start, for both players."), &dialog));
++      new QLabel(tr("Applies from the next battle, for both players."), &dialog));
+ 
+   auto* buttons =
+       new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+@@ -1686,11 +1686,56 @@ void NetPlayDialog::OnStyleSettings()
+ 
+   if (dialog.exec() != QDialog::Accepted)
+     return;
+-  if (!HostWriteAllowed())
++
++  const int music = music_combo->currentData().toInt();
++  const int venue = venue_combo->currentData().toInt();
++  const auto server = Settings::Instance().GetNetPlayServer();
++  const auto client = Settings::Instance().GetNetPlayClient();
++  if (!server || !client)
++  {
++    DisplayMessage(tr("The room has closed. Nothing was changed."), "red");
+     return;
++  }
++  // Pending first: StartGame raises running before it clears pending, so this order never sees a
++  // start in flight as "neither".
++  if (server->IsStartPending())
++  {
++    DisplayMessage(tr("A battle is starting. Try again after it has loaded."), "red");
++    return;
++  }
++
++  if (server->IsGameRunning())
++  {
++    // Live: numbered and applied on both machines at the same moment. The saved picks are for
++    // the next Start; the INI is NOT regenerated here, because nothing may change what this
++    // machine would boot while a game that was started from it is still running.
++    XDNetplay::BattleCustomizer::LiveStyle live =
++        XDNetplay::BattleCustomizer::MakeLiveStyle(music, venue);
++    std::string reason;
++    if (!client->RequestLiveStyle(std::move(live.ops), &reason))
++    {
++      DisplayMessage(tr("Music and location not changed: %1").arg(QString::fromStdString(reason)),
++                     "red");
++      return;
++    }
++    // Only now: a refused set must not become what the next one builds on.
++    XDNetplay::BattleCustomizer::CommitLiveStyle(live);
++    Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_MUSIC, music);
++    Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_VENUE, venue);
++    Config::Save();
++    DisplayMessage(
++        live.location_waits_for_next_start ?
++            tr("Music: %1. Applies from the next battle. Game default location applies from the "
++               "next Start.")
++                .arg(music_combo->currentText()) :
++            tr("Music: %1. Location: %2. Applies from the next battle, for both players.")
++                .arg(music_combo->currentText(), venue_combo->currentText()),
++        "green");
++    return;
++  }
+ 
+-  Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_MUSIC, music_combo->currentData().toInt());
+-  Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_VENUE, venue_combo->currentData().toInt());
++  Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_MUSIC, music);
++  Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_VENUE, venue);
+   Config::Save();
+   XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
+   DisplayMessage(tr("Music: %1. Location: %2. Applies to the next battle you start.")
+@@ -1746,11 +1791,11 @@ void NetPlayDialog::SetOptionsEnabled(bool enabled)
+     m_host_input_authority_action->setEnabled(enabled);
+     m_golf_mode_action->setEnabled(enabled);
+     m_fixed_delay_action->setEnabled(enabled);
+-    // Host-side team and style picks only apply at the next Start, and the
+-    // live GBA core owns the port 2 save while a game runs. A joiner's Submit
+-    // Team button is left alone here, as before.
++    // The host's team only changes between games: the live GBA core owns the port 2 save while
++    // one runs. Music & Location stays available, because a running game takes it live (see
++    // OnStyleSettings); it refuses by itself while a start is in flight. A joiner's Submit Team
++    // button is left alone here, as before.
+     m_submit_team_button->setEnabled(enabled);
+-    m_style_button->setEnabled(enabled);
+   }
+ 
+   m_record_input_action->setEnabled(enabled);
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index b4dbdf2..b138f65 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -49,6 +49,8 @@
+ #include "Common/Version.h"
+ 
+ #include "Core/Config/MainSettings.h"
++#include "Core/Core.h"
++#include "Core/System.h"
+ #include "Core/Config/NetplaySettings.h"
+ #include "Core/HW/GBACore.h"
+ 
+@@ -1193,6 +1195,16 @@ void XDLauncherDialog::OnTeamEditor()
+ 
+ void XDLauncherDialog::OnBootSolo()
+ {
++  // The launcher stays open beside a room it hosted, so this can be pressed during a netplay game.
++  // PrepareForStart below would rewrite GXXE01.ini and could set the cheats flag on this machine
++  // alone mid-game, so refuse while any game runs.
++  if (!Core::IsUninitialized(Core::System::GetInstance()))
++  {
++    ModalMessageBox::information(this, tr("OrreLink"),
++                                 tr("A game is running. Boot solo after it ends."));
++    return;
++  }
++
+   const auto game = FindXdGame();
+   if (!game)
+   {
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
+index 0cae0d5..2b78950 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
+@@ -189,6 +189,7 @@ void ApplyStartForcing(NetPlay::NetPlayServer* server)
+   // snapshots MAIN_ENABLE_CHEATS (SetupNetSettings) and re-reads the local
+   // GXXE01.ini off disk (SyncCodes).
+   BattleCustomizer::PrepareForStart();
++  BattleCustomizer::BeginLiveStyleForStart();
+ 
+   // SetGBAConfig(update_rom=true) reads MAIN_GBA_ROM_PATHS[1]/[2] to fill each
+   // enabled slot's hash/title, which the guest hash-matches against its local
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+index 42c6428..5a6b8a8 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+@@ -1225,8 +1225,104 @@ bool RegenerateFromConfig(std::string* status)
+   return RegenerateIni(ConfigSelection(), ou_enabled, status);
+ }
+ 
++// ---------------------------------------------------------------------------
++// Live battle style (MakeLiveStyle). Host only.
++// ---------------------------------------------------------------------------
++
++// The random-stage sprite's five W/H words that the location lines blank, and their value in a
++// clean GXXE01 main.dol (data section at 0x802FBF00; all five read 0x011600A7). Written back when
++// a location pinned only by a live change is released, so the row shows its sprite again.
++constexpr u32 STAGE_ROW_SPRITE_LINES[] = {0x0430CE2C, 0x0430CE38, 0x0430CE44, 0x0430CE50,
++                                          0x0430CE5C};
++constexpr u32 STAGE_ROW_SPRITE_VANILLA = 0x011600A7;
++// staBGM_tunaide's value in a clean main.dol (see MUSIC_LINES): "Game default" music written back.
++constexpr u32 MUSIC_VANILLA = 0x000004F3;
++// The four link-battle records' own BGM field (+0x10, u32; records as in VENUE_LINES). Battle
++// setup (0x8004D45C) copies staBGM_tunaide there, and the battle reads the record once, at its
++// start (GetBattleBGM 0x801F11D0). A rematch re-runs setup only when XD's stage row is on
++// Random, so a live music change is written here too or a rematch on a fixed stage would keep
++// the old music. For "Game default", 0x4F3 is exactly what setup would have copied.
++constexpr u32 MUSIC_RECORD_LINES[] = {0x04B1CF1C, 0x04B1CF58, 0x04B1CF94, 0x04B1CFD0};
++
++// What the running game's Start block pinned (PrepareForStart), and what the live set currently
++// pins on top of it. 0 / -1 = nothing.
++static int s_start_venue = 0;
++static int s_live_venue = -1;
++
++LiveStyle MakeLiveStyle(int music, int venue)
++{
++  LiveStyle result;
++  const auto add = [&result](u32 addr_word, u32 value) {
++    result.ops.emplace_back(addr_word, value);
++  };
++
++  // Music: always part of the set, so a change back to "Game default" overrides a Start pin with
++  // the vanilla table value rather than leaving it.
++  const u32 music_value = !IsValidMusicId(music) ? MUSIC_VANILLA :
++                          music == MUSIC_SILENT_ID ? 0u :
++                                                     (static_cast<u32>(music) & 0xFFFF);
++  for (const u32 addr : MUSIC_LINES)
++    add(addr, music_value);
++  for (const u32 addr : MUSIC_RECORD_LINES)
++    add(addr, music_value);
++
++  const auto add_location = [&add](int id) {
++    // Exactly the Start block's location lines (GenerateCodeBlock): the four link-battle
++    // records, the stage row pinned to "random", and the row's sprite blanked.
++    for (const u32 addr : VENUE_LINES)
++      add(addr, static_cast<u32>(id) & 0xFFFF);
++    constexpr u32 STAGE_ROW_RANDOM = 6;
++    add(0x044349F4, STAGE_ROW_RANDOM);
++    add(0x044349F8, STAGE_ROW_RANDOM);
++    add(0x04434A74, STAGE_ROW_RANDOM);
++    for (const u32 addr : STAGE_ROW_SPRITE_LINES)
++      add(addr, 0);
++  };
++
++  result.next_live_venue = s_live_venue;
++  if (IsValidVenueId(venue))
++  {
++    add_location(venue);
++    result.next_live_venue = venue;
++  }
++  else if (s_start_venue > 0)
++  {
++    // The Start block pins its location every frame for the rest of the session and a live
++    // line can only override it, not lift it. Keep whatever is showing now.
++    if (s_live_venue > 0)
++      add_location(s_live_venue);
++    result.location_waits_for_next_start = true;
++  }
++  else
++  {
++    // Nothing pinned at Start, so none pinned live either once this set is in: the game writes
++    // the record's battlefield itself at every battle start from its own stage row, and the next
++    // battle is the game's choice again. The row's sprite is put back every time, not only on
++    // the set that lifts a pin: a set can be replaced by a newer one before it is sent, and
++    // writing the vanilla value again is harmless. The row stays on "random" until someone
++    // moves it in XD.
++    for (const u32 addr : STAGE_ROW_SPRITE_LINES)
++      add(addr, STAGE_ROW_SPRITE_VANILLA);
++    result.next_live_venue = -1;
++  }
++  return result;
++}
++
++void CommitLiveStyle(const LiveStyle& live)
++{
++  s_live_venue = live.next_live_venue;
++}
++
++void BeginLiveStyleForStart()
++{
++  const Selection start = ConfigSelection();
++  s_start_venue = IsValidVenueId(start.venue) ? start.venue : 0;
++  s_live_venue = -1;
++}
++
+ void PrepareForStart()
+ {
++
+   // Solo boots have no room-closed event, so their cleanup rides the emulation
+   // state instead: when the core reaches Uninitialized outside a netplay
+   // session, the session is over by definition. Registered once, stands down
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.h b/Source/Core/UICommon/XDNetplay/BattleCustomizer.h
+index 40f8c31..0bf463a 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.h
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.h
+@@ -6,6 +6,10 @@
+ #include <optional>
+ #include <span>
+ #include <string>
++#include <utility>
++#include <vector>
++
++#include "Common/CommonTypes.h"
+ 
+ namespace XDNetplay::BattleCustomizer
+ {
+@@ -238,6 +242,31 @@ bool RegenerateFromConfig(std::string* status);
+ // the battle runs, so the synced set can never diverge mid-session.
+ void PrepareForStart();
+ 
++// A music and location change for a game that is already running (the room's Music & Location
++// while XD is open). The netplay client installs these lines at the same emulated moment on
++// every machine and runs them after the Start block every frame, so they win on any address
++// both write. Each call returns the complete live set and replaces the previous one.
++struct LiveStyle
++{
++  std::vector<std::pair<u32, u32>> ops;  // Action Replay write lines: (address word, value)
++  // True when the pick was "Game default" for the location but a location is pinned for the
++  // rest of this session (the Start block pinned one, and it keeps writing it every frame), so
++  // the current location stays and the default applies at the next Start.
++  bool location_waits_for_next_start = false;
++  // The location the live set pins once installed (-1 = none). Recorded by CommitLiveStyle.
++  int next_live_venue = -1;
++};
++// music and venue as in Selection: 0 = game default, otherwise a table id. An id that is not in
++// its table is treated as game default. Changes nothing: call CommitLiveStyle once the netplay
++// client has accepted the set. Host only; call both from one thread at a time.
++LiveStyle MakeLiveStyle(int music, int venue);
++void CommitLiveStyle(const LiveStyle& live);
++// The netplay host's Start paths only (desktop ApplyStartForcing, Android nativeStartGame), right
++// after PrepareForStart: records what the new Start block pins and forgets the previous game's
++// live set. Not in PrepareForStart itself, which solo boots call too, and not gated on the core
++// state: an Android host can press Start while its previous game is still closing.
++void BeginLiveStyleForStart();
++
+ // End-of-session cleanup, next to RestoreHostTeam in the OnRoomClosed hooks:
+ // clears the guest stash, removes the block/enabled/disabled lines (pure
+ // removal -- the file is stock again), and puts MAIN_ENABLE_CHEATS back to
+diff --git a/Source/Core/UICommon/XDNetplay/Version.h b/Source/Core/UICommon/XDNetplay/Version.h
+index d3df1d9..4417aa0 100644
+--- a/Source/Core/UICommon/XDNetplay/Version.h
++++ b/Source/Core/UICommon/XDNetplay/Version.h
+@@ -11,5 +11,5 @@ namespace XDNetplay
+ // fork's release, so it cannot answer "which XD Netplay am I?" -- this constant is the only thing
+ // that can. It MUST be bumped in the same patch that a release is tagged from: ship a tag ahead of
+ // this string and every user of that release is told they are out of date forever.
+-constexpr char VERSION[] = "1.6.5";
++constexpr char VERSION[] = "1.7.0";
+ }  // namespace XDNetplay
+-- 
+2.39.5 (Apple Git-154)
+
