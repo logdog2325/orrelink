@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -60,6 +61,7 @@
 #include "Core/HW/GBAPad.h"
 #include "Core/HW/GCMemcard/GCMemcard.h"
 #include "Core/HW/GCPad.h"
+#include "Core/HW/Memmap.h"
 #include "Core/HW/SI/SI.h"
 #include "Core/HW/SI/SI_Device.h"
 #include "Core/HW/SI/SI_DeviceAMBaseboard.h"
@@ -577,6 +579,10 @@ void NetPlayClient::OnData(sf::Packet& packet)
 
   case MessageID::PowerButton:
     OnPowerButton();
+    break;
+
+  case MessageID::LiveStyle:
+    OnLiveStyle(packet);
     break;
 
   case MessageID::Ping:
@@ -1128,9 +1134,137 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
   // Until StartGame records this game's boot sequence (on Qt that is later, on the GUI thread),
   // no core may pass IsCurrentGameCore: the previous game's number must not linger here.
   m_game_boot_sequence.store(UINT64_MAX, std::memory_order_release);
+  // Live battle style numbering restarts with the queues, for the same reason and on the same
+  // thread: pop number K has to mean the same poll on every machine. The pad map arrived ahead of
+  // this message on the same channel, so it is final here and identical everywhere.
+  m_live_push_count.fill(0);
+  m_live_pop_count.fill(0);
+  m_live_marker_pops.store(0, std::memory_order_relaxed);
+  // Live changes are XD Battle Style lines: in any other game they would write into unrelated
+  // memory. The selected game is the room's, identical on every machine.
+  int marker = -1;
+  if (m_selected_game.game_id == "GXXE01")
+  {
+    for (size_t i = 0; i < m_net_settings.pad_map.size(); ++i)
+    {
+      if (m_net_settings.pad_map[i] == 1)  // the host is always pid 1
+      {
+        marker = static_cast<int>(i);
+        break;
+      }
+    }
+  }
+  m_live_marker_pad.store(marker, std::memory_order_relaxed);
+  {
+    std::lock_guard lk(m_live_mutex);
+    m_live_request.reset();
+    m_live_pending.clear();
+  }
   m_input_reset_for_game.store(true, std::memory_order_release);
 
   m_dialog->OnMsgStartGame();
+}
+
+// Live battle style lines are plain unconditional writes and nothing else: 0x04 (32-bit) and
+// 0x02 (16-bit) Action Replay write codes into main memory. Anything else is refused on both
+// ends, so a live change can never carry a conditional or a pointer write.
+static bool IsLiveStyleOp(u32 addr_word)
+{
+  const u32 type = addr_word >> 24;
+  return (type == 0x04 || type == 0x02) && (addr_word & 0x00FFFFFF) < 0x01800000;
+}
+
+static constexpr size_t LIVE_STYLE_MAX_OPS = 64;
+
+// A short fingerprint of a live change for the session log, so the two players' "apply" lines
+// can be checked against each other.
+static u32 LiveStyleSum(const std::vector<std::pair<u32, u32>>& ops)
+{
+  u32 sum = 0;
+  for (const auto& [addr_word, value] : ops)
+    sum = (sum * 31u) ^ addr_word ^ (value * 2654435761u);
+  return sum;
+}
+
+bool NetPlayClient::RequestLiveStyle(std::vector<std::pair<u32, u32>> ops, std::string* reason)
+{
+  const auto refuse = [reason](std::string text) {
+    if (reason)
+      *reason = std::move(text);
+    return false;
+  };
+  if (!m_local_player || !m_local_player->IsHost())
+    return refuse("Only the host can change the battle style.");
+  if (!m_is_running.IsSet())
+    return refuse("No battle is running.");
+  // Only Pokemon XD rooms have a marker pad (OnStartGame). Host input authority carries every pad
+  // through the host on its own schedule (PadHostData), not through the owners' pushes that
+  // number a live change; XD rooms never use it.
+  if (m_live_marker_pad.load(std::memory_order_relaxed) < 0 || m_host_input_authority)
+    return refuse("Live changes need Pokemon XD and the usual controller setup.");
+  // Hardcore mode is a synced setting, so this refusal is the same on every machine's view, and
+  // the live code itself never has to look at any machine's own achievements state.
+  if (m_net_settings.enable_hardcore)
+    return refuse("RetroAchievements hardcore mode is on for this game.");
+  if (ops.size() > LIVE_STYLE_MAX_OPS || !std::ranges::all_of(ops, [](const auto& op) {
+        return IsLiveStyleOp(op.first);
+      }))
+  {
+    return refuse("That battle style could not be sent.");
+  }
+
+  // Picked up by the CPU thread at this machine's next poll of the marker pad (PollLocalPad),
+  // which is where it gets its number. A newer request before then simply replaces this one.
+  std::lock_guard lk(m_live_mutex);
+  m_live_request = std::move(ops);
+  return true;
+}
+
+// ---NETPLAY--- thread. Every machine but the host: register the change under its pop number.
+// It arrives ahead of the pad entry that number names, on the same ordered channel, so it is
+// always registered before the CPU thread can reach that pop.
+void NetPlayClient::OnLiveStyle(sf::Packet& packet)
+{
+  u32 apply_at = 0;
+  u32 count = 0;
+  packet >> apply_at >> count;
+  if (count > LIVE_STYLE_MAX_OPS)
+    return;
+  std::vector<std::pair<u32, u32>> ops;
+  ops.reserve(count);
+  for (u32 i = 0; i < count; ++i)
+  {
+    u32 addr_word = 0;
+    u32 value = 0;
+    packet >> addr_word >> value;
+    if (!IsLiveStyleOp(addr_word))
+      return;
+    ops.emplace_back(addr_word, value);
+  }
+
+#ifdef HAS_LIBMGBA
+  // Tick 0: this is the netplay thread, which must not read CoreTiming (see UpdateAutoPadBuffer).
+  GBADetectLog::LogEvent(0, 0, "livestyle",
+                         fmt::format("recv at={} ops={} sum={:08x}", apply_at, ops.size(),
+                                     LiveStyleSum(ops)),
+                         false);
+#endif
+#ifdef HAS_LIBMGBA
+  // The ordering guarantee says this always arrives before its pop. If it ever does not, this
+  // machine applies it later than the others would, silently; say so in the log.
+  if (apply_at < m_live_marker_pops.load(std::memory_order_relaxed))
+  {
+    GBADetectLog::LogEvent(0, 0, "livestyle",
+                           fmt::format("LATE at={} popped={}", apply_at,
+                                       m_live_marker_pops.load(std::memory_order_relaxed)),
+                           false);
+  }
+#endif
+  // No chat line here: this runs mid-battle on the netplay thread, where a chat line would also
+  // reach the on-screen chat (unsynchronized with the video thread, and the fork keeps OSD text
+  // off during the GBA link). The change shows for itself at the next battle.
+  std::lock_guard lk(m_live_mutex);
+  m_live_pending[apply_at] = std::move(ops);
 }
 
 void NetPlayClient::OnStopGame(sf::Packet& packet)
@@ -2742,7 +2876,62 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
   }
 #endif
 
+  // Live battle style. A change numbered K becomes due at this pad's pop K, which every machine
+  // reaches at the same emulated poll, and it was registered before its entry could arrive. It is
+  // installed at the first due pop where XD is between battles, read from XD's own memory: the
+  // battle object's active-battler pointer (0x804A1730 + 0xDDF8, the address the GBA logs call
+  // ctx) is 0 from the end of one battle to the first action of the next. That memory is
+  // identical on every machine at the same pop, so every machine makes the same choice, and a
+  // change made mid-battle waits for the battle to end: XD reads a battle's terrain from the link
+  // record at the moment a move like Nature Power needs it, so changing the record mid-battle
+  // would change the rules of the fight in progress. One window stays open: the few seconds of a
+  // battle's intro, after battle setup has written the record and before the first action. A
+  // location change landing there makes that battle's terrain follow the new location while the
+  // old stage shows; both machines agree. Several changes due at once collapse to the newest;
+  // each is a full set.
+  // m_live_mutex is taken and released before ActionReplay's own lock and is never held while
+  // taking another.
+  if (pad_nb == m_live_marker_pad.load(std::memory_order_relaxed))
+  {
+    constexpr u32 XD_ACTIVE_BATTLER_PTR = 0x804AF528;  // XD_CTX_PTR in SI_DeviceGBAEmu.cpp
+    const u32 pop_index = m_live_pop_count[pad_nb];
+    std::optional<std::pair<u32, std::vector<std::pair<u32, u32>>>> due;
+    {
+      std::lock_guard lk(m_live_mutex);
+      const auto end = m_live_pending.upper_bound(pop_index);
+      if (end != m_live_pending.begin() &&
+          Core::System::GetInstance().GetMemory().Read_U32(XD_ACTIVE_BATTLER_PTR) == 0)
+      {
+        auto newest = std::prev(end);
+        due.emplace(newest->first, std::move(newest->second));
+        m_live_pending.erase(m_live_pending.begin(), end);
+      }
+    }
+    if (due)
+    {
+      const auto& [numbered, ops] = *due;
+      std::vector<ActionReplay::AREntry> entries;
+      entries.reserve(ops.size());
+      for (const auto& [addr_word, value] : ops)
+        entries.emplace_back(addr_word, value);
+      ActionReplay::SetLiveCode(std::move(entries));
+#ifdef HAS_LIBMGBA
+      GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(),
+                             "livestyle",
+                             fmt::format("apply at={} pop={} ops={} sum={:08x}", numbered,
+                                         pop_index, ops.size(), LiveStyleSum(ops)),
+                             false);
+#endif
+    }
+  }
+
   m_pad_buffer[pad_nb].Pop(*pad_status);
+  if (pad_nb >= 0 && static_cast<size_t>(pad_nb) < m_live_pop_count.size())
+  {
+    ++m_live_pop_count[pad_nb];
+    if (pad_nb == m_live_marker_pad.load(std::memory_order_relaxed))
+      m_live_marker_pops.store(m_live_pop_count[pad_nb], std::memory_order_relaxed);
+  }
 
   auto& movie = Core::System::GetInstance().GetMovie();
   if (movie.IsRecordingInput())
@@ -2904,12 +3093,44 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
   }
   else
   {
+    // Host, marker pad: give a waiting live style change its number, the index of the next entry
+    // pushed for this pad, and send it now. The PadData packet carrying that entry is sent after
+    // this function returns, so on the ordered channel every other machine receives the change
+    // first. The host registers it for itself before pushing the entry.
+    if (ingame_pad == m_live_marker_pad.load(std::memory_order_relaxed))
+    {
+      std::optional<std::vector<std::pair<u32, u32>>> request;
+      const u32 apply_at = m_live_push_count[ingame_pad];
+      {
+        std::lock_guard lk(m_live_mutex);
+        request.swap(m_live_request);
+        if (request)
+          m_live_pending[apply_at] = *request;
+      }
+      if (request)
+      {
+        sf::Packet live;
+        live << MessageID::LiveStyle << apply_at << static_cast<u32>(request->size());
+        for (const auto& [addr_word, value] : *request)
+          live << addr_word << value;
+        SendAsync(std::move(live));
+#ifdef HAS_LIBMGBA
+        GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(),
+                               "livestyle",
+                               fmt::format("send at={} ops={} sum={:08x}", apply_at,
+                                           request->size(), LiveStyleSum(*request)),
+                               false);
+#endif
+      }
+    }
+
     // adjust the buffer either up or down
     // inserting multiple padstates or dropping states
     while (m_pad_buffer[ingame_pad].Size() <= m_target_buffer_size)
     {
       // add to buffer
       m_pad_buffer[ingame_pad].Push(pad_status);
+      ++m_live_push_count[ingame_pad];
 
       // add to packet
       AddPadStateToPacket(ingame_pad, pad_status, packet);

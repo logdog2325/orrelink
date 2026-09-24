@@ -48,6 +48,8 @@
 #include "Common/Config/Config.h"
 #include "Common/Version.h"
 #include "Core/Config/MainSettings.h"
+#include "Core/Core.h"
+#include "Core/System.h"
 #include "UICommon/NetPlayIndex.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/DisposableSave.h"
@@ -399,6 +401,10 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativePrepar
   // boot bypasses that entirely -- without this call a solo session never gets
   // the Battle Style block at all (the first field test found exactly that).
   // Cleanup rides the core-state hook PrepareForStart registers.
+  // Never while a game runs: it rewrites GXXE01.ini and may set the cheats flag on this machine
+  // alone, which in a netplay game could make the two machines run different codes.
+  if (!Core::IsUninitialized(Core::System::GetInstance()))
+    return;
   XDNetplay::BattleCustomizer::PrepareForStart();
 
   // Crash self-heal for the disposable netplay saves (mirrors the desktop

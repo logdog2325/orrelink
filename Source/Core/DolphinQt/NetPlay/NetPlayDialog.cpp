@@ -332,7 +332,7 @@ void NetPlayDialog::CreateChatLayout()
   // Shown only while hosting.
   m_style_button = new QPushButton(tr("Music && Location..."));
   m_style_button->setToolTip(tr("Change the battle music and the battle location.\n"
-                                "Applies to the next battle you start."));
+                                "Works while XD is running too. Applies from the next battle."));
   m_style_button->setDefault(false);
   m_style_button->setAutoDefault(false);
   m_style_button->hide();
@@ -1675,7 +1675,7 @@ void NetPlayDialog::OnStyleSettings()
   grid->setColumnStretch(1, 1);
   dialog_layout->addLayout(grid);
   dialog_layout->addWidget(
-      new QLabel(tr("Applies to the next battle you start, for both players."), &dialog));
+      new QLabel(tr("Applies from the next battle, for both players."), &dialog));
 
   auto* buttons =
       new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
@@ -1686,11 +1686,56 @@ void NetPlayDialog::OnStyleSettings()
 
   if (dialog.exec() != QDialog::Accepted)
     return;
-  if (!HostWriteAllowed())
-    return;
 
-  Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_MUSIC, music_combo->currentData().toInt());
-  Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_VENUE, venue_combo->currentData().toInt());
+  const int music = music_combo->currentData().toInt();
+  const int venue = venue_combo->currentData().toInt();
+  const auto server = Settings::Instance().GetNetPlayServer();
+  const auto client = Settings::Instance().GetNetPlayClient();
+  if (!server || !client)
+  {
+    DisplayMessage(tr("The room has closed. Nothing was changed."), "red");
+    return;
+  }
+  // Pending first: StartGame raises running before it clears pending, so this order never sees a
+  // start in flight as "neither".
+  if (server->IsStartPending())
+  {
+    DisplayMessage(tr("A battle is starting. Try again after it has loaded."), "red");
+    return;
+  }
+
+  if (server->IsGameRunning())
+  {
+    // Live: numbered and applied on both machines at the same moment. The saved picks are for
+    // the next Start; the INI is NOT regenerated here, because nothing may change what this
+    // machine would boot while a game that was started from it is still running.
+    XDNetplay::BattleCustomizer::LiveStyle live =
+        XDNetplay::BattleCustomizer::MakeLiveStyle(music, venue);
+    std::string reason;
+    if (!client->RequestLiveStyle(std::move(live.ops), &reason))
+    {
+      DisplayMessage(tr("Music and location not changed: %1").arg(QString::fromStdString(reason)),
+                     "red");
+      return;
+    }
+    // Only now: a refused set must not become what the next one builds on.
+    XDNetplay::BattleCustomizer::CommitLiveStyle(live);
+    Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_MUSIC, music);
+    Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_VENUE, venue);
+    Config::Save();
+    DisplayMessage(
+        live.location_waits_for_next_start ?
+            tr("Music: %1. Applies from the next battle. Game default location applies from the "
+               "next Start.")
+                .arg(music_combo->currentText()) :
+            tr("Music: %1. Location: %2. Applies from the next battle, for both players.")
+                .arg(music_combo->currentText(), venue_combo->currentText()),
+        "green");
+    return;
+  }
+
+  Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_MUSIC, music);
+  Config::SetBaseOrCurrent(Config::MAIN_XD_STYLE_VENUE, venue);
   Config::Save();
   XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
   DisplayMessage(tr("Music: %1. Location: %2. Applies to the next battle you start.")
@@ -1746,11 +1791,11 @@ void NetPlayDialog::SetOptionsEnabled(bool enabled)
     m_host_input_authority_action->setEnabled(enabled);
     m_golf_mode_action->setEnabled(enabled);
     m_fixed_delay_action->setEnabled(enabled);
-    // Host-side team and style picks only apply at the next Start, and the
-    // live GBA core owns the port 2 save while a game runs. A joiner's Submit
-    // Team button is left alone here, as before.
+    // The host's team only changes between games: the live GBA core owns the port 2 save while
+    // one runs. Music & Location stays available, because a running game takes it live (see
+    // OnStyleSettings); it refuses by itself while a start is in flight. A joiner's Submit Team
+    // button is left alone here, as before.
     m_submit_team_button->setEnabled(enabled);
-    m_style_button->setEnabled(enabled);
   }
 
   m_record_input_action->setEnabled(enabled);

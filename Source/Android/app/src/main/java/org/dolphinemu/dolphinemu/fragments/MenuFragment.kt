@@ -66,9 +66,12 @@ class MenuFragment : Fragment(), View.OnClickListener {
                 if (activity.shouldShowInternalGbaScreenMenu()) View.VISIBLE else View.GONE
             binding.menuGbaPacks.visibility =
                 if (activity.shouldShowGbaPacksMenu()) View.VISIBLE else View.GONE
+            binding.menuXdMusicLocation.visibility =
+                if (activity.shouldShowXdMusicLocationMenu()) View.VISIBLE else View.GONE
         } else {
             binding.menuToggleGbaScreen.visibility = View.GONE
             binding.menuGbaPacks.visibility = View.GONE
+            binding.menuXdMusicLocation.visibility = View.GONE
         }
 
         binding.menuToggleGbaScreen.text =
@@ -213,6 +216,10 @@ class MenuFragment : Fragment(), View.OnClickListener {
             buttonsActionsMap.append(
                 R.id.menu_gba_packs,
                 EmulationActivity.MENU_ACTION_GBA_PACKS
+            )
+            buttonsActionsMap.append(
+                R.id.menu_xd_music_location,
+                EmulationActivity.MENU_ACTION_XD_MUSIC_LOCATION
             )
             buttonsActionsMap.append(
                 R.id.menu_refresh_wiimotes,
