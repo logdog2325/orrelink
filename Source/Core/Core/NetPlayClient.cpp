@@ -48,6 +48,7 @@
 #include "Core/Config/NetplaySettings.h"
 #include "Core/Config/SessionSettings.h"
 #include "Core/ConfigManager.h"
+#include "Core/Core.h"
 #include "Core/GeckoCode.h"
 #include "Core/HW/EXI/EXI.h"
 #include "Core/HW/EXI/EXI_DeviceIPL.h"
@@ -1124,6 +1125,9 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
   ClearBuffers();
   m_first_pad_status_received.fill(false);
   m_first_pop_logged.fill(false);
+  // Until StartGame records this game's boot sequence (on Qt that is later, on the GUI thread),
+  // no core may pass IsCurrentGameCore: the previous game's number must not linger here.
+  m_game_boot_sequence.store(UINT64_MAX, std::memory_order_release);
   m_input_reset_for_game.store(true, std::memory_order_release);
 
   m_dialog->OnMsgStartGame();
@@ -2040,6 +2044,15 @@ bool NetPlayClient::StartGame(const std::string& path)
   m_stop_requested_ms.store(0, std::memory_order_relaxed);
   m_session_end.store(SessionEndKind::None, std::memory_order_release);
 
+  // The core for this game does not exist yet: StartGame always runs before its Core::Init, and
+  // Init is what moves the boot sequence. Recording it here, before NetPlay_Enable, is what lets
+  // the input hooks turn away the previous game's core. On Qt that core may still be shutting
+  // down when this runs (MainWindow defers the boot until it has stopped), and once netplay is
+  // enabled it would otherwise pop this game's opening input off the queues: the same loss of a
+  // whole fill that desynced the GBAs on 2026-09-22, just from a Start pressed too soon.
+  m_game_boot_sequence.store(Core::GetBootSequence() + 1, std::memory_order_release);
+  m_stale_core_polls.store(0, std::memory_order_relaxed);
+
   m_is_running.Set();
   NetPlay_Enable(this);
 
@@ -2720,9 +2733,11 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
                                m_net_settings.pad_map[pad_nb] :
                                0;
     GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "padpop",
-                           fmt::format("pad={} depth={} target={} owner={} local={}", pad_nb,
-                                       m_pad_buffer[pad_nb].Size(), m_target_buffer_size, owner,
-                                       (m_local_player && owner == m_local_player->pid) ? 1 : 0),
+                           fmt::format("pad={} depth={} target={} owner={} local={} stale={}",
+                                       pad_nb, m_pad_buffer[pad_nb].Size(),
+                                       m_target_buffer_size, owner,
+                                       (m_local_player && owner == m_local_player->pid) ? 1 : 0,
+                                       m_stale_core_polls.load(std::memory_order_relaxed)),
                            false);  // never flush under this lock; the summary line does it
   }
 #endif
@@ -3117,6 +3132,13 @@ std::string NetPlayClient::GetCurrentGolfer()
   return "";
 }
 
+// called from ---CPU--- thread (under crit_netplay_client). Compares a global counter, which is
+// enough because two cores never exist at once: Core::Init refuses while one is alive.
+bool NetPlayClient::IsCurrentGameCore() const
+{
+  return Core::GetBootSequence() == m_game_boot_sequence.load(std::memory_order_acquire);
+}
+
 // called from ---GUI--- thread
 bool NetPlayClient::LocalPlayerHasControllerMapped() const
 {
@@ -3237,6 +3259,12 @@ void NetPlayClient::SendGameStatus()
 void NetPlayClient::SendTimeBase()
 {
   std::lock_guard lk(crit_netplay_client);
+
+  // The caller checks IsNetPlayRunning() before taking this lock, so netplay may have been
+  // disabled in between. A previous game's core that is still shutting down must not advance this
+  // game's frame count or send time bases the server would compare against the other player's.
+  if (!netplay_client || !netplay_client->IsCurrentGameCore())
+    return;
 
   if (netplay_client->m_timebase_frame % 60 == 0)
   {
@@ -3431,6 +3459,12 @@ std::string GetGBASavePath(int pad_num)
   return fmt::format("{}{}{}.sav", File::GetUserPath(D_GBAUSER_IDX), GBA_SAVE_NETPLAY, pad_num + 1);
 }
 
+bool IsCurrentGameCore()
+{
+  std::lock_guard lk(crit_netplay_client);
+  return netplay_client && netplay_client->IsCurrentGameCore();
+}
+
 PadDetails GetPadDetails(int pad_num)
 {
   std::lock_guard lk(crit_netplay_client);
@@ -3495,17 +3529,27 @@ bool SerialInterface::CSIDevice_GCController::NetPlay_GetInput(int pad_num, GCPa
 {
   std::lock_guard lk(NetPlay::crit_netplay_client);
 
-  if (NetPlay::netplay_client)
-    return NetPlay::netplay_client->GetNetPads(pad_num, NetPlay::s_si_poll_batching, status);
+  if (!NetPlay::netplay_client)
+    return false;
 
-  return false;
+  // A previous game's core can still be polling while it shuts down after this game has enabled
+  // netplay input; it must not pop this game's queues. Returning false leaves its pad status
+  // neutral (IsNetPlayRunning() is true again, so its devices skip their local read), which is
+  // harmless for a core that is closing.
+  if (!NetPlay::netplay_client->IsCurrentGameCore())
+  {
+    NetPlay::netplay_client->CountStaleCorePoll();
+    return false;
+  }
+
+  return NetPlay::netplay_client->GetNetPads(pad_num, NetPlay::s_si_poll_batching, status);
 }
 
 bool NetPlay::NetPlay_GetWiimoteData(const std::span<NetPlayClient::WiimoteDataBatchEntry>& entries)
 {
   std::lock_guard lk(crit_netplay_client);
 
-  if (netplay_client)
+  if (netplay_client && netplay_client->IsCurrentGameCore())
     return netplay_client->WiimoteUpdate(entries);
 
   return false;

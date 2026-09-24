@@ -138,6 +138,11 @@ bool IsRunningOrStarting(Core::System& system);
 // Returns true when GetState returns Uninitialized.
 bool IsUninitialized(Core::System& system);
 
+// Counts cores started by Init(). It changes only when a new core is created and never while one
+// is alive, so code on a core's own threads can tell which core it belongs to. Netplay uses it to
+// keep a core that is still shutting down from reading the next game's input.
+u64 GetBootSequence();
+
 bool IsCPUThread();  // this tells us whether we are the CPU thread.
 bool IsGPUThread();
 
