@@ -185,6 +185,11 @@ public:
 
   bool PlayerHasControllerMapped(PlayerId pid) const;
   bool LocalPlayerHasControllerMapped() const;
+  // True when the calling thread belongs to the core that was booted for the current game. A core
+  // that is still shutting down from the previous game must not touch this game's input.
+  bool IsCurrentGameCore() const;
+  // Called by the input hook each time it turns a previous game's core away.
+  void CountStaleCorePoll() { m_stale_core_polls.fetch_add(1, std::memory_order_relaxed); }
   bool IsLocalPlayer(PlayerId pid) const;
   const PlayerId& GetLocalPlayerId() const;
 
@@ -232,6 +237,13 @@ protected:
   // comments in OnStartGame and StartGame.
   // Atomic: written on the netplay thread, read on the GUI thread that boots the game.
   std::atomic<bool> m_input_reset_for_game{false};
+  // Core::GetBootSequence() of the core this game will run on, recorded in StartGame before
+  // netplay input is enabled. StartGame always runs before that core's Core::Init, whether or not
+  // the previous game's core is still alive, and Init is what moves the sequence, so it is always
+  // the current sequence + 1. See IsCurrentGameCore().
+  std::atomic<u64> m_game_boot_sequence{0};
+  // Polls turned away from a previous game's core in this game, reported on the padpop lines.
+  std::atomic<u32> m_stale_core_polls{0};
   // One "padpop" diagnostic line per pad per game: how deep that pad's queue was at its first pop.
   std::array<bool, 4> m_first_pop_logged{};
 
