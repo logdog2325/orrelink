@@ -297,5 +297,8 @@ void SetSIPollBatching(bool state);
 void SendPowerButtonEvent();
 std::string GetGBASavePath(int pad_num);
 PadDetails GetPadDetails(int pad_num);
+// True when netplay is running and the calling core is the one booted for the current game.
+// Takes crit_netplay_client: never call it from anything NetPlay_GetInput calls.
+bool IsCurrentGameCore();
 int NumLocalWiimotes();
 }  // namespace NetPlay

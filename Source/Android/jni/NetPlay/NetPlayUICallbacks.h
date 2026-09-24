@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <span>
 #include <string>
@@ -89,6 +90,9 @@ private:
   std::string m_current_game_name;
   Common::EventHook m_state_changed_hook;
   bool m_got_stop_request = true;
+  // Set once this game's core has reported a running state; written on the core's emu thread
+  // and in BootGame on the netplay thread. See the state hook in the constructor.
+  std::atomic<bool> m_game_core_seen{false};
 };
 
 }  // namespace NetPlay
