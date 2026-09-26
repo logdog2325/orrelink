@@ -21,7 +21,7 @@ object BattleStyleBridge {
     /** One selectable option. Music/venue tables come tested-safe first, then
      *  [experimental] entries, so a dropdown can insert its divider at the
      *  first tier change. [hasPortrait] is model-only (null for music/venue):
-     *  false means the game ships no pre-battle bust for this model — it
+     *  false means the game ships no pre-battle portrait for this model — it
      *  battles fine, but the connection and team screens show no close-up, and
      *  the dropdowns label it "(no portrait)" instead of any tier marking. */
     data class StyleOption(
