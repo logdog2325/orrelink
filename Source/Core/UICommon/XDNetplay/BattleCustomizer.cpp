@@ -159,6 +159,34 @@ constexpr u32 BustWhWordAddr(u32 widget_id, u32 language_slot)
 constexpr u32 PREVIEW_DRAWER_SKIP_LINE = 0x040845F8;
 constexpr u32 PREVIEW_DRAWER_SKIP_VALUE = 0x48000140;  // vanilla 0x41820140 (beq -> b)
 
+// What the preview mugshot shows when the drawer is left alone. The texobj comes from the
+// loader at 0x800475B8: it reads each side's TID from the VS struct (0x80429A10 / 0x8042AD30,
+// the u16s the model pick pins), maps it through the TID->model switch 0x801FFE74, finds the
+// model in a 28-record table in the toolbattle_menu module (0x14 bytes each: model u16, then
+// the big-left, big-right, small-left and small-right texture ids; located by 0x80232730 via
+// r13-0x7614) and async-loads the texture from chara_big.fsys (group 0x5C3; chara_small.fsys,
+// 0x5C4, only for the four-slot tag layout). A model missing from the table falls back to
+// record 1, Michael: the protagonist head the field saw on both sides with default picks,
+// because unpinned sides still hold the game's pre-battle TIDs when the preview loads. The
+// table's models, decoded from a clean GXXE01 disc: Michael (variant 1), the six GBA players
+// and twenty story trainers, each with its own charaface_big_l/r art. Michael's other
+// variants are not in it (they would get the fallback, the wrong outfit). The art is read
+// from the player's own disc; nothing is written beyond the TID pins the pick already makes.
+constexpr bool ModelHasPreviewPortrait(int model_id)
+{
+  switch (model_id)
+  {
+  case 0x01:  // Michael (variant 1)
+  case 0x04: case 0x05: case 0x06: case 0x07: case 0x08: case 0x09:  // GBA players
+  case 0x16: case 0x19: case 0x1B: case 0x24: case 0x25: case 0x26: case 0x27:
+  case 0x28: case 0x2C: case 0x2D: case 0x2F: case 0x30: case 0x31: case 0x32:
+  case 0x37: case 0x38: case 0x39: case 0x3B: case 0x3C: case 0x3F:
+    return true;
+  default:
+    return false;
+  }
+}
+
 // Model id -> bust class (1 FRLG-m, 2 FRLG-f, 3 RS-m, 4 RS-f, 5 E-m, 6 E-f).
 // Only the six GBA player models have bust widgets in the connection menu;
 // anything else returns 0 = no bust remap (battle model still changes).
@@ -613,9 +641,9 @@ bool IsValidVenueId(int id)
 
 bool ModelHasPortrait(int model_id)
 {
-  // Exactly the models with a bust class -- i.e. the six GBA player models the
-  // connection menu binds bust widgets for (see ModelBustClass above).
-  return ModelBustClass(model_id) != 0;
+  // The models the team preview has art for (see ModelHasPreviewPortrait). The
+  // connection-screen bust is narrower: only the six GBA player models.
+  return ModelHasPreviewPortrait(model_id);
 }
 
 std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2_model,
@@ -655,17 +683,18 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
   // wrong model.
   const bool p1_arm = p1 && GbaModelTid(*p1_model) == 0;
   const bool p2_arm = p2 && GbaModelTid(*p2_model) == 0;
-  if (p1 || p2_arm)
+  // Each side's pinned TID; 0 = not pinned (the game's own TID stays).
+  const u16 tid1 = p1 ? (p1_arm ? TID_ARM_P1 : GbaModelTid(*p1_model)) : (p2_arm ? TID_ARM_P1 : 0);
+  const u16 tid2 = p2 ? (p2_arm ? TID_ARM_P2 : GbaModelTid(*p2_model)) : (p1_arm ? TID_ARM_P2 : 0);
+  if (tid1 != 0)
   {
-    const u16 tid = p1 ? (p1_arm ? TID_ARM_P1 : GbaModelTid(*p1_model)) : TID_ARM_P1;
     for (const u32 addr : MODEL_TID_P1_LINES)
-      AppendLine(&block, addr, tid);
+      AppendLine(&block, addr, tid1);
   }
-  if (p2 || p1_arm)
+  if (tid2 != 0)
   {
-    const u16 tid = p2 ? (p2_arm ? TID_ARM_P2 : GbaModelTid(*p2_model)) : TID_ARM_P2;
     for (const u32 addr : MODEL_TID_P2_LINES)
-      AppendLine(&block, addr, tid);
+      AppendLine(&block, addr, tid2);
   }
   if (p1_arm)
     AppendLine(&block, MODEL_ARM_P1_LINE, PPC_LI_R3 | (static_cast<u32>(*p1_model) & 0xFF));
@@ -731,12 +760,34 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
     // showed the protagonist with default picks) -- so formats hide it
     // unconditionally. A genuine GC-vs-GBA session (where column 0 is a real
     // player's bust) never gets these lines: no format pin, no hide.
+    //
+    // The preview mugshot is a different system (see ModelHasPreviewPortrait): each side
+    // shows the table art for the model its TID resolves to, the same model the battle
+    // draws. That head is right when the side's TID is pinned and its model has art. The
+    // skip is one text patch for both sides, so it stays unless both heads are right.
+    const auto preview_model = [&](u16 tid) -> int {
+      if (tid == 0)
+        return -1;  // unpinned: the Michael fallback
+      if (tid == TID_ARM_P1 && p1_arm)
+        return *p1_model;
+      if (tid == TID_ARM_P2 && p2_arm)
+        return *p2_model;
+      for (int model = 0x04; model <= 0x09; model++)
+      {
+        if (GbaModelTid(model) == tid)
+          return model;
+      }
+      return -1;
+    };
+    const bool preview_heads_right = ModelHasPreviewPortrait(preview_model(tid1)) &&
+                                     ModelHasPreviewPortrait(preview_model(tid2));
     if (any_hide || hide_default_busts)
     {
       emit_hide(0);
       // Same trigger, one line: skip the preview mugshot drawer entirely (see
-      // PREVIEW_DRAWER_SKIP_LINE above).
-      AppendLine(&block, PREVIEW_DRAWER_SKIP_LINE, PREVIEW_DRAWER_SKIP_VALUE);
+      // PREVIEW_DRAWER_SKIP_LINE above), unless both preview heads are right.
+      if (!preview_heads_right)
+        AppendLine(&block, PREVIEW_DRAWER_SKIP_LINE, PREVIEW_DRAWER_SKIP_VALUE);
     }
   }
   if (music)
