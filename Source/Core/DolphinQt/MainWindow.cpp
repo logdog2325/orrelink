@@ -2091,6 +2091,15 @@ void MainWindow::OnStartRecording()
     return;
   }
 
+  // XD Multi switches port 1 between a pad and a GBA from game state; a movie
+  // would replay it as a plain pad. Netplay recording starts elsewhere and uses
+  // its own device mapping.
+  if (Config::Get(Config::GetInfoForSIDevice(0)) == SerialInterface::SIDEVICE_GC_GBA_XDMULTI)
+  {
+    Core::DisplayMessage("Movie recording is unavailable with XD Multi on port 1", 4000);
+    return;
+  }
+
   if (movie.IsReadOnly())
   {
     // The user just chose to record a movie, so that should take precedence
@@ -2106,10 +2115,16 @@ void MainWindow::OnStartRecording()
     const SerialInterface::SIDevices si_device = Config::Get(Config::GetInfoForSIDevice(i));
     if (si_device == SerialInterface::SIDEVICE_GC_GBA_EMULATED)
       controllers[i] = Movie::ControllerType::GBA;
-    else if (SerialInterface::SIDevice_IsGCController(si_device))
+    else if (SerialInterface::SIDevice_IsGCController(si_device) ||
+             si_device == SerialInterface::SIDEVICE_GC_GBA_XDMULTI)
+    {
+      // XD Multi off port 1 is a plain pad.
       controllers[i] = Movie::ControllerType::GC;
+    }
     else
+    {
       controllers[i] = Movie::ControllerType::None;
+    }
     wiimotes[i] = Config::Get(Config::GetInfoForWiimoteSource(i)) != WiimoteSource::None;
   }
 

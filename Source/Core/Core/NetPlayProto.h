@@ -145,6 +145,10 @@ struct NetSettings
   bool xd_deterministic_clock = false;
   u32 xd_clock_salt = 0;
   u32 xd_rng_seed = 0;
+  // XD multi battles: channel 0 is the port-1 controller that becomes a GBA
+  // (SIDEVICE_GC_GBA_XDMULTI). Not serialized yet; always false until the
+  // multi-battle lobby sends it.
+  bool xd_multi_p1 = false;
 
   Sram sram;
 

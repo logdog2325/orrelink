@@ -754,6 +754,8 @@ if(USE_MGBA)
     HW/GBADetectLog.h
     HW/SI/SI_DeviceGBAEmu.cpp
     HW/SI/SI_DeviceGBAEmu.h
+    HW/SI/SI_DeviceXDMultiPort.cpp
+    HW/SI/SI_DeviceXDMultiPort.h
   )
   target_link_libraries(core PUBLIC mGBA::mgba)
   target_compile_definitions(core PUBLIC -DHAS_LIBMGBA)

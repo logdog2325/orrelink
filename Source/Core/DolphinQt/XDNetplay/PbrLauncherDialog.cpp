@@ -182,6 +182,12 @@ void EnsurePbrConfig()
       Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(channel), SerialInterface::SIDEVICE_NONE);
     }
   }
+  // The XD Multi port owns an Emerald core too; PBR gets a plain pad.
+  if (Config::Get(Config::GetInfoForSIDevice(0)) == SerialInterface::SIDEVICE_GC_GBA_XDMULTI)
+  {
+    Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(0),
+                             SerialInterface::SIDEVICE_GC_CONTROLLER);
+  }
   Config::Save();
 }
 }  // namespace
