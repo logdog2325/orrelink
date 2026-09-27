@@ -681,8 +681,16 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
   // other side's TID is pinned to its bundled-save natural value too, so a
   // same-gender custom save cannot wander into the patched arm and wear the
   // wrong model.
-  const bool p1_arm = p1 && GbaModelTid(*p1_model) == 0;
-  const bool p2_arm = p2 && GbaModelTid(*p2_model) == 0;
+  // A Tier-1 pick whose natural TID IS the other side's patched arm (May
+  // (Emerald) 0x138E on side 0 against a Tier-2 pick on side 1, or Brendan
+  // (Emerald) 0x138D on side 1 against one on side 0) would resolve through
+  // that arm and wear the other side's model, so it takes its own arm
+  // instead, patched to its own id. Only one side can need this: it needs
+  // the other side to be Tier 2 already.
+  const bool p1_tier2 = p1 && GbaModelTid(*p1_model) == 0;
+  const bool p2_tier2 = p2 && GbaModelTid(*p2_model) == 0;
+  const bool p1_arm = p1_tier2 || (p1 && p2_tier2 && GbaModelTid(*p1_model) == TID_ARM_P2);
+  const bool p2_arm = p2_tier2 || (p2 && p1_tier2 && GbaModelTid(*p2_model) == TID_ARM_P1);
   // Each side's pinned TID; 0 = not pinned (the game's own TID stays).
   const u16 tid1 = p1 ? (p1_arm ? TID_ARM_P1 : GbaModelTid(*p1_model)) : (p2_arm ? TID_ARM_P1 : 0);
   const u16 tid2 = p2 ? (p2_arm ? TID_ARM_P2 : GbaModelTid(*p2_model)) : (p1_arm ? TID_ARM_P2 : 0);
