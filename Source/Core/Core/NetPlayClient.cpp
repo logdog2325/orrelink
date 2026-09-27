@@ -590,6 +590,10 @@ void NetPlayClient::OnData(sf::Packet& packet)
     OnXdSeats(packet);
     break;
 
+  case MessageID::XdFormat:
+    OnXdFormat(packet);
+    break;
+
   case MessageID::Ping:
     OnPing(packet);
     break;
@@ -717,6 +721,17 @@ void NetPlayClient::OnXdSeats(sf::Packet& packet)
     m_xd_seats_known = true;
   }
 
+  m_dialog->Update();
+}
+
+void NetPlayClient::OnXdFormat(sf::Packet& packet)
+{
+  u8 format = 0;
+  packet >> format;
+  {
+    std::lock_guard lkp(m_crit.players);
+    m_xd_room_format = format;
+  }
   m_dialog->Update();
 }
 
@@ -2168,6 +2183,12 @@ XdRole NetPlayClient::GetXdRole(PlayerId pid)
     return XdRole::Opponent;
   const auto it = m_players.find(pid);
   return it != m_players.end() && it->second.xd_watching ? XdRole::Watching : XdRole::Waiting;
+}
+
+std::optional<int> NetPlayClient::GetXdRoomFormat()
+{
+  std::lock_guard lkp(m_crit.players);
+  return m_xd_room_format;
 }
 
 // called from ---CPU--- thread

@@ -99,6 +99,12 @@ class NetplayViewModel(
     val game = netplaySession.game
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "")
 
+    /** XD Netplay: the room's battle format (FormatBridge.FORMAT_*), null until
+     *  the server has said it. */
+    val roomFormat = netplaySession.roomFormat
+        .map { if (it < 0) null else it }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
+
     init {
         // Watch only means nothing outside XD, but the server would still leave
         // this player out of the index count and the lobby buffer.
@@ -348,6 +354,45 @@ class NetplayViewModel(
     private fun postHostActionResult(ok: Boolean, text: String) {
         _hostActionResult.value = HostActionResult(ok, text)
         netplaySession.showLocalMessage(text)
+    }
+
+    init {
+        // The room always opens; when the host's team or spare team breaks the
+        // room's format, the host sees one line. Start enforces it.
+        if (netplaySession.isHosting) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val note = netplaySession.hostFormatNote()
+                if (note.isNotEmpty()) {
+                    withContext(Dispatchers.Main) { postHostActionResult(false, note) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Host only: change the room's battle format. Native refuses while a
+     * battle is starting or running, tells every player, and checks the teams
+     * in the room; the result line and any team lines land in the host's
+     * result line and chat, the team lines red.
+     */
+    fun setRoomFormat(formatId: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (netplaySession.isClosed) {
+                return@launch
+            }
+            val result = netplaySession.setRoomFormat(formatId)
+            withContext(Dispatchers.Main) {
+                when {
+                    !result.ok -> postHostActionResult(false, result.status)
+                    // The server's "Format: ..." chat line already tells the
+                    // room, the host included, so the result line only.
+                    result.notes.isEmpty() ->
+                        _hostActionResult.value = HostActionResult(true, result.status)
+                    // Team problems: red, and into the host's chat.
+                    else -> result.notes.forEach { postHostActionResult(false, it) }
+                }
+            }
+        }
     }
 
     /**
