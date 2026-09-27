@@ -95,13 +95,7 @@ data class LobbySession(
      * long names ("Pokemon XD: Gale of Darkness").
      */
     val isXdBattle: Boolean
-        get() {
-            val g = game.lowercase()
-            return g.contains("gxxe01") ||
-                g.contains("gale of darkness") ||
-                g.contains("pokemon xd") ||
-                g.contains("pokémon xd")
-        }
+        get() = isXdGameName(game)
 
     companion object {
         fun fromRow(row: Array<String>): LobbySession = LobbySession(
@@ -117,4 +111,16 @@ data class LobbySession(
             inGame = row[9] == "1"
         )
     }
+}
+
+/**
+ * True when a netplay game name is Pokemon XD (GXXE01): desktop names carry the game ID
+ * ("... (GXXE01, GC)"), and Android hosts send the plain long name ("Pokemon XD: Gale of Darkness").
+ */
+fun isXdGameName(game: String): Boolean {
+    val g = game.lowercase()
+    return g.contains("gxxe01") ||
+        g.contains("gale of darkness") ||
+        g.contains("pokemon xd") ||
+        g.contains("pokémon xd")
 }

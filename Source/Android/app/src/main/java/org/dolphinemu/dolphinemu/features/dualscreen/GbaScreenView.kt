@@ -485,6 +485,10 @@ class GbaScreenView @JvmOverloads constructor(
     }
 
     private fun drawStatusText(canvas: Canvas) {
+        // A netplay watcher owns no GBA: draw nothing rather than a "no link" line.
+        if (visibleDevice == GbaHostBridge.NO_DEVICE && GbaHostBridge.isNetplayActive()) {
+            return
+        }
         val text = when {
             visibleDevice == GbaHostBridge.NO_DEVICE ->
                 context.getString(R.string.gba_screen_no_active_link)

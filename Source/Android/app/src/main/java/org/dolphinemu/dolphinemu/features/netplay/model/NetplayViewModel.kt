@@ -33,6 +33,7 @@ import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
 import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
 import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.EmeraldSave
+import org.dolphinemu.dolphinemu.features.xdnetplay.isXdGameName
 import org.dolphinemu.dolphinemu.model.GameFile
 import org.dolphinemu.dolphinemu.services.GameFileCacheManager
 import org.dolphinemu.dolphinemu.utils.NetworkHelper
@@ -77,11 +78,34 @@ class NetplayViewModel(
     val players = netplaySession.players
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptyList())
 
+    /** This device's part in the next battle (Player.ROLE_*), from the server's seat broadcast. */
+    val localRole = players
+        .map { list -> list.firstOrNull { it.isLocal }?.role ?: Player.ROLE_UNKNOWN }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), Player.ROLE_UNKNOWN)
+
+    // Joiner's "Watch only" switch. Every connection starts out playing on the server, so this
+    // starts false with each room.
+    private val _watchOnly = MutableStateFlow(false)
+    val watchOnly = _watchOnly.asStateFlow()
+
+    fun setWatchOnly(watching: Boolean) {
+        _watchOnly.value = watching
+        netplaySession.setWatchOnly(watching)
+    }
+
     val messages = netplaySession.messages
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptyList())
 
     val game = netplaySession.game
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "")
+
+    init {
+        // Watch only means nothing outside XD, but the server would still leave
+        // this player out of the index count and the lobby buffer.
+        netplaySession.game
+            .onEach { if (_watchOnly.value && !isXdGameName(it)) setWatchOnly(false) }
+            .launchIn(viewModelScope)
+    }
 
     val hostInputAuthority = netplaySession.hostInputAuthorityEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false)
@@ -158,9 +182,20 @@ class NetplayViewModel(
         if (netplaySession.isClosed) {
             return
         }
+        // An earlier tap whose start is still syncing keeps its hold; native
+        // refuses this one while that start is under way.
+        val previous = startRequestedAt.value
         val stamp = System.nanoTime()
         startRequestedAt.value = stamp
-        netplaySession.startGame()
+        val result = netplaySession.startGame()
+        if (!result.ok) {
+            // Nothing new started, so give the host their controls back at once.
+            startRequestedAt.value = previous
+            if (result.status.isNotEmpty()) {
+                postHostActionResult(false, result.status)
+            }
+            return
+        }
         viewModelScope.launch {
             delay(START_REQUEST_HOLD_MS)
             if (startRequestedAt.value == stamp) {

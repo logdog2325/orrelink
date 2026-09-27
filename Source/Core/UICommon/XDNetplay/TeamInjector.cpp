@@ -1066,6 +1066,18 @@ void RestoreHostTeam(int device)
     RunPendingPurge();
 }
 
+bool ResetGuestSlot(int device)
+{
+  if (!Core::IsUninitialized(Core::System::GetInstance()))
+    return false;
+  BattleCustomizer::SetGuestModel(std::nullopt);
+  std::lock_guard lock(s_purge_mutex);
+  // Restores the stash and scrubs .bak/.tmp, the marker and the NetPlayTemp copies. The next
+  // injection stashes the host's team again (StashHostTeamOnce).
+  PurgeNow(device);
+  return true;
+}
+
 void HealLeftoverGuestState()
 {
   // While a netplay SESSION is open in this process, .guestteam/.hostteam are

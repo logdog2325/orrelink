@@ -9,6 +9,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -27,6 +28,17 @@ namespace NetPlay
 {
 class NetPlayUI;
 struct SaveSyncInfo;
+
+// XD Netplay: what ClaimXdStart found. opponent is the pid that plays GBA 2 (SI port 3), 0 when
+// nobody is seated. slot_busy: the GBA 2 save still holds a player's team who no longer holds the
+// seat, and it could not be reset because emulation is not fully down yet. starting: a start is
+// already syncing or a battle is running; nothing was claimed or changed.
+struct XdStartClaim
+{
+  PlayerId opponent = 0;
+  bool slot_busy = false;
+  bool starting = false;
+};
 
 class NetPlayServer : public Common::TraversalClientClient
 {
@@ -96,6 +108,31 @@ public:
   bool IsStartPending() const { return m_start_pending.load(); }
   bool IsGameRunning() const { return m_is_running.load(); }
 
+  // XD Netplay seats, host UI thread only (Qt GUI thread, or the Android main thread under
+  // s_host_write_mutex). ClaimXdStart picks the opponent by GetXdOpponentLocked, resets the GBA 2
+  // slot if it holds someone else's team, and refuses TeamData and new joins until
+  // ReleaseXdStart. Call RequestStartGame between the two, never under any other netplay lock.
+  XdStartClaim ClaimXdStart();
+  void ReleaseXdStart();
+
+  // RAII over ClaimXdStart / ReleaseXdStart, held until RequestStartGame has returned.
+  class XdStartFreeze
+  {
+  public:
+    explicit XdStartFreeze(NetPlayServer& server) : m_server(server), m_claim(server.ClaimXdStart())
+    {
+    }
+    ~XdStartFreeze() { m_server.ReleaseXdStart(); }
+    XdStartFreeze(const XdStartFreeze&) = delete;
+    XdStartFreeze& operator=(const XdStartFreeze&) = delete;
+
+    const XdStartClaim& Claim() const { return m_claim; }
+
+  private:
+    NetPlayServer& m_server;
+    XdStartClaim m_claim;
+  };
+
   void SetHostInputAuthority(bool enable);
 
   void KickPlayer(PlayerId player);
@@ -124,6 +161,13 @@ private:
     u32 current_game = 0;
 
     Common::QoSSession qos_session;
+
+    // XD Netplay seats. Written only on the NETPLAY thread (OnConnect before the emplace, the
+    // XdWatch case under m_crit.players). xd_serial names this connection and is never reused;
+    // xd_queue is its place in line for the opponent seat (lower is earlier).
+    u32 xd_serial = 0;
+    u32 xd_queue = 0;
+    bool xd_watching = false;
 
     bool operator==(const Client& other) const { return this == &other; }
     bool IsHost() const { return pid == 1; }
@@ -185,6 +229,16 @@ private:
 
   void SetupIndex();
   bool PlayerHasControllerMapped(PlayerId pid) const;
+  // Host plus every joiner not watching: what the lobby index publishes.
+  int PlayingCount();
+
+  // XD Netplay seats. See m_xd_seat_mutex for the locks each one needs.
+  PlayerId GetXdOpponentLocked() const;
+  bool XdSlotStaleLocked(PlayerId opponent) const;
+  bool ResetXdSlotLocked(bool announce);
+  bool XdStartOpponentLeft();
+  // ---NETPLAY--- thread only.
+  void SendXdSeats();
 
   // ---NETPLAY--- thread only, once per second off the ping tick.
   void UpdateAutoPadBuffer();
@@ -230,6 +284,29 @@ private:
   u64 m_auto_buffer_last_change_ms = 0;
 
   std::map<PlayerId, Client> m_players;
+
+  // XD Netplay seats (GetXdOpponentLocked).
+  // NETPLAY thread only: hands out serials and queue places.
+  u32 m_xd_counter = 0;
+  // Makes a Start's claim of the seat and the saves exclusive with a TeamData write.
+  // Lock order: s_host_write_mutex (Android) -> m_xd_seat_mutex -> m_crit.game (ClaimXdStart
+  // takes and drops it) -> m_crit.players -> m_crit.async_queue_write. Only ever taken by a thread
+  // holding no m_crit lock, and the NETPLAY thread never takes s_host_write_mutex. XDNetplay's own
+  // locks (BattleCustomizer, TeamInjector) may be taken under it, never while m_crit.players is
+  // held. Nothing under it may wait on a UI thread (no RunOnObject, PanicAlert, modal or blocking
+  // JNI call), because the host UI thread waits on it in ClaimXdStart.
+  std::mutex m_xd_seat_mutex;
+  // Written under m_xd_seat_mutex; read by OnConnect under m_crit.game, which ClaimXdStart takes
+  // once after raising it. Up from ClaimXdStart until ReleaseXdStart; by then m_start_pending or
+  // m_is_running carries the refusal if a start began.
+  std::atomic<bool> m_xd_frozen{false};
+  // Under m_xd_seat_mutex: the serial whose TeamData last reached the GBA 2 slot, 0 when only the
+  // host's own data is there, and that player's name for the "cleared" line.
+  u32 m_xd_slot_owner = 0;
+  std::string m_xd_slot_owner_name;
+  // The pid ClaimXdStart seated for the start it froze; 0 for a start that is not an XD Start.
+  // Checked just before the game starts, since a leave before m_start_pending rises aborts nothing.
+  std::atomic<PlayerId> m_xd_start_opponent{0};
 
   std::unordered_map<u32, std::vector<std::pair<PlayerId, u64>>> m_timebase_by_frame;
   bool m_desync_detected = false;

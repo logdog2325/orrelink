@@ -250,6 +250,15 @@ bool ValidateHostPartiesForFormat(std::string* reason);
 // a "teamcleanup" line to the GBA detect log.
 void RestoreHostTeam(int device);
 
+// XD Netplay, host, mid-room: the guest slot holds the team of a player who no longer holds the
+// opponent seat. Puts the slot back to the host's spare team (the same full purge as
+// RestoreHostTeam) and forgets the guest's model pick, so the next opponent never plays or shows
+// as the previous one. Only with emulation fully down: returns false and changes nothing
+// otherwise. Unlike RestoreHostTeam it never arms a deferred purge, which could land after, and
+// wipe, a newer submission. Idempotent. No UI and no alerts, so it is safe under the netplay
+// server's seat lock.
+bool ResetGuestSlot(int device);
+
 // Boot-boundary self-heal for a session that DIED without its cleanup: the
 // app was killed or crashed while a room was open, so RestoreHostTeam never
 // ran, and the socket save still holds the last guest's party with .guestteam
