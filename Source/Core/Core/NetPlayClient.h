@@ -299,6 +299,23 @@ protected:
   std::atomic<int> m_live_marker_pad{-1};
   // One "padpop" diagnostic line per pad per game: how deep that pad's queue was at its first pop.
   std::array<bool, 4> m_first_pop_logged{};
+  // How often the room's game polls each pad, for converting the spectator reserve between ms
+  // and entries: 120 in Pokemon XD, 60 (once a frame) otherwise. Set at OnStartGame from the
+  // room's game, which is identical everywhere; atomic because the CPU thread reads it.
+  std::atomic<u32> m_spec_polls_per_sec{60};
+  // XD Netplay spectator playout reserve (GetNetPads). CPU-thread only, never touched from the
+  // netplay thread: it is rebuilt at the first pop of each game, which the CPU thread spots by
+  // m_game_boot_sequence no longer matching m_spec_game_seq. m_spec_active is decided there once
+  // per game; m_spec_reserve is how many entries a filling pad's queue must hold before it pops.
+  // m_spec_after_pop is a pad's queue depth just after our last pop and m_spec_last_growth when we
+  // last saw it grow, which together time the gap in delivery behind an underflow.
+  u64 m_spec_game_seq = UINT64_MAX;
+  bool m_spec_active = false;
+  u32 m_spec_rate = 60;
+  u32 m_spec_reserve = 0;
+  std::array<bool, 4> m_spec_filling{};
+  std::array<size_t, 4> m_spec_after_pop{};
+  std::array<std::chrono::steady_clock::time_point, 4> m_spec_last_growth{};
 
   std::chrono::time_point<std::chrono::steady_clock> m_buffer_under_target_last;
 
@@ -392,6 +409,7 @@ private:
   void DeclareSessionLost(SessionEndKind kind, const std::string& reason);
   std::string DescribePadOwner(int pad_nb);
   bool PadOwnerHasLeftRoom(int pad_nb);
+  u32 LocalPingToHost();
 
   bool AddLocalWiimoteToBuffer(int local_wiimote, const WiimoteEmu::SerializedWiimoteState& state,
                                sf::Packet& packet);
