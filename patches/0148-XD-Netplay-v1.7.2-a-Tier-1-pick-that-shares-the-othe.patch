@@ -1,0 +1,48 @@
+From 1ccbf4109d9cfe94152a6c7a8a2e274c5821a45b Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 18:46:45 -0700
+Subject: [PATCH 148/150] XD Netplay v1.7.2: a Tier-1 pick that shares the
+ other side's patched arm TID takes its own arm
+
+---
+ Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp | 12 ++++++++++--
+ Source/Core/UICommon/XDNetplay/Version.h            |  2 +-
+ 2 files changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+index b573c4b..f4616ef 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+@@ -681,8 +681,16 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
+   // other side's TID is pinned to its bundled-save natural value too, so a
+   // same-gender custom save cannot wander into the patched arm and wear the
+   // wrong model.
+-  const bool p1_arm = p1 && GbaModelTid(*p1_model) == 0;
+-  const bool p2_arm = p2 && GbaModelTid(*p2_model) == 0;
++  // A Tier-1 pick whose natural TID IS the other side's patched arm (May
++  // (Emerald) 0x138E on side 0 against a Tier-2 pick on side 1, or Brendan
++  // (Emerald) 0x138D on side 1 against one on side 0) would resolve through
++  // that arm and wear the other side's model, so it takes its own arm
++  // instead, patched to its own id. Only one side can need this: it needs
++  // the other side to be Tier 2 already.
++  const bool p1_tier2 = p1 && GbaModelTid(*p1_model) == 0;
++  const bool p2_tier2 = p2 && GbaModelTid(*p2_model) == 0;
++  const bool p1_arm = p1_tier2 || (p1 && p2_tier2 && GbaModelTid(*p1_model) == TID_ARM_P2);
++  const bool p2_arm = p2_tier2 || (p2 && p1_tier2 && GbaModelTid(*p2_model) == TID_ARM_P1);
+   // Each side's pinned TID; 0 = not pinned (the game's own TID stays).
+   const u16 tid1 = p1 ? (p1_arm ? TID_ARM_P1 : GbaModelTid(*p1_model)) : (p2_arm ? TID_ARM_P1 : 0);
+   const u16 tid2 = p2 ? (p2_arm ? TID_ARM_P2 : GbaModelTid(*p2_model)) : (p1_arm ? TID_ARM_P2 : 0);
+diff --git a/Source/Core/UICommon/XDNetplay/Version.h b/Source/Core/UICommon/XDNetplay/Version.h
+index 0cd7619..19ca327 100644
+--- a/Source/Core/UICommon/XDNetplay/Version.h
++++ b/Source/Core/UICommon/XDNetplay/Version.h
+@@ -11,5 +11,5 @@ namespace XDNetplay
+ // fork's release, so it cannot answer "which XD Netplay am I?" -- this constant is the only thing
+ // that can. It MUST be bumped in the same patch that a release is tagged from: ship a tag ahead of
+ // this string and every user of that release is told they are out of date forever.
+-constexpr char VERSION[] = "1.7.1";
++constexpr char VERSION[] = "1.7.2";
+ }  // namespace XDNetplay
+-- 
+2.39.5 (Apple Git-154)
+

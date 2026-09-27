@@ -1,0 +1,1751 @@
+From a85c0b4e4091566880821c94fe2325078b1ea81c Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 20:19:33 -0700
+Subject: [PATCH 150/150] XD Netplay v1.7.2: Watch only spectators; only the
+ opponent can submit a team
+
+A joiner can tick Watch only. The server seats the joiner who is not
+watching and has waited longest as the opponent (GBA 2), and every room
+shows each player as Host, Opponent, Waiting or Watching. Start maps GBA 2
+to that player instead of pid 2, and refuses when nobody is seated.
+
+Only the opponent's TeamData is written; anyone else gets a private
+refusal. When the seat changes hands, the previous player's team and model
+are cleared before the new opponent's submission or at Start. A Start and a
+team write can no longer overlap, and a team sent while the last battle is
+still closing is refused instead of lost.
+
+Watchers see no GBA screen, are left out of the lobby player count and the
+automatic buffer. Server chat lines no longer add a blank player row or a
+false "Not all players have the game" prompt, the host sees each team
+line once, and the Use my save note now says that everyone in the room
+receives the party.
+---
+ .../features/dualscreen/GbaHostBridge.kt      |  23 +-
+ .../features/dualscreen/GbaScreenView.kt      |   4 +
+ .../features/netplay/NetplaySession.kt        |  21 +-
+ .../netplay/model/NetplayViewModel.kt         |  37 ++-
+ .../features/netplay/model/Player.kt          |  15 +-
+ .../features/netplay/ui/NetplayActivity.kt    |   3 +
+ .../features/netplay/ui/NetplayScreen.kt      |  81 ++++-
+ .../features/xdnetplay/NetPlayIndexBridge.kt  |  20 +-
+ .../app/src/main/res/values/strings.xml       |   9 +-
+ Source/Android/jni/AndroidCommon/IDCache.cpp  |   2 +-
+ .../jni/NetPlay/NetPlayUICallbacks.cpp        |  11 +-
+ .../Android/jni/NetPlay/NetPlayUICallbacks.h  |   1 +
+ Source/Android/jni/NetPlay/Netplay.cpp        |  48 ++-
+ Source/Core/Core/NetPlayClient.cpp            |  68 ++++-
+ Source/Core/Core/NetPlayClient.h              |  30 ++
+ Source/Core/Core/NetPlayProto.h               |   2 +
+ Source/Core/Core/NetPlayServer.cpp            | 276 +++++++++++++++---
+ Source/Core/Core/NetPlayServer.h              |  77 +++++
+ .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  | 141 +++++++--
+ Source/Core/DolphinQt/NetPlay/NetPlayDialog.h |   3 +
+ .../DolphinQt/XDNetplay/XDNetplayConfig.cpp   |  12 +-
+ .../DolphinQt/XDNetplay/XDNetplayConfig.h     |  10 +-
+ .../Core/UICommon/XDNetplay/TeamInjector.cpp  |  12 +
+ Source/Core/UICommon/XDNetplay/TeamInjector.h |   9 +
+ 24 files changed, 800 insertions(+), 115 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaHostBridge.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaHostBridge.kt
+index b4418be..18f30e4 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaHostBridge.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaHostBridge.kt
+@@ -102,8 +102,12 @@ object GbaHostBridge {
+         refreshVisibleDevice()
+     }
+ 
++    /**
++     * A GBA this player may be shown. isLocal is true for every core outside a netplay game, so
++     * solo is unchanged; in netplay a watcher owns none, and the bottom display stays off.
++     */
+     fun hasActiveCore(): Boolean =
+-        infos.any { it?.isGba == true || it?.hasRom == true }
++        infos.any { it != null && (it.isGba || it.hasRom) && it.isLocal }
+ 
+     private fun getVisibleInfo(): CoreInfo? =
+         if (visibleDeviceNumber in infos.indices) infos[visibleDeviceNumber] else null
+@@ -128,7 +132,7 @@ object GbaHostBridge {
+     }
+ 
+     /** True while a netplay session exists, lobby included. */
+-    private fun isNetplayActive(): Boolean = NetplayManager.activeSession != null
++    fun isNetplayActive(): Boolean = NetplayManager.activeSession != null
+ 
+     /**
+      * Advance the bottom screen to the next GBA this player owns, wrapping.
+@@ -169,19 +173,18 @@ object GbaHostBridge {
+             manualDevice = NO_DEVICE
+         }
+ 
+-        // In netplay, prefer the GBA WE own (isLocal) so each player sees their
+-        // own bottom screen -- host port 2, joiner port 3. The fallbacks are
+-        // load-bearing: in solo every core is local (native passes isLocal=true
+-        // outside netplay) so the first clause is identical to the old
+-        // first-with-ROM pick, and a mistimed/edge case degrades to showing *a*
+-        // GBA rather than a black screen. Never select a non-local GBA outright.
++        // In netplay, show only the GBA WE own (isLocal) -- host port 2,
++        // opponent port 3. In solo every core is local (native passes
++        // isLocal=true outside netplay), so this is the old first-with-ROM
++        // pick. A watcher or a player waiting for the seat owns no GBA and
++        // gets none: falling back to any GBA with a ROM showed them the
++        // host's.
+         val nextDevice = when {
+             frameConsumerCount == 0 -> NO_DEVICE
+             manualDevice != NO_DEVICE -> manualDevice
+             infos[GB_PLAYER_DEVICE]?.hasRom == true -> GB_PLAYER_DEVICE
+             else -> LINK_DEVICE_RANGE.firstOrNull { infos[it]?.hasRom == true && infos[it]?.isLocal == true }
+-                ?: LINK_DEVICE_RANGE.firstOrNull { infos[it]?.hasRom == true }
+-                ?: LINK_DEVICE_RANGE.firstOrNull { infos[it]?.isGba == true }
++                ?: LINK_DEVICE_RANGE.firstOrNull { infos[it]?.isGba == true && infos[it]?.isLocal == true }
+                 ?: NO_DEVICE
+         }
+ 
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaScreenView.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaScreenView.kt
+index 49d47b4..875223c 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaScreenView.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaScreenView.kt
+@@ -485,6 +485,10 @@ class GbaScreenView @JvmOverloads constructor(
+     }
+ 
+     private fun drawStatusText(canvas: Canvas) {
++        // A netplay watcher owns no GBA: draw nothing rather than a "no link" line.
++        if (visibleDevice == GbaHostBridge.NO_DEVICE && GbaHostBridge.isNetplayActive()) {
++            return
++        }
+         val text = when {
+             visibleDevice == GbaHostBridge.NO_DEVICE ->
+                 context.getString(R.string.gba_screen_no_active_link)
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/NetplaySession.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/NetplaySession.kt
+index b19b3d4..bc824bc 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/NetplaySession.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/NetplaySession.kt
+@@ -284,7 +284,21 @@ class NetplaySession(
+ 
+     fun doAllPlayersHaveGame(): Boolean = nativeDoAllPlayersHaveGame()
+ 
+-    fun startGame() = nativeStartGame()
++    /**
++     * Host only: start the battle. Native picks the opponent (the joiner not watching who has been
++     * in line longest) and refuses with a one-line reason when nobody is seated or the last battle
++     * is still closing; [HostSubmitResult.status] is "" when the request went out.
++     */
++    fun startGame(): HostSubmitResult {
++        val result = nativeStartGame()
++        return HostSubmitResult(
++            ok = result.getOrNull(0) == "1",
++            status = result.getOrNull(1).orEmpty()
++        )
++    }
++
++    /** Joiner: only watch the next battles (true), or play again (false). */
++    fun setWatchOnly(watching: Boolean) = nativeSetWatchOnly(watching)
+ 
+     fun getPort(): Int = nativeGetPort()
+ 
+@@ -403,7 +417,10 @@ class NetplaySession(
+ 
+     private external fun nativeDoAllPlayersHaveGame(): Boolean
+ 
+-    private external fun nativeStartGame()
++    /** Returns ["1" or "0", reason or ""]; see [startGame]. */
++    private external fun nativeStartGame(): Array<String>
++
++    private external fun nativeSetWatchOnly(watching: Boolean)
+ 
+     private external fun nativeGetPort(): Int
+ 
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt
+index d13ef3c..801cc8d 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt
+@@ -33,6 +33,7 @@ import org.dolphinemu.dolphinemu.features.settings.model.NativeConfig
+ import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
+ import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
+ import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.EmeraldSave
++import org.dolphinemu.dolphinemu.features.xdnetplay.isXdGameName
+ import org.dolphinemu.dolphinemu.model.GameFile
+ import org.dolphinemu.dolphinemu.services.GameFileCacheManager
+ import org.dolphinemu.dolphinemu.utils.NetworkHelper
+@@ -77,12 +78,35 @@ class NetplayViewModel(
+     val players = netplaySession.players
+         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptyList())
+ 
++    /** This device's part in the next battle (Player.ROLE_*), from the server's seat broadcast. */
++    val localRole = players
++        .map { list -> list.firstOrNull { it.isLocal }?.role ?: Player.ROLE_UNKNOWN }
++        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), Player.ROLE_UNKNOWN)
++
++    // Joiner's "Watch only" switch. Every connection starts out playing on the server, so this
++    // starts false with each room.
++    private val _watchOnly = MutableStateFlow(false)
++    val watchOnly = _watchOnly.asStateFlow()
++
++    fun setWatchOnly(watching: Boolean) {
++        _watchOnly.value = watching
++        netplaySession.setWatchOnly(watching)
++    }
++
+     val messages = netplaySession.messages
+         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), emptyList())
+ 
+     val game = netplaySession.game
+         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), "")
+ 
++    init {
++        // Watch only means nothing outside XD, but the server would still leave
++        // this player out of the index count and the lobby buffer.
++        netplaySession.game
++            .onEach { if (_watchOnly.value && !isXdGameName(it)) setWatchOnly(false) }
++            .launchIn(viewModelScope)
++    }
++
+     val hostInputAuthority = netplaySession.hostInputAuthorityEnabled
+         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false)
+ 
+@@ -158,9 +182,20 @@ class NetplayViewModel(
+         if (netplaySession.isClosed) {
+             return
+         }
++        // An earlier tap whose start is still syncing keeps its hold; native
++        // refuses this one while that start is under way.
++        val previous = startRequestedAt.value
+         val stamp = System.nanoTime()
+         startRequestedAt.value = stamp
+-        netplaySession.startGame()
++        val result = netplaySession.startGame()
++        if (!result.ok) {
++            // Nothing new started, so give the host their controls back at once.
++            startRequestedAt.value = previous
++            if (result.status.isNotEmpty()) {
++                postHostActionResult(false, result.status)
++            }
++            return
++        }
+         viewModelScope.launch {
+             delay(START_REQUEST_HOLD_MS)
+             if (startRequestedAt.value == stamp) {
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/Player.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/Player.kt
+index 31d0d0c..a869bf9 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/Player.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/Player.kt
+@@ -12,4 +12,17 @@ data class Player(
+     val ping: Int,
+     val isHost: Boolean,
+     val mapping: String,
+-)
+\ No newline at end of file
++    /** XD Netplay: this player's part in the next battle, one of the ROLE_ values below. */
++    val role: Int = ROLE_UNKNOWN,
++    /** True for this device's own player. */
++    val isLocal: Boolean = false,
++) {
++    companion object {
++        // Same values as NetPlay::XdRole in Core/NetPlayClient.h.
++        const val ROLE_UNKNOWN = 0
++        const val ROLE_HOST = 1
++        const val ROLE_OPPONENT = 2
++        const val ROLE_WAITING = 3
++        const val ROLE_WATCHING = 4
++    }
++}
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayActivity.kt
+index 21bc345..de21eae 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayActivity.kt
+@@ -126,6 +126,9 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
+                     notAllPlayersHaveGame = viewModel.notAllPlayersHaveGame,
+                     onConfirmStartGame = viewModel::confirmStartGame,
+                     players = viewModel.players.collectAsState().value,
++                    localRole = viewModel.localRole.collectAsState().value,
++                    watchOnly = viewModel.watchOnly.collectAsState().value,
++                    onWatchOnlyChanged = viewModel::setWatchOnly,
+                     hostInputAuthorityEnabled = viewModel.hostInputAuthority.collectAsState().value,
+                     networkMode = viewModel.networkMode.collectAsState().value,
+                     onNetworkModeChanged = viewModel::setNetworkMode,
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
+index 4d8b1ec..0a8b150 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
+@@ -108,6 +108,7 @@ import org.dolphinemu.dolphinemu.features.netplay.model.TraversalState
+ import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
+ import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.EmeraldSave
+ import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Text
++import org.dolphinemu.dolphinemu.features.xdnetplay.isXdGameName
+ import org.dolphinemu.dolphinemu.features.xdnetplay.ui.BattleStyleDropdown
+ import org.dolphinemu.dolphinemu.model.GameFile
+ import org.dolphinemu.dolphinemu.ui.theme.DolphinScaffold
+@@ -197,6 +198,11 @@ fun NetplayScreen(
+     /** HOST only: result line of the last in-room host action ("" = none yet). */
+     hostResultText: String = "",
+     hostResultOk: Boolean = true,
++    /** This device's part in the next battle (Player.ROLE_*), from the server's seat broadcast. */
++    localRole: Int = Player.ROLE_UNKNOWN,
++    /** JOINER only: the "Watch only" switch. */
++    watchOnly: Boolean = false,
++    onWatchOnlyChanged: (Boolean) -> Unit = {},
+ ) {
+     val scrollState = rememberScrollState()
+     // XD Netplay: joiner's "Submit Team" sheet. Every field opens pre-filled
+@@ -492,10 +498,13 @@ fun NetplayScreen(
+                 ExtendedFloatingActionButton(onClick = onStartGame) {
+                     Text(stringResource(R.string.netplay_start))
+                 }
+-            } else {
++            } else if (localRole == Player.ROLE_OPPONENT || localRole == Player.ROLE_UNKNOWN) {
+                 // XD Netplay: a joiner hands their own team to the host, which
+                 // writes it into the save it syncs at start. Sits where the
+                 // host's Start button is, since only one of them ever shows.
++                // Only the opponent may submit (the server refuses anyone
++                // else), and a FAB has no disabled state, so a watcher or a
++                // player waiting for the seat does not get one.
+                 ExtendedFloatingActionButton(onClick = { showSubmitTeam = true }) {
+                     Text("Submit Team")
+                 }
+@@ -539,6 +548,8 @@ fun NetplayScreen(
+                 showGamePicker = showGamePicker,
+                 onShowGamePickerChanged = { showGamePicker = it },
+                 players = players,
++                watchOnly = watchOnly,
++                onWatchOnlyChanged = onWatchOnlyChanged,
+                 hostInputAuthorityEnabled = hostInputAuthorityEnabled,
+                 networkMode = networkMode,
+                 onNetworkModeChanged = onNetworkModeChanged,
+@@ -575,6 +586,8 @@ fun NetplayScreen(
+                 showGamePicker = showGamePicker,
+                 onShowGamePickerChanged = { showGamePicker = it },
+                 players = players,
++                watchOnly = watchOnly,
++                onWatchOnlyChanged = onWatchOnlyChanged,
+                 hostInputAuthorityEnabled = hostInputAuthorityEnabled,
+                 networkMode = networkMode,
+                 onNetworkModeChanged = onNetworkModeChanged,
+@@ -703,6 +716,8 @@ private fun PortraitContent(
+     showGamePicker: Boolean,
+     onShowGamePickerChanged: (Boolean) -> Unit,
+     players: List<Player>,
++    watchOnly: Boolean = false,
++    onWatchOnlyChanged: (Boolean) -> Unit = {},
+     hostInputAuthorityEnabled: Boolean,
+     networkMode: NetworkMode,
+     onNetworkModeChanged: (NetworkMode) -> Unit,
+@@ -744,6 +759,8 @@ private fun PortraitContent(
+             showGamePicker = showGamePicker,
+             onShowGamePickerChanged = onShowGamePickerChanged,
+             players = players,
++            watchOnly = watchOnly,
++            onWatchOnlyChanged = onWatchOnlyChanged,
+             hostInputAuthorityEnabled = hostInputAuthorityEnabled,
+             networkMode = networkMode,
+             onNetworkModeChanged = onNetworkModeChanged,
+@@ -768,9 +785,9 @@ private fun PortraitContent(
+                 .padding(horizontal = DolphinTheme.scaffoldPadding),
+         )
+ 
+-        if (isHosting) {
+-            Spacer(modifier = Modifier.height(DolphinTheme.fabClearancePadding))
+-        }
++        // The host's Start and the joiner's Submit Team FAB both sit over
++        // the bottom of this column.
++        Spacer(modifier = Modifier.height(DolphinTheme.fabClearancePadding))
+     }
+ }
+ 
+@@ -794,6 +811,8 @@ private fun LandscapeContent(
+     showGamePicker: Boolean,
+     onShowGamePickerChanged: (Boolean) -> Unit,
+     players: List<Player>,
++    watchOnly: Boolean = false,
++    onWatchOnlyChanged: (Boolean) -> Unit = {},
+     hostInputAuthorityEnabled: Boolean,
+     networkMode: NetworkMode,
+     onNetworkModeChanged: (NetworkMode) -> Unit,
+@@ -847,6 +866,8 @@ private fun LandscapeContent(
+                 showGamePicker = showGamePicker,
+                 onShowGamePickerChanged = onShowGamePickerChanged,
+                 players = players,
++                watchOnly = watchOnly,
++                onWatchOnlyChanged = onWatchOnlyChanged,
+                 hostInputAuthorityEnabled = hostInputAuthorityEnabled,
+                 networkMode = networkMode,
+                 onNetworkModeChanged = onNetworkModeChanged,
+@@ -870,9 +891,9 @@ private fun LandscapeContent(
+                 modifier = Modifier
+             )
+ 
+-            if (isHosting) {
+-                Spacer(modifier = Modifier.height(DolphinTheme.fabClearancePadding))
+-            }
++            // The host's Start and the joiner's Submit Team FAB both sit over
++            // the bottom of this column.
++            Spacer(modifier = Modifier.height(DolphinTheme.fabClearancePadding))
+         }
+     }
+ }
+@@ -1026,6 +1047,8 @@ private fun PlayersAndSettings(
+     showGamePicker: Boolean,
+     onShowGamePickerChanged: (Boolean) -> Unit,
+     players: List<Player>,
++    watchOnly: Boolean = false,
++    onWatchOnlyChanged: (Boolean) -> Unit = {},
+     hostInputAuthorityEnabled: Boolean,
+     networkMode: NetworkMode,
+     onNetworkModeChanged: (NetworkMode) -> Unit,
+@@ -1093,16 +1116,31 @@ private fun PlayersAndSettings(
+         OutlinedBox(
+             label = { Text(stringResource(R.string.netplay_players_label)) },
+         ) {
++            // XD Netplay: each player's part in the next battle, from the
++            // server's seat broadcast, where the port mapping was.
++            val roleHost = stringResource(R.string.xd_role_host)
++            val roleOpponent = stringResource(R.string.xd_role_opponent)
++            val roleWaiting = stringResource(R.string.xd_role_waiting)
++            val roleWatching = stringResource(R.string.xd_role_watching)
++            val roleLabel = { role: Int ->
++                when (role) {
++                    Player.ROLE_HOST -> roleHost
++                    Player.ROLE_OPPONENT -> roleOpponent
++                    Player.ROLE_WAITING -> roleWaiting
++                    Player.ROLE_WATCHING -> roleWatching
++                    else -> ""
++                }
++            }
+             PlayersTable(
+                 rows = buildList {
+                     add(
+                         listOf(
+                             stringResource(R.string.netplay_players_name),
+                             stringResource(R.string.netplay_players_ping),
+-                            stringResource(R.string.netplay_players_mapping),
++                            stringResource(R.string.netplay_players_role),
+                         )
+                     )
+-                    addAll(players.map { listOf(it.name, it.ping.toString(), it.mapping) })
++                    addAll(players.map { listOf(it.name, it.ping.toString(), roleLabel(it.role)) })
+                     repeat(4 - players.size) { add(listOf("", "", "")) }
+                 },
+                 modifier = Modifier
+@@ -1110,6 +1148,31 @@ private fun PlayersAndSettings(
+             )
+         }
+ 
++        if (!isHosting && isXdGameName(game)) {
++            MenuSpacer()
++
++            // XD Netplay, joiner: sit out as a spectator. The server seats the
++            // next player in line as the opponent; the Role column shows who.
++            // XD rooms only, as on desktop: elsewhere it would change nothing
++            // about who plays.
++            Row(
++                modifier = Modifier.fillMaxWidth(),
++                verticalAlignment = Alignment.CenterVertically
++            ) {
++                Column(Modifier.weight(1f)) {
++                    Text(
++                        stringResource(R.string.xd_watch_only),
++                        style = MaterialTheme.typography.bodyLarge
++                    )
++                    Text(
++                        stringResource(R.string.xd_watch_only_description),
++                        style = MaterialTheme.typography.bodySmall
++                    )
++                }
++                Switch(checked = watchOnly, onCheckedChange = onWatchOnlyChanged)
++            }
++        }
++
+         if (isHosting) {
+             MenuSpacer()
+ 
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/NetPlayIndexBridge.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/NetPlayIndexBridge.kt
+index b90dd00..c034ef2 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/NetPlayIndexBridge.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/NetPlayIndexBridge.kt
+@@ -95,13 +95,7 @@ data class LobbySession(
+      * long names ("Pokemon XD: Gale of Darkness").
+      */
+     val isXdBattle: Boolean
+-        get() {
+-            val g = game.lowercase()
+-            return g.contains("gxxe01") ||
+-                g.contains("gale of darkness") ||
+-                g.contains("pokemon xd") ||
+-                g.contains("pokémon xd")
+-        }
++        get() = isXdGameName(game)
+ 
+     companion object {
+         fun fromRow(row: Array<String>): LobbySession = LobbySession(
+@@ -118,3 +112,15 @@ data class LobbySession(
+         )
+     }
+ }
++
++/**
++ * True when a netplay game name is Pokemon XD (GXXE01): desktop names carry the game ID
++ * ("... (GXXE01, GC)"), and Android hosts send the plain long name ("Pokemon XD: Gale of Darkness").
++ */
++fun isXdGameName(game: String): Boolean {
++    val g = game.lowercase()
++    return g.contains("gxxe01") ||
++        g.contains("gale of darkness") ||
++        g.contains("pokemon xd") ||
++        g.contains("pokémon xd")
++}
+diff --git a/Source/Android/app/src/main/res/values/strings.xml b/Source/Android/app/src/main/res/values/strings.xml
+index a0a9819..f77ec58 100644
+--- a/Source/Android/app/src/main/res/values/strings.xml
++++ b/Source/Android/app/src/main/res/values/strings.xml
+@@ -1076,6 +1076,13 @@ It can efficiently compress both junk data and encrypted Wii data.
+     <string name="netplay_players_name">Name</string>
+     <string name="netplay_players_ping">Ping</string>
+     <string name="netplay_players_mapping">Mapping</string>
++    <string name="netplay_players_role">Role</string>
++    <string name="xd_role_host">Host</string>
++    <string name="xd_role_opponent">Opponent</string>
++    <string name="xd_role_waiting">Waiting</string>
++    <string name="xd_role_watching">Watching</string>
++    <string name="xd_watch_only">Watch only</string>
++    <string name="xd_watch_only_description">Watch without playing.</string>
+     <string name="netplay_network_mode_label">Input mode</string>
+     <string name="netplay_network_mode_fair_input_delay">Fair Input Delay</string>
+     <string name="netplay_network_mode_host_input_authority">Host Input Authority</string>
+@@ -1167,7 +1174,7 @@ It can efficiently compress both junk data and encrypted Wii data.
+     <string name="xd_submit_raise_100">Raise my team to Lv. 100</string>
+     <string name="xd_submit_raise_100_hint">Only in Lv. 100 formats. The host applies it and never lowers a Pokémon.</string>
+     <string name="xd_submit_use_save_hint">Submit your save\'s party as-is, under your save\'s own trainer name and ID. This sends the Team Editor\'s "Host (GBA 2)" team.</string>
+-    <string name="xd_submit_privacy_note">Your save\'s party is sent exactly as it is, and the host\'s machine receives everything in those bytes: exact moves, held items, stats, EVs, IVs, natures, nicknames, met information, ribbons, and your OT name and BOTH trainer IDs, including the secret one. Your opponent would see most of this by battling you — but not the secret ID, so only send your save to hosts you trust.</string>
++    <string name="xd_submit_privacy_note">Your save\'s party is sent exactly as it is. Everyone in the room, watchers included, receives everything in those bytes: exact moves, held items, stats, EVs, IVs, natures, nicknames, met information, ribbons, and your OT name and BOTH trainer IDs, including the secret one. A battle shows most of this, but never the secret ID, so only send your save to rooms you trust.</string>
+     <string name="xd_submit_name_ignored">Your save\'s real trainer name is used instead.</string>
+ 
+     <!-- XD Netplay room, HOST only: the host's own Submit Team sheet (writes
+diff --git a/Source/Android/jni/AndroidCommon/IDCache.cpp b/Source/Android/jni/AndroidCommon/IDCache.cpp
+index b2c55b6..8f8f9ef 100644
+--- a/Source/Android/jni/AndroidCommon/IDCache.cpp
++++ b/Source/Android/jni/AndroidCommon/IDCache.cpp
+@@ -847,7 +847,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved)
+   s_netplay_player_class = reinterpret_cast<jclass>(env->NewGlobalRef(netplay_player_class));
+   s_netplay_player_constructor =
+       env->GetMethodID(netplay_player_class, "<init>",
+-                       "(ILjava/lang/String;Ljava/lang/String;IZLjava/lang/String;)V");
++                       "(ILjava/lang/String;Ljava/lang/String;IZLjava/lang/String;IZ)V");
+   env->DeleteLocalRef(netplay_player_class);
+ 
+   const jclass analytics_class = env->FindClass("org/dolphinemu/dolphinemu/utils/Analytics");
+diff --git a/Source/Android/jni/NetPlay/NetPlayUICallbacks.cpp b/Source/Android/jni/NetPlay/NetPlayUICallbacks.cpp
+index f3d3383..45019fe 100644
+--- a/Source/Android/jni/NetPlay/NetPlayUICallbacks.cpp
++++ b/Source/Android/jni/NetPlay/NetPlayUICallbacks.cpp
+@@ -158,7 +158,9 @@ void NetPlayUICallbacks::Update()
+           env->NewObject(IDCache::GetNetplayPlayerClass(), IDCache::GetNetplayPlayerConstructor(),
+                          static_cast<jint>(player->pid), ToJString(env, player->name),
+                          ToJString(env, player->revision), static_cast<jint>(player->ping),
+-                         static_cast<jboolean>(player->IsHost()), ToJString(env, mapping));
++                         static_cast<jboolean>(player->IsHost()), ToJString(env, mapping),
++                         static_cast<jint>(client->GetXdRole(player->pid)),
++                         static_cast<jboolean>(client->IsLocalPlayer(player->pid)));
+       env->SetObjectArrayElement(player_array, i, player_obj);
+       env->DeleteLocalRef(player_obj);
+     }
+@@ -212,6 +214,13 @@ std::string NetPlayUICallbacks::OnTeamSubmission(const std::string& player,
+   return status;
+ }
+ 
++bool NetPlayUICallbacks::OnXdGuestSlotReset()
++{
++  // Host side, NETPLAY or main thread, under the server's seat lock: no JNI
++  // call and no waiting on the main thread.
++  return XDNetplay::ResetGuestSlot(2);
++}
++
+ void NetPlayUICallbacks::OnRoomClosed()
+ {
+   // Restores the host's own team AND erases every remaining copy of the
+diff --git a/Source/Android/jni/NetPlay/NetPlayUICallbacks.h b/Source/Android/jni/NetPlay/NetPlayUICallbacks.h
+index 8c5f68a..4fd6fb3 100644
+--- a/Source/Android/jni/NetPlay/NetPlayUICallbacks.h
++++ b/Source/Android/jni/NetPlay/NetPlayUICallbacks.h
+@@ -33,6 +33,7 @@ public:
+   void Update() override;
+   void AppendChat(const std::string& msg) override;
+   std::string OnTeamSubmission(const std::string& player, const std::string& text) override;
++  bool OnXdGuestSlotReset() override;
+   void OnRoomClosed() override;
+   void OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,
+                        const std::string& netplay_name) override;
+diff --git a/Source/Android/jni/NetPlay/Netplay.cpp b/Source/Android/jni/NetPlay/Netplay.cpp
+index 093a594..83a0ed5 100644
+--- a/Source/Android/jni/NetPlay/Netplay.cpp
++++ b/Source/Android/jni/NetPlay/Netplay.cpp
+@@ -552,17 +552,36 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeDoAllPlayer
+   return JNI_TRUE;
+ }
+ 
+-JNIEXPORT void JNICALL
++JNIEXPORT jobjectArray JNICALL
+ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(JNIEnv* env,
+                                                                                jobject obj)
+ {
++  // Returns two strings: "1" or "0" (did the start request go out), then a
++  // one-line reason when it did not ("" otherwise).
++  const auto reply = [env](bool ok, const std::string& line) {
++    const std::array<std::string, 2> result{ok ? "1" : "0", line};
++    return SpanToJStringArray(env, std::span<const std::string>(result));
++  };
++
+   // Waits for a Submit Team or Music & Location write that is still going, and
+   // keeps new ones out until RequestStartGame has raised its start flag.
+   std::lock_guard lk(s_host_write_mutex);
+ 
+   auto* server = GetServerPointer(env, obj);
+   if (!server)
+-    return;
++    return reply(false, HOST_WRITE_NO_ROOM);
++
++  // Picks the opponent and keeps a joiner's TeamData and new joins out until
++  // RequestStartGame has returned. Lock order: s_host_write_mutex, then the
++  // server's seat mutex.
++  NetPlay::NetPlayServer::XdStartFreeze freeze(*server);
++  const NetPlay::XdStartClaim& claim = freeze.Claim();
++  if (claim.starting)
++    return reply(false, HOST_WRITE_BUSY);
++  if (claim.opponent == 0)
++    return reply(false, "Can't start: no opponent yet.");
++  if (claim.slot_busy)
++    return reply(false, "Can't start: the last battle is still closing.");
+ 
+   // Assign the XD GBA-vs-GBA ports before starting. Dolphin's netplay config
+   // loader rebuilds every SI channel and every GBA ROM path at boot purely from
+@@ -575,23 +594,23 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
+   // (NetPlayDialog.cpp:340-341) for our fixed two-player layout:
+   //   port 1 (idx0) = host GC controller -> pad_map[0] = host pid, gba off
+   //   port 2 (idx1) = host GBA           -> pad_map[1] = host pid, gba on
+-  //   port 3 (idx2) = guest GBA          -> pad_map[2] = guest pid, gba on
++  //   port 3 (idx2) = opponent's GBA     -> pad_map[2] = opponent pid, gba on
+   //   port 4 (idx3) = unused             -> pad_map[3] = 0
+   // A slot becomes a GBA iff gba_config[i].enabled && pad_map[i] > 0
+   // (NetPlayConfigLoader.cpp:144-147); a mapped-but-not-GBA slot owned by the
+   // local player becomes its GC controller, and one owned by a remote player a
+   // remote controller. The host is always pid 1 (its loopback client connects
+-  // first, Client::IsHost() == pid==1) and XD is a strict two-player game, so
+-  // the guest is pid 2. This runs on every start, which also re-applies the
+-  // mapping after a disconnect/reconnect (which wipes it, NetPlayServer.cpp:
+-  // 581-590, and refills the slot as a plain controller, not a GBA).
++  // first, Client::IsHost() == pid==1). The opponent is whoever the server
++  // seated (GetXdOpponentLocked), not a fixed pid: pids are reused, and
++  // watchers stay unmapped, as plain spectators. This runs on every start,
++  // which also re-applies the mapping after a disconnect/reconnect (which
++  // wipes it, and refills the slot as a plain controller, not a GBA).
+   constexpr NetPlay::PlayerId HOST_PID = 1;
+-  constexpr NetPlay::PlayerId GUEST_PID = 2;
+ 
+   NetPlay::PadMappingArray pad_map{};
+   pad_map[0] = HOST_PID;
+   pad_map[1] = HOST_PID;
+-  pad_map[2] = GUEST_PID;
++  pad_map[2] = claim.opponent;
+   pad_map[3] = 0;
+ 
+   NetPlay::GBAConfigArray gba_config{};
+@@ -629,7 +648,16 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
+   XDNetplay::BattleCustomizer::PrepareForStart();
+   XDNetplay::BattleCustomizer::BeginLiveStyleForStart();
+ 
+-  server->RequestStartGame();
++  return reply(server->RequestStartGame(), "");
++}
++
++JNIEXPORT void JNICALL
++Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetWatchOnly(
++    JNIEnv* env, jobject obj, jboolean watching)
++{
++  // XD Netplay, joiner: only watch (or play again). Applies from the next Start.
++  if (auto* client = GetClientPointer(env, obj))
++    client->SendXdWatch(watching == JNI_TRUE);
+ }
+ 
+ JNIEXPORT jint JNICALL Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeGetPort(
+diff --git a/Source/Core/Core/NetPlayClient.cpp b/Source/Core/Core/NetPlayClient.cpp
+index 4c0b8b8..899e79f 100644
+--- a/Source/Core/Core/NetPlayClient.cpp
++++ b/Source/Core/Core/NetPlayClient.cpp
+@@ -585,6 +585,10 @@ void NetPlayClient::OnData(sf::Packet& packet)
+     OnLiveStyle(packet);
+     break;
+ 
++  case MessageID::XdSeats:
++    OnXdSeats(packet);
++    break;
++
+   case MessageID::Ping:
+     OnPing(packet);
+     break;
+@@ -677,13 +681,42 @@ void NetPlayClient::OnChatMessage(sf::Packet& packet)
+   std::string msg;
+   packet >> msg;
+ 
+-  // don't need lock to read in this thread
+-  const Player& player = m_players[pid];
++  // find, never operator[]: server lines carry pid 0, and inserting a blank Player for it put a
++  // phantom row in the players list and made DoAllPlayersHaveGame false.
++  std::string name;
++  {
++    std::lock_guard lkp(m_crit.players);
++    if (const auto it = m_players.find(pid); it != m_players.end())
++      name = it->second.name;
++  }
+ 
+-  INFO_LOG_FMT(NETPLAY, "Player {} ({}) wrote: {}", player.name, player.pid, msg);
++  INFO_LOG_FMT(NETPLAY, "Player {} ({}) wrote: {}", name, pid, msg);
+ 
+   // add to gui
+-  m_dialog->AppendChat(fmt::format("{}[{}]: {}", player.name, pid, msg));
++  m_dialog->AppendChat(fmt::format("{}[{}]: {}", name, pid, msg));
++}
++
++void NetPlayClient::OnXdSeats(sf::Packet& packet)
++{
++  PlayerId opponent = 0;
++  u8 count = 0;
++  packet >> opponent;
++  packet >> count;
++  std::vector<PlayerId> watchers(count);
++  for (PlayerId& pid : watchers)
++    packet >> pid;
++
++  {
++    std::lock_guard lkp(m_crit.players);
++    // A full snapshot. Only players we know are updated, never inserted; a later join gets its
++    // flag from the broadcast that follows it.
++    for (auto& [pid, player] : m_players)
++      player.xd_watching = std::ranges::find(watchers, pid) != watchers.end();
++    m_xd_opponent = opponent;
++    m_xd_seats_known = true;
++  }
++
++  m_dialog->Update();
+ }
+ 
+ void NetPlayClient::OnChunkedDataStart(sf::Packet& packet)
+@@ -2112,6 +2145,28 @@ void NetPlayClient::SendTeamSubmission(const std::string& payload)
+   SendAsync(std::move(packet));
+ }
+ 
++void NetPlayClient::SendXdWatch(bool watching)
++{
++  sf::Packet packet;
++  packet << MessageID::XdWatch;
++  packet << watching;
++
++  SendAsync(std::move(packet));
++}
++
++XdRole NetPlayClient::GetXdRole(PlayerId pid)
++{
++  std::lock_guard lkp(m_crit.players);
++  if (pid == 1)
++    return XdRole::Host;
++  if (!m_xd_seats_known)
++    return XdRole::Unknown;
++  if (pid == m_xd_opponent)
++    return XdRole::Opponent;
++  const auto it = m_players.find(pid);
++  return it != m_players.end() && it->second.xd_watching ? XdRole::Watching : XdRole::Waiting;
++}
++
+ // called from ---CPU--- thread
+ void NetPlayClient::AddPadStateToPacket(const int in_game_pad, const GCPadStatus& pad,
+                                         sf::Packet& packet)
+@@ -3716,8 +3771,9 @@ PadDetails GetPadDetails(int pad_num)
+   }
+   res.is_local = netplay_client->IsLocalPlayer(pad_map[pad_num]);
+   res.local_pad = res.is_local ? local_pad : netplay_client->NumLocalPads() + non_local_pad;
+-  res.hide_gba = !res.is_local && netplay_client->GetNetSettings().hide_remote_gbas &&
+-                 netplay_client->LocalPlayerHasControllerMapped();
++  // Also when this machine has no pad (a watcher, or a player waiting for the seat): XD rooms
++  // must not show a spectator either player's GBA screen, which carries that player's party.
++  res.hide_gba = !res.is_local && netplay_client->GetNetSettings().hide_remote_gbas;
+   return res;
+ }
+ 
+diff --git a/Source/Core/Core/NetPlayClient.h b/Source/Core/Core/NetPlayClient.h
+index 2c4af11..ba33fb0 100644
+--- a/Source/Core/Core/NetPlayClient.h
++++ b/Source/Core/Core/NetPlayClient.h
+@@ -45,6 +45,17 @@ struct SerializedWiimoteState;
+ 
+ namespace NetPlay
+ {
++// XD Netplay: a player's part in the next battle, from the server's XdSeats broadcast. Unknown
++// until the first broadcast arrives.
++enum class XdRole : u8
++{
++  Unknown = 0,
++  Host = 1,
++  Opponent = 2,
++  Waiting = 3,
++  Watching = 4,
++};
++
+ class NetPlayUI
+ {
+ public:
+@@ -63,6 +74,13 @@ public:
+   // room chat. Called on the NETPLAY thread; must finish before the ack, so
+   // the file is on disk before any Start can read it.
+   virtual std::string OnTeamSubmission(const std::string& player, const std::string& text) = 0;
++  // XD Netplay, host side: the GBA 2 slot holds the team of a player who no longer holds the seat.
++  // Put the host's spare team back and forget that player's model pick
++  // (UICommon/XDNetplay/TeamInjector.h, ResetGuestSlot). Called on the NETPLAY thread (TeamData)
++  // or the host UI thread (Start) with the server's seat mutex held, so it must not touch widgets
++  // or wait on a UI thread. Returns false and changes nothing while emulation is not
++  // Uninitialized.
++  virtual bool OnXdGuestSlotReset() = 0;
+   // XD Netplay: this machine's session is over. Puts the host's own team back
+   // if a guest's submission overwrote it, and erases every remaining file that
+   // holds the opponent's party -- including, on a joiner, netplay's own
+@@ -123,6 +141,8 @@ public:
+   std::string revision;
+   u32 ping = 0;
+   SyncIdentifierComparison game_status = SyncIdentifierComparison::Unknown;
++  // XD Netplay: this player ticked Watch only (from XdSeats).
++  bool xd_watching = false;
+ 
+   bool IsHost() const { return pid == 1; }
+ };
+@@ -154,6 +174,12 @@ public:
+   // The payload is built by XDNetplay::BuildTeamSubmissionPayload and Core
+   // treats it as opaque text. See UICommon/XDNetplay/TeamInjector.h.
+   void SendTeamSubmission(const std::string& payload);
++  // XD Netplay: this player only watches (true) or wants to play (false). Takes effect at the
++  // next Start; the server answers with XdSeats.
++  void SendXdWatch(bool watching);
++  // XD Netplay: pid's part in the next battle, from the last XdSeats. Display only; the pad map
++  // is decided by the host at Start. Takes m_crit.players.
++  XdRole GetXdRole(PlayerId pid);
+   void RequestStopGame();
+   void SendPowerButtonEvent();
+   void RequestGolfControl(PlayerId pid);
+@@ -425,6 +451,7 @@ private:
+   void OnGameDigestResult(sf::Packet& packet);
+   void OnGameDigestError(sf::Packet& packet);
+   void OnGameDigestAbort();
++  void OnXdSeats(sf::Packet& packet);
+ 
+   bool m_is_connected = false;
+   ConnectionState m_connection_state = ConnectionState::Failure;
+@@ -432,6 +459,9 @@ private:
+   PlayerId m_pid = 0;
+   NetSettings m_net_settings{};
+   std::map<PlayerId, Player> m_players;
++  // XD Netplay seats from the last XdSeats, guarded by m_crit.players.
++  PlayerId m_xd_opponent = 0;
++  bool m_xd_seats_known = false;
+   std::string m_host_spec;
+   std::string m_player_name;
+   bool m_connecting = false;
+diff --git a/Source/Core/Core/NetPlayProto.h b/Source/Core/Core/NetPlayProto.h
+index 06f9630..bd347d8 100644
+--- a/Source/Core/Core/NetPlayProto.h
++++ b/Source/Core/Core/NetPlayProto.h
+@@ -219,6 +219,8 @@ enum class MessageID : u8
+   HostInputAuthority = 0xA6,
+   PowerButton = 0xA7,
+   LiveStyle = 0xA8,  // XD Netplay: host changes the running game's battle style
++  XdWatch = 0xA9,    // XD Netplay: client -> server. bool: this player only watches.
++  XdSeats = 0xAA,    // XD Netplay: server -> clients. Who plays GBA 2, who watches. Display only.
+ 
+   TimeBase = 0xB0,
+   DesyncDetected = 0xB1,
+diff --git a/Source/Core/Core/NetPlayServer.cpp b/Source/Core/Core/NetPlayServer.cpp
+index 6835ed8..1a28c45 100644
+--- a/Source/Core/Core/NetPlayServer.cpp
++++ b/Source/Core/Core/NetPlayServer.cpp
+@@ -47,6 +47,7 @@
+ #include "Core/Config/SessionSettings.h"
+ #include "Core/ConfigLoaders/GameConfigLoader.h"
+ #include "Core/ConfigManager.h"
++#include "Core/Core.h"
+ #include "Core/GeckoCode.h"
+ #include "Core/GeckoCodeConfig.h"
+ #include "Core/HW/EXI/EXI.h"
+@@ -69,6 +70,7 @@
+ #include "Core/NetPlayCommon.h"
+ #include "Core/PowerPC/PowerPC.h"
+ #include "Core/SyncIdentifier.h"
++#include "Core/System.h"
+ 
+ #include "DiscIO/Enums.h"
+ #include "DiscIO/RiivolutionPatcher.h"
+@@ -303,7 +305,7 @@ void NetPlayServer::SetupIndex()
+   session.has_password = !Config::Get(Config::NETPLAY_INDEX_PASSWORD).empty();
+   session.method = m_traversal_client ? "traversal" : "direct";
+   session.game_id = m_selected_game_name.empty() ? "UNKNOWN" : m_selected_game_name;
+-  session.player_count = static_cast<int>(m_players.size());
++  session.player_count = PlayingCount();
+   session.in_game = m_is_running;
+   session.port = GetPort();
+ 
+@@ -358,7 +360,7 @@ void NetPlayServer::ThreadFunc()
+       m_ping_timer.Start();
+       SendToClients(spac);
+ 
+-      m_index.SetPlayerCount(static_cast<int>(m_players.size()));
++      m_index.SetPlayerCount(PlayingCount());
+       m_index.SetGame(m_selected_game_name);
+       m_index.SetInGame(m_is_running);
+ 
+@@ -539,7 +541,10 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
+   if (netplay_version != Common::GetScmRevGitStr())
+     return ConnectionError::VersionMismatch;
+ 
+-  if (m_is_running || m_start_pending)
++  // m_xd_frozen: an XD Start has claimed the seats and is writing the pad map, and a joiner
++  // assigned a pad slot now (AssignNewUserAPad) could land in it before m_start_pending rises.
++  // A join already past this check holds m_crit.game, which ClaimXdStart waits out.
++  if (m_is_running || m_start_pending || m_xd_frozen)
+     return ConnectionError::GameRunning;
+ 
+   if (m_players.size() >= 255)
+@@ -556,6 +561,10 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
+   if (StringUTF8CodePointCount(new_player.name) > MAX_NAME_LENGTH)
+     return ConnectionError::NameTooLong;
+ 
++  // A fresh serial and the back of the line for the XD opponent seat, rejoiners included, so a
++  // reused pid never inherits a seat or a submitted team.
++  new_player.xd_serial = new_player.xd_queue = ++m_xd_counter;
++
+   // Update time in milliseconds of no acknowledgment of
+   // sent packets before a connection is deemed disconnected
+   enet_peer_timeout(incoming_connection, 0, PEER_TIMEOUT.count(), PEER_TIMEOUT.count());
+@@ -609,6 +618,9 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
+     UpdateWiimoteMapping();
+   }
+ 
++  // After the emplace: the joiner gets it behind its PlayerJoin and GameStatus burst.
++  SendXdSeats();
++
+   // The new player has not answered a ping yet, and the handshake traffic just
+   // skewed everyone else's. Let the automatic buffer take one clean sample
+   // before it believes anything (netplay thread owns these fields).
+@@ -691,6 +703,9 @@ unsigned int NetPlayServer::OnDisconnect(const Client& player)
+ 
+   // alert other players of disconnect
+   SendToClients(spac);
++  // The seat may pass to the next player in line. The slot owner is left alone: staleness is by
++  // serial and is resolved at the next submission or Start.
++  SendXdSeats();
+ 
+   for (size_t i = 0; i < m_pad_map.size(); ++i)
+   {
+@@ -889,7 +904,10 @@ void NetPlayServer::UpdateAutoPadBuffer()
+   bool any_mapped = false;
+   for (const auto& [pid, client] : m_players)
+   {
+-    if (!PlayerHasControllerMapped(pid))
++    // In the lobby a watcher can still hold a pad slot from AssignNewUserAPad, and nobody waits
++    // on it. In a game the pad map decides: a seated player who ticked Watch only during the
++    // save sync still plays this battle.
++    if (!PlayerHasControllerMapped(pid) || (client.xd_watching && !m_is_running))
+       continue;
+     any_mapped = true;
+     max_ping = std::max(max_ping, client.ping);
+@@ -1087,42 +1105,89 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
+     // Untrusted remote input: cap it before it reaches the parser. A real
+     // six-Pokemon Showdown export is well under 2 KB.
+     constexpr size_t MAX_TEAM_TEXT = 16 * 1024;
+-    std::string result;
+-    if (text.size() > MAX_TEAM_TEXT)
+-    {
+-      result = "team rejected (too large)";
+-    }
+-    else if (m_is_running || m_start_pending)
+-    {
+-      // Saves were read and synced when this battle started, and the host's
+-      // save file is now owned by the live mGBA core (which rewrites it from
+-      // its in-memory copy at shutdown), so a write here would be silently
+-      // discarded. Reject honestly instead of claiming a queue we don't have.
+-      //
+-      // m_start_pending closes the launch window too: RequestStartGame has
+-      // already read the save AND the enabled-codes INIs (SyncSaveData /
+-      // SyncCodes) but the game is not yet marked running while the chunks
+-      // upload. A submission landing there would rewrite files the host boots
+-      // from AFTER the guest's copies were taken -- the two machines would
+-      // hold a different party and a different cosmetic AR block, the one way
+-      // this message could ever cause a desync.
+-      result = "not applied - a battle is already running. Back out, then submit "
+-               "before the host starts the next one.";
+-    }
+-    else
+-    {
+-      // The write completes synchronously here, before the chat ack below and
+-      // therefore before any Start can read the file.
+-      result = m_dialog ? m_dialog->OnTeamSubmission(player.name, text) : std::string{};
++    std::string result;   // for the room: "<name> submitted a team: <result>"
++    std::string refusal;  // for the sender only
++    {
++      // Excludes a Start's claim of the seat and the saves (ClaimXdStart). Held across the write,
++      // so a Start that arrives now waits for it and then boots with it.
++      std::lock_guard lk(m_xd_seat_mutex);
++      PlayerId opponent;
++      bool stale;
++      {
++        std::lock_guard lkp(m_crit.players);
++        opponent = GetXdOpponentLocked();
++        stale = XdSlotStaleLocked(opponent);
++      }
++      if (player.pid != opponent)
++      {
++        // A watcher, someone waiting for the seat, or a sheet sent just before a seat change.
++        // Nothing is written and the room is not told.
++        refusal = "Only the opponent can submit a team.";
++      }
++      else if (text.size() > MAX_TEAM_TEXT)
++      {
++        result = "team rejected (too large)";
++      }
++      else if (m_xd_frozen || m_is_running || m_start_pending)
++      {
++        // Saves were read and synced when this battle started, and the host's
++        // save file is now owned by the live mGBA core (which rewrites it from
++        // its in-memory copy at shutdown), so a write here would be silently
++        // discarded. Reject honestly instead of claiming a queue we don't have.
++        //
++        // m_start_pending closes the launch window too: RequestStartGame has
++        // already read the save AND the enabled-codes INIs (SyncSaveData /
++        // SyncCodes) but the game is not yet marked running while the chunks
++        // upload. A submission landing there would rewrite files the host boots
++        // from AFTER the guest's copies were taken -- the two machines would
++        // hold a different party and a different cosmetic AR block, the one way
++        // this message could ever cause a desync. m_xd_frozen covers the start
++        // before m_start_pending rises.
++        result = "not applied - a battle is already running. Back out, then submit "
++                 "before the host starts the next one.";
++      }
++      else if (!Core::IsUninitialized(Core::System::GetInstance()) ||
++               (stale && !ResetXdSlotLocked(/*announce=*/false)))
++      {
++        // m_is_running drops at StopGame, before the host's GBA core has flushed its save. A
++        // write now would be overwritten by that flush.
++        result = "not applied - the last battle is still closing. Send it again.";
++      }
++      else
++      {
++        // The write completes synchronously here, before the chat ack below and
++        // therefore before any Start can read the file.
++        result = m_dialog ? m_dialog->OnTeamSubmission(player.name, text) : std::string{};
++        // Recorded even when the injection failed: after the reset above the slot holds only the
++        // host's data or this sender's, and OnTeamSubmission already stashed this sender's model.
++        m_xd_slot_owner = player.xd_serial;
++        m_xd_slot_owner_name = player.name;
++      }
+     }
+ 
++    if (!refusal.empty())
++      SendResponseToPlayer(player, MessageID::ChatMessage, PlayerId{0}, refusal);
++    // Every client shows this line, the host's own included, so the host UI is not told directly.
+     if (!result.empty())
++      SendChatMessage(fmt::format("{} submitted a team: {}", player.name, result));
++  }
++  break;
++
++  case MessageID::XdWatch:
++  {
++    bool watching = false;
++    packet >> watching;
++    if (player.IsHost() || player.xd_watching == watching)
++      break;
+     {
+-      const std::string line = fmt::format("{} submitted a team: {}", player.name, result);
+-      SendChatMessage(line);
+-      if (m_dialog)
+-        m_dialog->AppendChat(line);
++      std::lock_guard lkp(m_crit.players);
++      player.xd_watching = watching;
++      // Back of the line: switching back to playing never takes the seat from anyone.
++      if (!watching)
++        player.xd_queue = ++m_xd_counter;
+     }
++    // Stored now, used at the next Start or TeamData. The running game's pad map is untouched.
++    SendXdSeats();
+   }
+   break;
+ 
+@@ -1998,6 +2063,10 @@ bool NetPlayServer::RequestStartGame()
+ {
+   INFO_LOG_FMT(NETPLAY, "Start Game requested.");
+ 
++  // Not an XD Start (those hold the freeze): no opponent to check for.
++  if (!m_xd_frozen)
++    m_xd_start_opponent = 0;
++
+   if (!SetupNetSettings())
+     return false;
+ 
+@@ -2052,6 +2121,11 @@ bool NetPlayServer::RequestStartGame()
+ 
+   if (start_now)
+   {
++    // Held across the check and the start, so an opponent leaving now is either caught here or
++    // finds the game running and disables it.
++    std::lock_guard lkg(m_crit.game);
++    if (XdStartOpponentLeft())
++      return false;
+     return StartGame();
+   }
+ 
+@@ -2714,6 +2788,12 @@ void NetPlayServer::CheckSyncAndStartGame()
+   if (m_saves_synced && m_codes_synced)
+   {
+     INFO_LOG_FMT(NETPLAY, "Synchronized, starting game.");
++    // A leave after m_start_pending rose was already aborted in OnDisconnect.
++    if (XdStartOpponentLeft())
++    {
++      AbortGameStart();
++      return;
++    }
+     StartGame();
+   }
+   else
+@@ -2768,6 +2848,132 @@ bool NetPlayServer::PlayerHasControllerMapped(const PlayerId pid) const
+          std::ranges::any_of(m_wiimote_map, mapping_matches_player_id);
+ }
+ 
++int NetPlayServer::PlayingCount()
++{
++  std::lock_guard lkp(m_crit.players);
++  return static_cast<int>(std::ranges::count_if(
++      std::views::values(m_players), [](const Client& client) { return !client.xd_watching; }));
++}
++
++// The one rule for who plays GBA 2 (SI port 3): the joiner not watching who has been in line the
++// longest. The host is never a candidate. Caller holds m_crit.players, or is the NETPLAY thread
++// (the only writer of m_players and the xd_* fields). 0 = nobody.
++PlayerId NetPlayServer::GetXdOpponentLocked() const
++{
++  const Client* best = nullptr;
++  for (const Client& client : std::views::values(m_players))
++  {
++    if (!client.IsHost() && !client.xd_watching && (!best || client.xd_queue < best->xd_queue))
++      best = &client;
++  }
++  return best ? best->pid : 0;
++}
++
++// True when the GBA 2 slot holds a team that is not the seated opponent's. A departed owner's
++// serial belongs to nobody, so their team reads as stale as soon as anyone else is seated.
++// Caller holds m_xd_seat_mutex and m_crit.players.
++bool NetPlayServer::XdSlotStaleLocked(PlayerId opponent) const
++{
++  if (m_xd_slot_owner == 0 || opponent == 0)
++    return false;
++  const auto it = m_players.find(opponent);
++  return it == m_players.end() || it->second.xd_serial != m_xd_slot_owner;
++}
++
++// Puts the GBA 2 slot back to the host's spare team and forgets the guest's model pick. False,
++// with nothing changed, while emulation is not fully down. Caller holds m_xd_seat_mutex and no
++// m_crit lock.
++bool NetPlayServer::ResetXdSlotLocked(bool announce)
++{
++  if (!m_dialog || !m_dialog->OnXdGuestSlotReset())
++    return false;
++  if (announce)
++    SendChatMessage(fmt::format("{}'s submitted team was cleared.", m_xd_slot_owner_name));
++  m_xd_slot_owner = 0;
++  m_xd_slot_owner_name.clear();
++  return true;
++}
++
++// Display only: every room UI turns this into Host / Opponent / Waiting / Watching. The pad map is
++// still decided once, by the host, at Start.
++void NetPlayServer::SendXdSeats()
++{
++  sf::Packet spac;
++  spac << MessageID::XdSeats;
++
++  std::lock_guard lkp(m_crit.players);
++  std::vector<PlayerId> watchers;
++  for (const Client& client : std::views::values(m_players))
++  {
++    if (client.xd_watching)
++      watchers.push_back(client.pid);
++  }
++  spac << GetXdOpponentLocked();
++  spac << static_cast<u8>(watchers.size());
++  for (const PlayerId pid : watchers)
++    spac << pid;
++
++  SendToClients(spac);
++}
++
++// called from ---GUI--- thread
++XdStartClaim NetPlayServer::ClaimXdStart()
++{
++  // Waits out a TeamData write in progress (milliseconds).
++  std::lock_guard lk(m_xd_seat_mutex);
++
++  XdStartClaim claim;
++  // A start still syncing saves, or a battle running: a second Start must not re-read the seat,
++  // reset the slot or rewrite the pad map under the saves that one already sent.
++  if (IsStartingOrRunning())
++  {
++    claim.starting = true;
++    return claim;
++  }
++
++  // TeamData and joins are refused from here until ReleaseXdStart.
++  m_xd_frozen = true;
++  // OnConnect reads the flag under m_crit.game. Taking it once here lets a join that read the
++  // flag before it rose finish (pad slot and all) before the seat and the pad map are claimed.
++  {
++    std::lock_guard lkg(m_crit.game);
++  }
++
++  bool stale;
++  {
++    std::lock_guard lkp(m_crit.players);
++    claim.opponent = GetXdOpponentLocked();
++    stale = XdSlotStaleLocked(claim.opponent);
++  }
++  // The announce goes out async, so it reaches everyone before StartGame and before any core runs.
++  if (claim.opponent != 0 && stale && !ResetXdSlotLocked(/*announce=*/true))
++    claim.slot_busy = true;
++  // Leaves are not frozen: the start checks this pid is still here before it begins.
++  m_xd_start_opponent = claim.opponent;
++  return claim;
++}
++
++// The opponent an XD Start was claimed for has left since the claim, which OnDisconnect cannot
++// abort before m_start_pending is up. Caller holds m_crit.game or is the NETPLAY thread, so this
++// is atomic with OnDisconnect (which runs under m_crit.game) up to the start.
++bool NetPlayServer::XdStartOpponentLeft()
++{
++  const PlayerId opponent = m_xd_start_opponent;
++  if (opponent == 0 || m_players.contains(opponent))
++    return false;
++  m_dialog->AppendChat("Can't start: the opponent left.");
++  return true;
++}
++
++// called from ---GUI--- thread, after RequestStartGame has returned. A start that went through
++// already raised m_start_pending or m_is_running, which keep refusing; a failed one reopens the
++// room.
++void NetPlayServer::ReleaseXdStart()
++{
++  std::lock_guard lk(m_xd_seat_mutex);
++  m_xd_frozen = false;
++}
++
+ void NetPlayServer::AssignNewUserAPad(const Client& player)
+ {
+   for (PlayerId& mapping : m_pad_map)
+diff --git a/Source/Core/Core/NetPlayServer.h b/Source/Core/Core/NetPlayServer.h
+index 12c757d..f76f5de 100644
+--- a/Source/Core/Core/NetPlayServer.h
++++ b/Source/Core/Core/NetPlayServer.h
+@@ -9,6 +9,7 @@
+ #include <map>
+ #include <mutex>
+ #include <optional>
++#include <string>
+ #include <thread>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -28,6 +29,17 @@ namespace NetPlay
+ class NetPlayUI;
+ struct SaveSyncInfo;
+ 
++// XD Netplay: what ClaimXdStart found. opponent is the pid that plays GBA 2 (SI port 3), 0 when
++// nobody is seated. slot_busy: the GBA 2 save still holds a player's team who no longer holds the
++// seat, and it could not be reset because emulation is not fully down yet. starting: a start is
++// already syncing or a battle is running; nothing was claimed or changed.
++struct XdStartClaim
++{
++  PlayerId opponent = 0;
++  bool slot_busy = false;
++  bool starting = false;
++};
++
+ class NetPlayServer : public Common::TraversalClientClient
+ {
+ public:
+@@ -96,6 +108,31 @@ public:
+   bool IsStartPending() const { return m_start_pending.load(); }
+   bool IsGameRunning() const { return m_is_running.load(); }
+ 
++  // XD Netplay seats, host UI thread only (Qt GUI thread, or the Android main thread under
++  // s_host_write_mutex). ClaimXdStart picks the opponent by GetXdOpponentLocked, resets the GBA 2
++  // slot if it holds someone else's team, and refuses TeamData and new joins until
++  // ReleaseXdStart. Call RequestStartGame between the two, never under any other netplay lock.
++  XdStartClaim ClaimXdStart();
++  void ReleaseXdStart();
++
++  // RAII over ClaimXdStart / ReleaseXdStart, held until RequestStartGame has returned.
++  class XdStartFreeze
++  {
++  public:
++    explicit XdStartFreeze(NetPlayServer& server) : m_server(server), m_claim(server.ClaimXdStart())
++    {
++    }
++    ~XdStartFreeze() { m_server.ReleaseXdStart(); }
++    XdStartFreeze(const XdStartFreeze&) = delete;
++    XdStartFreeze& operator=(const XdStartFreeze&) = delete;
++
++    const XdStartClaim& Claim() const { return m_claim; }
++
++  private:
++    NetPlayServer& m_server;
++    XdStartClaim m_claim;
++  };
++
+   void SetHostInputAuthority(bool enable);
+ 
+   void KickPlayer(PlayerId player);
+@@ -125,6 +162,13 @@ private:
+ 
+     Common::QoSSession qos_session;
+ 
++    // XD Netplay seats. Written only on the NETPLAY thread (OnConnect before the emplace, the
++    // XdWatch case under m_crit.players). xd_serial names this connection and is never reused;
++    // xd_queue is its place in line for the opponent seat (lower is earlier).
++    u32 xd_serial = 0;
++    u32 xd_queue = 0;
++    bool xd_watching = false;
++
+     bool operator==(const Client& other) const { return this == &other; }
+     bool IsHost() const { return pid == 1; }
+   };
+@@ -185,6 +229,16 @@ private:
+ 
+   void SetupIndex();
+   bool PlayerHasControllerMapped(PlayerId pid) const;
++  // Host plus every joiner not watching: what the lobby index publishes.
++  int PlayingCount();
++
++  // XD Netplay seats. See m_xd_seat_mutex for the locks each one needs.
++  PlayerId GetXdOpponentLocked() const;
++  bool XdSlotStaleLocked(PlayerId opponent) const;
++  bool ResetXdSlotLocked(bool announce);
++  bool XdStartOpponentLeft();
++  // ---NETPLAY--- thread only.
++  void SendXdSeats();
+ 
+   // ---NETPLAY--- thread only, once per second off the ping tick.
+   void UpdateAutoPadBuffer();
+@@ -231,6 +285,29 @@ private:
+ 
+   std::map<PlayerId, Client> m_players;
+ 
++  // XD Netplay seats (GetXdOpponentLocked).
++  // NETPLAY thread only: hands out serials and queue places.
++  u32 m_xd_counter = 0;
++  // Makes a Start's claim of the seat and the saves exclusive with a TeamData write.
++  // Lock order: s_host_write_mutex (Android) -> m_xd_seat_mutex -> m_crit.game (ClaimXdStart
++  // takes and drops it) -> m_crit.players -> m_crit.async_queue_write. Only ever taken by a thread
++  // holding no m_crit lock, and the NETPLAY thread never takes s_host_write_mutex. XDNetplay's own
++  // locks (BattleCustomizer, TeamInjector) may be taken under it, never while m_crit.players is
++  // held. Nothing under it may wait on a UI thread (no RunOnObject, PanicAlert, modal or blocking
++  // JNI call), because the host UI thread waits on it in ClaimXdStart.
++  std::mutex m_xd_seat_mutex;
++  // Written under m_xd_seat_mutex; read by OnConnect under m_crit.game, which ClaimXdStart takes
++  // once after raising it. Up from ClaimXdStart until ReleaseXdStart; by then m_start_pending or
++  // m_is_running carries the refusal if a start began.
++  std::atomic<bool> m_xd_frozen{false};
++  // Under m_xd_seat_mutex: the serial whose TeamData last reached the GBA 2 slot, 0 when only the
++  // host's own data is there, and that player's name for the "cleared" line.
++  u32 m_xd_slot_owner = 0;
++  std::string m_xd_slot_owner_name;
++  // The pid ClaimXdStart seated for the start it froze; 0 for a start that is not an XD Start.
++  // Checked just before the game starts, since a leave before m_start_pending rises aborts nothing.
++  std::atomic<PlayerId> m_xd_start_opponent{0};
++
+   std::unordered_map<u32, std::vector<std::pair<PlayerId, u64>>> m_timebase_by_frame;
+   bool m_desync_detected = false;
+ 
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+index aa6c778..9f86372 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+@@ -337,6 +337,14 @@ void NetPlayDialog::CreateChatLayout()
+   m_style_button->setAutoDefault(false);
+   m_style_button->hide();
+ 
++  // XD Netplay, joiner side: sit out as a spectator. The server seats the next
++  // player in line as the opponent, and the Role column shows who that is.
++  // UpdateGUI shows it to joiners in an XD room.
++  m_watch_box = new QCheckBox(tr("Watch only"));
++  m_watch_box->setToolTip(tr("Watch without playing. The next player in line becomes the "
++                             "opponent.\nA change made during a battle applies to the next one."));
++  m_watch_box->hide();
++
+   // XD Netplay, host side: the joiner sets its in-game name in the Submit Team
+   // sheet; the host sets its own here (written into the GBA port 2 save the
+   // room syncs). Shown only while hosting.
+@@ -354,11 +362,11 @@ void NetPlayDialog::CreateChatLayout()
+   layout->addWidget(m_chat_type_edit, 1, 0);
+   layout->addWidget(m_chat_send_button, 1, 1);
+   // One row for both buttons. A hidden widget takes no room in a box layout,
+-  // so a joiner (no Music & Location button) still gets a full-width Submit
+-  // Team button.
++  // so a joiner (no Music & Location button) gets [Submit Team...][Watch only].
+   auto* team_row = new QHBoxLayout;
+   team_row->addWidget(m_submit_team_button, 1);
+   team_row->addWidget(m_style_button, 1);
++  team_row->addWidget(m_watch_box);
+   layout->addLayout(team_row, 2, 0, 1, -1);
+   layout->addWidget(m_host_name_edit, 3, 0);
+   layout->addWidget(m_host_name_button, 3, 1);
+@@ -430,6 +438,10 @@ void NetPlayDialog::ConnectWidgets()
+   connect(m_chat_type_edit, &QLineEdit::returnPressed, this, &NetPlayDialog::OnChat);
+   connect(m_submit_team_button, &QPushButton::clicked, this, &NetPlayDialog::OnSubmitTeam);
+   connect(m_style_button, &QPushButton::clicked, this, &NetPlayDialog::OnStyleSettings);
++  connect(m_watch_box, &QCheckBox::toggled, this, [](bool checked) {
++    if (const auto client = Settings::Instance().GetNetPlayClient())
++      client->SendXdWatch(checked);
++  });
+   connect(m_host_name_button, &QPushButton::clicked, this, &NetPlayDialog::OnSetHostName);
+   connect(m_host_name_edit, &QLineEdit::returnPressed, this, &NetPlayDialog::OnSetHostName);
+   connect(m_chat_type_edit, &QLineEdit::textChanged, this,
+@@ -596,18 +608,47 @@ void NetPlayDialog::OnStart()
+   }
+ 
+   // When hosting Pokemon XD, force the fixed two-player GBA layout (host pad +
+-  // host GBA + guest GBA) and the session settings the link needs before the
+-  // start request. Non-XD sessions are completely untouched.
++  // host GBA + opponent's GBA) and the session settings the link needs before
++  // the start request. Non-XD sessions are completely untouched.
+   if (const auto server = Settings::Instance().GetNetPlayServer();
+       server && XDNetplay::IsXdGameId(game->GetGameID()))
+   {
+-    XDNetplay::ApplyStartForcing(server.get());
++    // Picks the opponent and keeps TeamData and new joins out until
++    // RequestStartGame has returned, so the saves it reads are the ones the
++    // pad map was built for.
++    NetPlay::NetPlayServer::XdStartFreeze freeze(*server);
++    const NetPlay::XdStartClaim& claim = freeze.Claim();
++    if (claim.starting)
++    {
++      DisplayMessage(tr("A battle is starting. Try again after it ends."), "red");
++      return;
++    }
++    if (claim.opponent == 0)
++    {
++      DisplayMessage(tr("Can't start: no opponent yet."), "red");
++      return;
++    }
++    if (claim.slot_busy)
++    {
++      DisplayMessage(tr("Can't start: the last battle is still closing."), "red");
++      return;
++    }
++    XDNetplay::ApplyStartForcing(server.get(), claim.opponent);
++    if (server->RequestStartGame())
++      SetOptionsEnabled(false);
++    return;
+   }
+ 
+   if (Settings::Instance().GetNetPlayServer()->RequestStartGame())
+     SetOptionsEnabled(false);
+ }
+ 
++QString NetPlayDialog::JoinerSubmitTeamToolTip()
++{
++  return tr("Send your own Showdown team to the host, so you play your own Pokémon.\n"
++            "Applies to the next battle the host starts.");
++}
++
+ void NetPlayDialog::reject()
+ {
+   if (ModalMessageBox::question(this, tr("Confirmation"),
+@@ -666,11 +707,16 @@ void NetPlayDialog::show(std::string nickname, bool use_traversal)
+   m_submit_team_button->setHidden(false);
+   m_submit_team_button->setEnabled(true);
+   m_submit_team_button->setToolTip(
+-      is_hosting ?
+-          tr("Set your own team from a Showdown paste. Written to your GBA port 2 save for the "
+-             "next battle you start.") :
+-          tr("Send your own Showdown team to the host, so you play your own Pokémon.\n"
+-             "Applies to the next battle the host starts."));
++      is_hosting ? tr("Set your own team from a Showdown paste. Written to your GBA port 2 save "
++                      "for the next battle you start.") :
++                   JoinerSubmitTeamToolTip());
++  // Every connection starts out playing on the server, so the box does too.
++  // UpdateGUI shows it to a joiner once the room's game is known to be XD.
++  {
++    const QSignalBlocker blocker(m_watch_box);
++    m_watch_box->setChecked(false);
++  }
++  m_watch_box->hide();
+   m_style_button->setHidden(!is_hosting);
+   m_style_button->setEnabled(true);
+   m_host_name_edit->setHidden(!is_hosting);
+@@ -765,9 +811,13 @@ void NetPlayDialog::UpdateGUI()
+                                 m_players_list->currentItem()->data(Qt::UserRole).toInt() :
+                                 -1;
+ 
++  // XD rooms show each player's part in the next battle where the port mapping
++  // was; the mapping stays in the cell tooltip.
++  const bool is_xd = XDNetplay::IsXdGameId(m_current_game_identifier.game_id);
++
+   m_players_list->clear();
+-  m_players_list->setHorizontalHeaderLabels(
+-      {tr("Player"), tr("Game Status"), tr("Ping"), tr("Mapping"), tr("Revision")});
++  m_players_list->setHorizontalHeaderLabels({tr("Player"), tr("Game Status"), tr("Ping"),
++                                             is_xd ? tr("Role") : tr("Mapping"), tr("Revision")});
+   m_players_list->setRowCount(m_player_count);
+ 
+   static const std::map<NetPlay::SyncIdentifierComparison, std::pair<QString, QString>>
+@@ -801,10 +851,28 @@ void NetPlayDialog::UpdateGUI()
+     status_item->setToolTip(status_info.second);
+     auto* ping_item = new QTableWidgetItem(QStringLiteral("%1 ms").arg(p->ping));
+     ping_item->setToolTip(ping_item->text());
+-    auto* mapping_item =
+-        new QTableWidgetItem(QString::fromStdString(NetPlay::GetPlayerMappingString(
+-            p->pid, client->GetPadMapping(), client->GetGBAConfig(), client->GetWiimoteMapping())));
+-    mapping_item->setToolTip(mapping_item->text());
++    const QString mapping = QString::fromStdString(NetPlay::GetPlayerMappingString(
++        p->pid, client->GetPadMapping(), client->GetGBAConfig(), client->GetWiimoteMapping()));
++    QString role;
++    switch (client->GetXdRole(p->pid))
++    {
++    case NetPlay::XdRole::Host:
++      role = tr("Host");
++      break;
++    case NetPlay::XdRole::Opponent:
++      role = tr("Opponent");
++      break;
++    case NetPlay::XdRole::Waiting:
++      role = tr("Waiting");
++      break;
++    case NetPlay::XdRole::Watching:
++      role = tr("Watching");
++      break;
++    case NetPlay::XdRole::Unknown:
++      break;
++    }
++    auto* mapping_item = new QTableWidgetItem(is_xd ? role : mapping);
++    mapping_item->setToolTip(mapping);
+     auto* revision_item = new QTableWidgetItem(QString::fromStdString(p->revision));
+     revision_item->setToolTip(revision_item->text());
+ 
+@@ -831,7 +899,22 @@ void NetPlayDialog::UpdateGUI()
+   }
+ 
+   if (!server)
++  {
++    // Only the opponent can submit a team; the server refuses anyone else.
++    // Unknown (no seat broadcast yet) stays allowed, as before.
++    m_watch_box->setVisible(is_xd);
++    // Watch only means nothing outside XD, but the server would still leave this player out of
++    // the index count and the lobby buffer. Unticking sends the change.
++    if (!is_xd && m_watch_box->isChecked())
++      m_watch_box->setChecked(false);
++    const NetPlay::XdRole local_role = client->GetXdRole(client->GetLocalPlayerId());
++    const bool may_submit =
++        local_role == NetPlay::XdRole::Opponent || local_role == NetPlay::XdRole::Unknown;
++    m_submit_team_button->setEnabled(may_submit);
++    m_submit_team_button->setToolTip(may_submit ? JoinerSubmitTeamToolTip() :
++                                                  tr("Only the opponent can submit a team."));
+     return;
++  }
+ 
+   const bool is_local_ip_selected = m_room_box->currentIndex() > (m_use_traversal ? 1 : 0);
+   if (is_local_ip_selected)
+@@ -990,6 +1073,13 @@ std::string NetPlayDialog::OnTeamSubmission(const std::string& player, const std
+   return status;
+ }
+ 
++bool NetPlayDialog::OnXdGuestSlotReset()
++{
++  // Host side, NETPLAY or GUI thread, under the server's seat lock: touches no
++  // widgets and never waits on the GUI thread.
++  return XDNetplay::ResetGuestSlot(2);
++}
++
+ void NetPlayDialog::OnRoomClosed()
+ {
+   // Restores the host's own team AND erases every remaining copy of the
+@@ -1119,14 +1209,16 @@ void NetPlayDialog::OnSubmitTeam()
+   // the save's trainer identity, so everything in them lands on the host's
+   // machine -- including the secret trainer ID, which nothing in a battle ever
+   // shows. Saying "nicknames, OT, IDs" and stopping there would undersell it.
++  // The host syncs that save to every machine in the room at Start, watchers
++  // included, so the note names them too.
+   auto* privacy_note = new QLabel(
+       tr("Your save's party is sent exactly as it is, under the save's own trainer "
+-         "identity — the in-game name field above is ignored. The host's machine "
+-         "receives everything in those party bytes: exact moves, held items, stats, "
+-         "EVs, IVs, natures, nicknames, met information, ribbons, and your OT name "
+-         "and BOTH trainer IDs, including the secret one. Your opponent would see "
+-         "most of this by battling you — but not the secret ID, so only send your "
+-         "save to hosts you trust."),
++         "identity. The in-game name field above is ignored. Everyone in the room, "
++         "watchers included, receives everything in those party bytes: exact moves, "
++         "held items, stats, EVs, IVs, natures, nicknames, met information, ribbons, "
++         "and your OT name and BOTH trainer IDs, including the secret one. A battle "
++         "shows most of this, but never the secret ID, so only send your save to rooms "
++         "you trust."),
+       &dialog);
+   privacy_note->setWordWrap(true);
+   dialog_layout->addWidget(privacy_note);
+@@ -1752,6 +1844,8 @@ void NetPlayDialog::OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifi
+     m_current_game_identifier = sync_identifier;
+     m_current_game_name = netplay_name;
+     UpdateDiscordPresence();
++    // The Role column and the Watch only box depend on whether the game is XD.
++    UpdateGUI();
+   });
+   DisplayMessage(tr("Game changed to \"%1\"").arg(qname), "magenta");
+ }
+@@ -1798,6 +1892,9 @@ void NetPlayDialog::SetOptionsEnabled(bool enabled)
+     m_submit_team_button->setEnabled(enabled);
+   }
+ 
++  // A joiner's Watch only box greys while its game runs; a change then would
++  // only apply to the next battle anyway.
++  m_watch_box->setEnabled(enabled);
+   m_record_input_action->setEnabled(enabled);
+ }
+ 
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
+index 59981cf..c60051d 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
+@@ -55,6 +55,7 @@ public:
+   void Update() override;
+   void AppendChat(const std::string& msg) override;
+   std::string OnTeamSubmission(const std::string& player, const std::string& text) override;
++  bool OnXdGuestSlotReset() override;
+   void OnRoomClosed() override;
+ 
+   void OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,
+@@ -118,6 +119,7 @@ private:
+   void OnStyleSettings();
+   void OnSetHostName();
+   void OnStart();
++  static QString JoinerSubmitTeamToolTip();
+   void DisplayMessage(const QString& msg, const std::string& color,
+                       int duration = OSD::Duration::NORMAL);
+   void ResetExternalIP();
+@@ -135,6 +137,7 @@ private:
+   QPushButton* m_chat_send_button;
+   QPushButton* m_submit_team_button;
+   QPushButton* m_style_button;
++  QCheckBox* m_watch_box;
+   QLineEdit* m_host_name_edit;
+   QPushButton* m_host_name_button;
+ 
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
+index 2b78950..f495d66 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
+@@ -147,7 +147,7 @@ bool EnsureGbaConfig()
+   return true;
+ }
+ 
+-void ApplyStartForcing(NetPlay::NetPlayServer* server)
++void ApplyStartForcing(NetPlay::NetPlayServer* server, NetPlay::PlayerId opponent)
+ {
+   if (!server)
+     return;
+@@ -157,17 +157,17 @@ void ApplyStartForcing(NetPlay::NetPlayServer* server)
+   // the Android build's fixed two-player layout:
+   //   port 1 (idx0) = host GC controller
+   //   port 2 (idx1) = host GBA
+-  //   port 3 (idx2) = guest GBA
++  //   port 3 (idx2) = opponent's GBA
+   //   port 4 (idx3) = unused
+-  // The host is always pid 1 (its loopback client connects first) and XD is a
+-  // strict two-player game, so the guest is pid 2.
++  // The host is always pid 1 (its loopback client connects first). The
++  // opponent is whoever the server seated (GetXdOpponentLocked), not a fixed
++  // pid: pids are reused, and watchers stay unmapped, as plain spectators.
+   constexpr NetPlay::PlayerId HOST_PID = 1;
+-  constexpr NetPlay::PlayerId GUEST_PID = 2;
+ 
+   NetPlay::PadMappingArray pad_map{};
+   pad_map[0] = HOST_PID;
+   pad_map[1] = HOST_PID;
+-  pad_map[2] = GUEST_PID;
++  pad_map[2] = opponent;
+   pad_map[3] = 0;
+ 
+   NetPlay::GBAConfigArray gba_config{};
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.h b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.h
+index 1ec1538..0c5a919 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.h
++++ b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.h
+@@ -5,9 +5,12 @@
+ 
+ #include <string>
+ 
++#include "Common/CommonTypes.h"
++
+ namespace NetPlay
+ {
+ class NetPlayServer;
++using PlayerId = u8;  // as in Core/NetPlayProto.h
+ }
+ 
+ // Non-UI helpers shared by the XD Netplay launcher. They force the small set
+@@ -68,9 +71,10 @@ bool LooksLikeXdSession(const std::string& published_game_name);
+ bool EnsureGbaConfig();
+ 
+ // Mirror of the Android nativeStartGame forcing: fixed two-player pad map
+-// (host pad + host GBA + guest GBA), GBA slots 2/3 enabled, save sync, remote
+-// GBA hiding, cheats and code sync on. Does NOT call RequestStartGame.
+-void ApplyStartForcing(NetPlay::NetPlayServer* server);
++// (host pad + host GBA + opponent's GBA), GBA slots 2/3 enabled, save sync,
++// remote GBA hiding, cheats and code sync on. opponent is the pid from
++// NetPlayServer::ClaimXdStart. Does NOT call RequestStartGame.
++void ApplyStartForcing(NetPlay::NetPlayServer* server, NetPlay::PlayerId opponent);
+ 
+ // Resolve the GBA BIOS path (config, else the GBA user directory) and verify
+ // it is the official dump. Optionally reports the resolved path. A negative
+diff --git a/Source/Core/UICommon/XDNetplay/TeamInjector.cpp b/Source/Core/UICommon/XDNetplay/TeamInjector.cpp
+index 460c4a0..7f0498c 100644
+--- a/Source/Core/UICommon/XDNetplay/TeamInjector.cpp
++++ b/Source/Core/UICommon/XDNetplay/TeamInjector.cpp
+@@ -1066,6 +1066,18 @@ void RestoreHostTeam(int device)
+     RunPendingPurge();
+ }
+ 
++bool ResetGuestSlot(int device)
++{
++  if (!Core::IsUninitialized(Core::System::GetInstance()))
++    return false;
++  BattleCustomizer::SetGuestModel(std::nullopt);
++  std::lock_guard lock(s_purge_mutex);
++  // Restores the stash and scrubs .bak/.tmp, the marker and the NetPlayTemp copies. The next
++  // injection stashes the host's team again (StashHostTeamOnce).
++  PurgeNow(device);
++  return true;
++}
++
+ void HealLeftoverGuestState()
+ {
+   // While a netplay SESSION is open in this process, .guestteam/.hostteam are
+diff --git a/Source/Core/UICommon/XDNetplay/TeamInjector.h b/Source/Core/UICommon/XDNetplay/TeamInjector.h
+index 12c149b..fcc2efe 100644
+--- a/Source/Core/UICommon/XDNetplay/TeamInjector.h
++++ b/Source/Core/UICommon/XDNetplay/TeamInjector.h
+@@ -250,6 +250,15 @@ bool ValidateHostPartiesForFormat(std::string* reason);
+ // a "teamcleanup" line to the GBA detect log.
+ void RestoreHostTeam(int device);
+ 
++// XD Netplay, host, mid-room: the guest slot holds the team of a player who no longer holds the
++// opponent seat. Puts the slot back to the host's spare team (the same full purge as
++// RestoreHostTeam) and forgets the guest's model pick, so the next opponent never plays or shows
++// as the previous one. Only with emulation fully down: returns false and changes nothing
++// otherwise. Unlike RestoreHostTeam it never arms a deferred purge, which could land after, and
++// wipe, a newer submission. Idempotent. No UI and no alerts, so it is safe under the netplay
++// server's seat lock.
++bool ResetGuestSlot(int device);
++
+ // Boot-boundary self-heal for a session that DIED without its cleanup: the
+ // app was killed or crashed while a room was open, so RestoreHostTeam never
+ // ran, and the socket save still holds the last guest's party with .guestteam
+-- 
+2.39.5 (Apple Git-154)
+
