@@ -71,16 +71,18 @@ std::string Timestamp(const char* format)
   return buf;
 }
 
-// Keep only the newest KEEP_PREVIOUS previous session logs (the timestamped
-// names sort lexicographically = chronologically), and drop the un-timestamped
-// legacy file from older builds. Called before each session's file is created,
-// so at most KEEP_PREVIOUS + 1 logs ever exist.
-constexpr size_t KEEP_PREVIOUS = 2;
+// Keep the newest previous session logs, at most KEEP_PREVIOUS of them and at
+// most KEEP_BYTES in total (the timestamped names sort lexicographically =
+// chronologically), and drop the un-timestamped legacy file from older builds.
+// Called before each session's file is created. A failed connection is usually
+// reported a few rooms later, so a short history loses the one log that matters.
+constexpr size_t KEEP_PREVIOUS = 20;
+constexpr u64 KEEP_BYTES = 200ull * 1024 * 1024;
 
 void PruneOldLogs(const std::string& dir)
 {
   File::Delete(dir + "gba_detect.log");  // legacy single-file name
-  std::vector<std::string> old_logs;
+  std::vector<std::pair<std::string, u64>> old_logs;
   const File::FSTEntry tree = File::ScanDirectoryTree(dir, false);
   for (const File::FSTEntry& child : tree.children)
   {
@@ -88,12 +90,18 @@ void PruneOldLogs(const std::string& dir)
     if (!child.isDirectory && name.rfind("gba_detect_", 0) == 0 &&
         name.size() > 4 && name.compare(name.size() - 4, 4, ".log") == 0)
     {
-      old_logs.push_back(name);
+      old_logs.emplace_back(name, child.size);
     }
   }
-  std::sort(old_logs.begin(), old_logs.end(), std::greater<std::string>());
-  for (size_t i = KEEP_PREVIOUS; i < old_logs.size(); ++i)
-    File::Delete(dir + old_logs[i]);
+  std::sort(old_logs.begin(), old_logs.end(),
+            [](const auto& a, const auto& b) { return a.first > b.first; });
+  u64 kept_bytes = 0;
+  for (size_t i = 0; i < old_logs.size(); ++i)
+  {
+    kept_bytes += old_logs[i].second;
+    if (i >= KEEP_PREVIOUS || kept_bytes > KEEP_BYTES)
+      File::Delete(dir + old_logs[i].first);
+  }
 }
 
 // Must hold s_mutex. Appends one line (adds '\n'), enforces the byte cap, never
