@@ -911,6 +911,28 @@ constexpr u32 RULESET_LV50_WORDS[36] = {
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
 };
 constexpr int RULESET_ENTRIES_WORD = 6;  // u16 at +0x1A = low half of word 6
+// The clause bytes, decoded (ruleset RE, 2026-08-30), as two words:
+//   word 3 = +0x0C Species Clause, +0x0D Item Clause, +0x0E Sleep Clause,
+//            +0x0F Freeze Clause. 0 = ON, nonzero = OFF.
+//   word 4 = +0x10 Skill Swap allowed (1 = allowed), +0x11 Self-KO Clause,
+//            Explosion half (1 = ON: the one INVERTED byte), +0x12 Self-KO
+//            Clause, Destiny Bond/Perish Song half (0 = ON), +0x13 SonicBoom/
+//            Dragon Rage allowed (1 = allowed).
+// The stock preset words above (0x00000000, 0x01010001) are every clause ON.
+// The stock "no clauses" preset (DOL slot 1) carries 0x01010101 / 0x01000101,
+// which is where the OFF values below come from.
+constexpr int RULESET_CLAUSE_WORD_A = 3;
+constexpr int RULESET_CLAUSE_WORD_B = 4;
+// Word 7's high u16 is the ENTRY MODE (+0x1C, see above).
+constexpr int RULESET_ENTRY_MODE_WORD = 7;
+// Doubles OU: Species ON, Item OFF, Sleep OFF, Freeze OFF.
+constexpr u32 DOUBLES_OU_CLAUSE_WORD_A = 0x00010101;
+// Doubles OU: Skill Swap allowed, Self-KO OFF (+0x11 = 0 because that byte is
+// inverted, +0x12 = 1), SonicBoom/Dragon Rage allowed.
+constexpr u32 DOUBLES_OU_CLAUSE_WORD_B = 0x01000101;
+// The stock entry mode 1: the entry getter then returns 6, so all six battle
+// and no pick-N screen runs.
+constexpr u32 STOCK_ENTRY_MODE_WORD = 0x00010000;
 // Word 5 = the two battle timers: s16 at +0x14 = MINUTES per game (the game's
 // getter at 0x8004ce20 multiplies it by 60), s16 at +0x16 = SECONDS per turn
 // (getter 0x8004cdfc). The sign is the switch: the rules screen negates a value
@@ -953,11 +975,13 @@ std::string FormatRuleLines()
   // and the entry count -- via the game's own tournament presets (see above).
   // The format matrix: Standard/Unlimited pin Lv100 (they differ only in the
   // app-side legality layer), Limited pins Lv50; Orre shapes enter 4, Hoenn
-  // shapes enter 3.
+  // shapes enter 3. Doubles OU pins Lv100 doubles with all six battling (the
+  // stock entry mode) and its own clause bytes.
   const int format = Config::Get(Config::MAIN_XD_FORMAT);
   const u32* words = nullptr;
   u32 entries = 0;
   u32 battle_type = 1;  // Double (Orre shapes); Hoenn shapes override to Single
+  bool doubles_ou = false;
   switch (format)
   {
   case FormatRules::FORMAT_ORRE_COLOSSEUM:
@@ -980,8 +1004,13 @@ std::string FormatRuleLines()
     entries = 3;
     battle_type = 0;  // Single
     break;
+  case FormatRules::FORMAT_DOUBLES_OU:
+    words = RULESET_LV100_WORDS;
+    entries = 6;
+    doubles_ou = true;
+    break;
   default:
-    return {};  // Free / OU / unknown: no rules pin, sessions stay stock
+    return {};  // Free / OU / Multi / unknown: no rules pin, sessions stay stock
   }
 
   std::string lines;
@@ -996,6 +1025,12 @@ std::string FormatRuleLines()
       word = (word & 0xFFFF0000u) | entries;
     else if (i == RULESET_TIMER_WORD && timer_word)
       word = *timer_word;
+    else if (doubles_ou && i == RULESET_CLAUSE_WORD_A)
+      word = DOUBLES_OU_CLAUSE_WORD_A;
+    else if (doubles_ou && i == RULESET_CLAUSE_WORD_B)
+      word = DOUBLES_OU_CLAUSE_WORD_B;
+    else if (doubles_ou && i == RULESET_ENTRY_MODE_WORD)
+      word = STOCK_ENTRY_MODE_WORD;
     AppendLine(&lines, ORRE_RULESET_BASE + static_cast<u32>(4 * i), word);
   }
   if (timer_word)

@@ -1134,31 +1134,25 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_style_submit_model_label">Trainer model</string>
     <string name="xd_style_submit_model_hint">How you appear in battle. Your pick here overrides the host\'s Guest model choice.</string>
 
-    <!-- One-tap battle Format pick (Free / Orre Colosseum). The option names
-         match FormatRules::FormatDisplayName in shared core so dropdowns and
-         refusal messages agree across platforms. -->
+    <!-- One-tap battle Format pick. The option names and their order come from
+         shared core (FormatRules, through FormatBridge) so every picker and
+         every message agrees across platforms. -->
     <string name="xd_format_label">Format</string>
-    <string name="xd_format_free">Free</string>
-    <string name="xd_format_orre">Orre Colosseum</string>
-    <string name="xd_format_ou">OU</string>
-    <string name="xd_format_orre_unlimited">Orre Unlimited</string>
-    <string name="xd_format_orre_limited">Orre Limited</string>
-    <string name="xd_format_hoenn">Hoenn Stadium</string>
-    <string name="xd_format_hoenn_unlimited">Hoenn Unlimited</string>
-    <string name="xd_format_hoenn_limited">Hoenn Limited</string>
-    <string name="xd_format_hint_free">No patches, no team rules — anything a Gen 3 save can hold.</string>
+    <string name="xd_format_hint_free">No patches, no team rules. Anything a Gen 3 save can hold.</string>
     <string name="xd_format_hint_ou">Applies to rooms you host: runs the community $XD OU Fixes patches for both players (bring 6, pick 4, and its mechanics fixes). No team rules.</string>
-    <string name="xd_format_hint_unlimited">Applies to rooms you host: the rules screen is pre-set to Lv 100 doubles. All Pokémon and items are allowed — Soul Dew included; Species and Item Clause still apply.</string>
-    <string name="xd_format_hint_limited">Applies to rooms you host: the rules screen is pre-set to LEVEL 50 doubles — Pokémon above Lv 50 cannot enter. All legendaries are banned (the Orre Colosseum list plus Articuno, Zapdos, Moltres, Raikou, Entei, Suicune, the Regis, Latias and Latios); no duplicate species or items; Soul Dew banned.</string>
+    <string name="xd_format_hint_unlimited">Applies to rooms you host: the rules screen is pre-set to Lv 100 doubles. All Pokémon and items are allowed, Soul Dew included. Species and Item Clause still apply.</string>
+    <string name="xd_format_hint_limited">Applies to rooms you host: the rules screen is pre-set to LEVEL 50 doubles. Pokémon above Lv 50 cannot enter. All legendaries are banned (the Orre Colosseum list plus Articuno, Zapdos, Moltres, Raikou, Entei, Suicune, the Regis, Latias and Latios); no duplicate species or items; Soul Dew banned.</string>
     <string name="xd_format_hint_hoenn_suffix">" Entries: bring 6, pick 3."</string>
     <string name="xd_format_hint_hoenn_standard">Applies to rooms you host (listed with a [Hoenn] tag): no Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys; no duplicate species; no duplicate held items; Soul Dew banned. Sleep, Freeze, and Self-KO clauses are enforced by the game itself.</string>
     <string name="xd_format_hint_orre">Applies to rooms you host (listed with an [Orre] tag): no Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys; no duplicate species; no duplicate held items; Soul Dew banned. Sleep, Freeze, and Self-KO clauses are enforced by the game itself.</string>
+    <string name="xd_format_hint_doubles_ou">Applies to rooms you host (listed with a [DOU] tag): Smogon ADV Doubles OU, Lv 100 doubles, all six battle. No Mewtwo, Mew, Lugia, Ho-Oh, Latias, Latios, Kyogre, Groudon, Rayquaza, Deoxys, or Ninjask; no Double Team, Minimize, Fissure, Guillotine, Horn Drill, Sheer Cold, Self-Destruct, or Explosion; no duplicate species. Items are unrestricted.</string>
+    <string name="xd_format_hint_multi">Not built yet. Plays like Free.</string>
     <!-- Host-side battle timer, folded into the format rules pin. -->
     <string name="xd_timer_label">Battle timer</string>
     <string name="xd_timer_turn_label">Seconds per turn</string>
     <string name="xd_timer_game_label">Minutes per game</string>
     <string name="xd_timer_hint">Host only: XD\'s timer is pinned to these values for both players, like the format.</string>
-    <string name="xd_timer_hint_off">Needs an Orre or Hoenn format — Free and OU leave XD\'s rules screen alone.</string>
+    <string name="xd_timer_hint_off">Needs a format other than Free or OU. Those leave XD\'s rules screen alone.</string>
     <!-- Non-blocking paste-time note; %1$s is a reason from shared core,
          e.g. "banned species: Kyogre". -->
     <string name="xd_format_note">note: this team is not %1$s legal - %2$s</string>
@@ -1185,6 +1179,11 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_room_music_location_hint">Applies from the next battle, for both players. Works while XD is running too.</string>
     <string name="xd_live_style_no_room">Only the host of an open room can change this.</string>
     <string name="xd_room_apply">Apply</string>
+    <!-- XD Netplay room: the room's battle format. The host changes it; everyone sees the line. -->
+    <string name="xd_room_change_format">Change Format</string>
+    <string name="xd_room_format_title">Format</string>
+    <string name="xd_room_format_hint">Applies at the next Start, for both players.</string>
+    <string name="xd_room_format_line">Format: %1$s</string>
     <string name="xd_host_submit_intro">Paste a Showdown team export or a pokepast.es link. It replaces the team in your GBA port 2 save. With an imported save, the change lasts for this room only. Leave it empty to change only your name or model.</string>
     <string name="xd_host_submit_model_hint">How you appear in battle.</string>
     <string name="xd_host_submit_raise_100_hint">Only in Lv. 100 formats. Never lowers a Pokémon.</string>

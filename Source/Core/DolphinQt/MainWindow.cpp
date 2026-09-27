@@ -129,12 +129,12 @@
 #include "DolphinQt/XDNetplay/PbrLauncherDialog.h"
 #include "DolphinQt/XDNetplay/PokemonHubDialog.h"
 #include "DolphinQt/XDNetplay/XDLauncherDialog.h"
+#include "DolphinQt/XDNetplay/XDNetplayConfig.h"
 
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/GameFile.h"
 #include "UICommon/XDNetplay/Version.h"
 #include "UICommon/XDNetplay/DisposableSave.h"
-#include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 #include "UICommon/ResourcePack/Manager.h"
 #include "UICommon/ResourcePack/ResourcePack.h"
@@ -1825,25 +1825,17 @@ bool MainWindow::NetPlayHost(const UICommon::GameFile& game)
   if (is_traversal)
     host_port = Config::Get(Config::NETPLAY_LISTEN_PORT);
 
-  // FORMAT host gate: with the launcher's Format pick on any format with team
-  // rules, the host's own port-2 party and the port-3 guest-fallback party
-  // must both be legal (both will be played under the room's rules). Runs
-  // BEFORE the disposable-save swap below so a refusal leaves nothing swapped
-  // -- and the verdict is identical either way, since the disposable carries
-  // exactly the import's party. With Format = Free/OU this is one int compare
-  // and hosting is untouched. The reason names the offending mon/item/level
-  // and which slot.
-  if (std::string format_reason; !XDNetplay::ValidateHostPartiesForFormat(&format_reason))
-  {
-    ModalMessageBox::critical(
-        nullptr, tr("OrreLink"),
-        tr("Cannot host a %1 room: %2\n\nFix the team in the Team Editor, or "
-           "switch the Format back to Free.")
-            .arg(QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(
-                Config::Get(Config::MAIN_XD_FORMAT))))
-            .arg(QString::fromStdString(format_reason)));
-    return false;
-  }
+  // FORMAT check, ADVISORY: the room always opens. When the host's own port-2
+  // party or the port-3 spare breaks the launcher's Format pick, the host
+  // sees one line once the room is up; the host can change the format in the
+  // room, and Start is where legality is enforced (NetPlayDialog::OnStart).
+  // Judged before the disposable-save swap below, which carries exactly the
+  // import's party, so the verdict is the same either way. With Format =
+  // Free/OU this is one int compare. XD rooms only: other games have no
+  // formats.
+  std::string format_note;
+  if (XDNetplay::IsXdGameId(game.GetGameID()))
+    XDNetplay::ValidateHostPartiesForFormat(&format_note);
 
   // Disposable host saves: if a GBA port holds a user-imported save, swap in a
   // rebuilt save carrying only its party and trainer identity BEFORE the
@@ -1881,7 +1873,11 @@ bool MainWindow::NetPlayHost(const UICommon::GameFile& game)
                                                       m_game_list->GetNetPlayName(game));
 
   // Join our local server
-  return NetPlayJoin();
+  if (!NetPlayJoin())
+    return false;
+  if (!format_note.empty())
+    m_netplay_dialog->ShowHostNote(format_note);
+  return true;
 }
 
 void MainWindow::NetPlayQuit()

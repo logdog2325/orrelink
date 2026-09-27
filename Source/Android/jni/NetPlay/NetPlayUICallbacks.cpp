@@ -167,6 +167,10 @@ void NetPlayUICallbacks::Update()
 
     env->CallVoidMethod(session, IDCache::GetNetplayUpdate(), player_array);
     env->DeleteLocalRef(player_array);
+
+    // XD Netplay: the room's format from the server's last XdFormat, -1 until the first.
+    env->CallVoidMethod(session, IDCache::GetNetplayOnRoomFormat(),
+                        static_cast<jint>(client->GetXdRoomFormat().value_or(-1)));
   });
 }
 

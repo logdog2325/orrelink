@@ -123,3 +123,60 @@ private fun optionLabel(option: BattleStyleBridge.StyleOption): String =
     } else {
         option.name
     }
+
+/**
+ * The battle Format picker: [formats] (id to name) in the order given, which
+ * is shared core's order (FormatBridge.selectableFormats, Free last), with no
+ * "default" entry up front. An id the list does not carry shows as
+ * [fallbackId]'s name (Free), which is how shared core treats it.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FormatDropdown(
+    label: String,
+    formats: List<Pair<Int, String>>,
+    selectedId: Int,
+    fallbackId: Int,
+    onSelected: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    supportingText: String? = null,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedName = (formats.firstOrNull { it.first == selectedId }
+        ?: formats.firstOrNull { it.first == fallbackId })?.second.orEmpty()
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = modifier,
+    ) {
+        OutlinedTextField(
+            value = selectedName,
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            label = { Text(label) },
+            supportingText = supportingText?.let { { Text(it) } },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            modifier = Modifier
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth()
+        )
+
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            formats.forEach { (id, name) ->
+                DropdownMenuItem(
+                    text = { Text(name) },
+                    onClick = {
+                        onSelected(id)
+                        expanded = false
+                    },
+                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                )
+            }
+        }
+    }
+}

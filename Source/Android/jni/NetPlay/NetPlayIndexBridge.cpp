@@ -119,6 +119,19 @@ const XDNetplay::Gen3Data* CachedGen3Data()
   static const std::optional<XDNetplay::Gen3Data> s_data = XDNetplay::Gen3Data::LoadBundled();
   return s_data ? &*s_data : nullptr;
 }
+
+// Format-bridge helper: an int list as a Java int[].
+jintArray ToJIntArray(JNIEnv* env, const std::vector<int>& values)
+{
+  const jsize count = static_cast<jsize>(values.size());
+  jintArray result = env->NewIntArray(count);
+  if (result != nullptr && count > 0)
+  {
+    const std::vector<jint> copy(values.begin(), values.end());
+    env->SetIntArrayRegion(result, 0, count, copy.data());
+  }
+  return result;
+}
 }  // namespace
 
 extern "C" {
@@ -474,49 +487,100 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeHealLef
 // Format bridge (Kotlin counterpart: features/xdnetplay/FormatBridge)
 // ---------------------------------------------------------------------------
 //
-// PASTE-TIME validation for the one-tap FORMAT pick (Free / Orre Colosseum /
-// OU; only Orre Colosseum has a legality layer).
-// The ruleset lives ONLY in UICommon/XDNetplay/FormatRules -- the same code
-// the enforcing gates run (the host gate in nativeHost, the guest-submission
-// gate in the host's TeamInjector) -- so a note shown here and a refusal shown
-// there can never disagree. These entry points are advisory by contract: the
-// Kotlin callers render the result as a non-blocking "note:" and still allow
-// saving/pasting; only the gates block. The callers also check the local
-// Format key BEFORE calling, so with Format = Free no validation call is ever
-// made.
+// Everything Kotlin knows about a format comes from here, straight out of
+// UICommon/XDNetplay/FormatRules: the ordered list every picker shows, names,
+// lobby tags, which formats carry team rules, the fixed level, and the
+// PASTE-TIME validation. The ruleset lives ONLY in FormatRules -- the same
+// code the enforcing gates run (the Start gate, the guest-submission gate in
+// the host's TeamInjector) -- so a note shown here and a refusal shown there
+// can never disagree. The validators are advisory by contract: the Kotlin
+// callers render the result as a non-blocking "note:" and still allow
+// saving/pasting; only the gates block.
 //
-// Both return "" for "no complaint" (legal, or nothing parseable/readable to
-// judge) and otherwise one human-readable reason from FormatRules, e.g.
-// "banned species: Kyogre" / "duplicate item: Leftovers (x2)".
+// Both validators return "" for "no complaint" (legal, or nothing
+// parseable/readable to judge) and otherwise one human-readable reason from
+// FormatRules, e.g. "banned species: Kyogre" / "duplicate item: Leftovers (x2)".
 
-// Showdown-text form (the Submit Team sheet's draft). Shared core's own
+// The ordered format list with the MultiEnabled flag applied.
+JNIEXPORT jintArray JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeSelectableFormats(JNIEnv* env,
+                                                                                    jobject)
+{
+  return ToJIntArray(env, XDNetplay::FormatRules::SelectableFormats(
+                              Config::Get(Config::MAIN_XD_MULTI_ENABLED)));
+}
+
+// Every known format id, Multi included whatever the flag says.
+JNIEXPORT jintArray JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeKnownFormats(JNIEnv* env,
+                                                                                jobject)
+{
+  return ToJIntArray(env, XDNetplay::FormatRules::KnownFormats());
+}
+
+JNIEXPORT jint JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeFixedLevel(JNIEnv*, jobject,
+                                                                              jint jformat)
+{
+  return XDNetplay::FormatRules::FormatFixedLevel(jformat);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeHasTeamRules(JNIEnv*, jobject,
+                                                                                jint jformat)
+{
+  return XDNetplay::FormatRules::HasTeamRules(jformat) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeDisplayName(JNIEnv* env,
+                                                                               jobject,
+                                                                               jint jformat)
+{
+  return ToJString(env, XDNetplay::FormatRules::FormatDisplayName(jformat));
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeSessionTag(JNIEnv* env,
+                                                                              jobject,
+                                                                              jint jformat)
+{
+  return ToJString(env, XDNetplay::FormatRules::FormatSessionTag(jformat));
+}
+
+// Showdown-text form (the Submit Team sheet's draft), judged under jformat
+// (the room's format in a room, else this device's pick). Shared core's own
 // parser + Gen3Data resolution, so names resolve exactly as MonFactory will
 // resolve them at build time. A pokepast.es LINK parses to no sets and gets no
 // note -- it cannot be inspected without fetching; the host's gate still
 // enforces on the fetched text.
 JNIEXPORT jstring JNICALL
 Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeValidateShowdown(
-    JNIEnv* env, jobject, jstring jtext)
+    JNIEnv* env, jobject, jstring jtext, jint jformat)
 {
+  if (!XDNetplay::FormatRules::HasTeamRules(jformat))
+    return ToJString(env, "");
   const XDNetplay::Gen3Data* data = CachedGen3Data();
   if (data == nullptr)
     return ToJString(env, "");
 
   const XDNetplay::FormatRules::Verdict verdict = XDNetplay::FormatRules::ValidateSets(
-      Config::Get(Config::MAIN_XD_FORMAT), XDNetplay::ShowdownParser::ParseTeam(GetJString(env, jtext)),
-      *data);
+      jformat, XDNetplay::ShowdownParser::ParseTeam(GetJString(env, jtext)), *data);
   return ToJString(env, verdict.ok ? std::string{} : verdict.reason);
 }
 
 // Built-mon form (the team editor's in-memory party): parallel arrays of
-// INTERNAL (Hoenn) species ids and held-item ids, exactly as Kotlin's Gen3Mon
-// carries them; FormatRules maps internal ids to National dex numbers before
-// the ban list applies, and item/species display names in the reason come
-// from Gen3Data.
+// INTERNAL (Hoenn) species ids, held-item ids and levels, plus four internal
+// move ids per mon, exactly as Kotlin's Gen3Mon carries them; FormatRules maps
+// internal ids to National dex numbers before the ban list applies, and
+// display names in the reason come from Gen3Data or the fixed ban tables.
 JNIEXPORT jstring JNICALL
 Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeValidateParty(
-    JNIEnv* env, jobject, jintArray jspecies, jintArray jitems, jintArray jlevels)
+    JNIEnv* env, jobject, jint jformat, jintArray jspecies, jintArray jitems, jintArray jlevels,
+    jintArray jmoves)
 {
+  if (!XDNetplay::FormatRules::HasTeamRules(jformat))
+    return ToJString(env, "");
   const XDNetplay::Gen3Data* data = CachedGen3Data();
   if (data == nullptr)
     return ToJString(env, "");
@@ -532,14 +596,18 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeValidatePar
     env->GetIntArrayRegion(jitems, 0, count, items.data());
   }
 
-  // Only the two FormatRules inputs are populated; pid stays 0, so a
-  // species-0 entry reads as an empty slot (Gen3Mon::IsEmpty) and is skipped
-  // rather than misjudged.
+  // Only the FormatRules inputs are populated; pid stays 0, so a species-0
+  // entry reads as an empty slot (Gen3Mon::IsEmpty) and is skipped rather
+  // than misjudged.
   // Levels ride a third parallel array (0 = unknown, skipped by the level
   // rule) so the Limited formats can warn about over-level mons at paste time.
   std::vector<jint> levels(species.size());
   if (count > 0 && jlevels != nullptr && env->GetArrayLength(jlevels) >= count)
     env->GetIntArrayRegion(jlevels, 0, count, levels.data());
+  // Moves: four per mon, 0 = empty slot, for the Doubles OU move bans.
+  std::vector<jint> moves(species.size() * 4);
+  if (count > 0 && jmoves != nullptr && env->GetArrayLength(jmoves) >= count * 4)
+    env->GetIntArrayRegion(jmoves, 0, count * 4, moves.data());
 
   std::vector<XDNetplay::Gen3Mon> party(species.size());
   for (size_t i = 0; i < species.size(); i++)
@@ -547,10 +615,12 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeValidatePar
     party[i].species = static_cast<u32>(species[i]);
     party[i].held_item = static_cast<u32>(items[i]);
     party[i].level = static_cast<u32>(std::max<jint>(levels[i], 0));
+    for (size_t m = 0; m < 4; m++)
+      party[i].moves[m] = static_cast<u32>(std::max<jint>(moves[i * 4 + m], 0));
   }
 
-  const XDNetplay::FormatRules::Verdict verdict = XDNetplay::FormatRules::ValidateParty(
-      Config::Get(Config::MAIN_XD_FORMAT), party, *data);
+  const XDNetplay::FormatRules::Verdict verdict =
+      XDNetplay::FormatRules::ValidateParty(jformat, party, *data);
   return ToJString(env, verdict.ok ? std::string{} : verdict.reason);
 }
 

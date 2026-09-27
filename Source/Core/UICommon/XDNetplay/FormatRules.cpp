@@ -43,9 +43,38 @@ constexpr BannedSpecies LEGENDARY_SPECIES[] = {
     {379, "Registeel"}, {380, "Latias"},  {381, "Latios"},
 };
 
-const BannedSpecies* FindLegendarySpecies(int nat_dex)
+// Smogon ADV Doubles OU's own ban list (NOT BANNED_SPECIES: Celebi and
+// Jirachi are legal there, Latias, Latios and Ninjask are not). National dex
+// numbers, verified against the bundled gen3data.json like the lists above:
+// latias 380 (internal 407), latios 381 (408), ninjask 291 (302). Deoxys is
+// one species id in Gen 3, so 386 covers every form. Wobbuffet and Wynaut
+// are legal.
+constexpr BannedSpecies DOUBLES_OU_BANNED_SPECIES[] = {
+    {150, "Mewtwo"},  {151, "Mew"},     {249, "Lugia"},    {250, "Ho-Oh"},
+    {380, "Latias"},  {381, "Latios"},  {382, "Kyogre"},   {383, "Groudon"},
+    {384, "Rayquaza"}, {386, "Deoxys"}, {291, "Ninjask"},
+};
+
+// Doubles OU's move bans: Evasion Clause (Double Team, Minimize), OHKO Clause
+// (Fissure, Guillotine, Horn Drill, Sheer Cold) and the self-KO moves
+// (Self-Destruct, Explosion). INTERNAL move ids, which is also what a save
+// stores; verified against gen3data.json "moves": doubleteam 104, minimize
+// 107, fissure 90, guillotine 12, horndrill 32, sheercold 329, selfdestruct
+// 120, explosion 153.
+struct BannedMove
 {
-  for (const BannedSpecies& banned : LEGENDARY_SPECIES)
+  int id;
+  const char* display;
+};
+constexpr BannedMove DOUBLES_OU_BANNED_MOVES[] = {
+    {104, "Double Team"}, {107, "Minimize"},   {90, "Fissure"},        {12, "Guillotine"},
+    {32, "Horn Drill"},   {329, "Sheer Cold"}, {120, "Self-Destruct"}, {153, "Explosion"},
+};
+
+template <size_t N>
+const BannedSpecies* FindIn(const BannedSpecies (&list)[N], int nat_dex)
+{
+  for (const BannedSpecies& banned : list)
   {
     if (banned.nat_dex == nat_dex)
       return &banned;
@@ -53,13 +82,30 @@ const BannedSpecies* FindLegendarySpecies(int nat_dex)
   return nullptr;
 }
 
-// What one format enforces. The clauses (Species/Item) are not in here
-// because every format with team rules applies them unconditionally.
+const BannedSpecies* FindLegendarySpecies(int nat_dex)
+{
+  return FindIn(LEGENDARY_SPECIES, nat_dex);
+}
+
+const BannedMove* FindDoublesOuBannedMove(int move_id)
+{
+  for (const BannedMove& banned : DOUBLES_OU_BANNED_MOVES)
+  {
+    if (banned.id == move_id)
+      return &banned;
+  }
+  return nullptr;
+}
+
+// What one format enforces. Species Clause applies to every format with team
+// rules; the Item Clause to all of them except Doubles OU.
 struct RulesProfile
 {
   bool ban_restricted = false;   // BANNED_SPECIES (Restricted + Mythicals)
   bool ban_legendaries = false;  // LEGENDARY_SPECIES on top (Limited only)
+  bool ban_doubles_ou = false;   // DOUBLES_OU_BANNED_SPECIES and _MOVES
   bool ban_soul_dew = false;
+  bool item_clause = true;
   int max_level = 0;  // 0 = no level rule; Limited = 50 (the in-game Lv50
                       // ruleset refuses over-level mons at team entry, so the
                       // gates say it in words first)
@@ -71,13 +117,15 @@ RulesProfile ProfileFor(int format_key_value)
   {
   case FORMAT_ORRE_COLOSSEUM:
   case FORMAT_HOENN_STADIUM:
-    return {true, false, true, 0};
+    return {.ban_restricted = true, .ban_soul_dew = true};
   case FORMAT_ORRE_UNLIMITED:
   case FORMAT_HOENN_UNLIMITED:
-    return {false, false, false, 0};
+    return {};
   case FORMAT_ORRE_LIMITED:
   case FORMAT_HOENN_LIMITED:
-    return {true, true, true, 50};
+    return {.ban_restricted = true, .ban_legendaries = true, .ban_soul_dew = true, .max_level = 50};
+  case FORMAT_DOUBLES_OU:
+    return {.ban_doubles_ou = true, .item_clause = false};
   default:
     return {};
   }
@@ -90,10 +138,19 @@ constexpr const char* SOUL_DEW_DISPLAY = "Soul Dew";
 
 const BannedSpecies* FindBannedSpecies(int nat_dex)
 {
-  for (const BannedSpecies& banned : BANNED_SPECIES)
+  return FindIn(BANNED_SPECIES, nat_dex);
+}
+
+// The canonical spelling of any species on one of the ban lists ("Ho-Oh"
+// rather than a de-punctuated "hooh"), or nullptr.
+const char* CanonicalBannedName(int nat_dex)
+{
+  for (const BannedSpecies* banned :
+       {FindBannedSpecies(nat_dex), FindLegendarySpecies(nat_dex),
+        FindIn(DOUBLES_OU_BANNED_SPECIES, nat_dex)})
   {
-    if (banned.nat_dex == nat_dex)
-      return &banned;
+    if (banned != nullptr)
+      return banned->display;
   }
   return nullptr;
 }
@@ -118,6 +175,9 @@ struct Entry
   // text the user actually typed, for built mons the Gen3Data name.
   std::string species_display;
   std::string item_display;
+  // Resolved internal move ids with what the refusal calls each move. Only
+  // the move bans read these.
+  std::vector<std::pair<int, std::string>> moves;
 };
 
 // "leftovers" -> "Leftovers": the bundle path only has Gen3Data's normalized
@@ -140,6 +200,8 @@ Verdict ValidateEntries(const RulesProfile& profile, const std::vector<Entry>& e
       return {false, fmt::format("banned species: {}", entry.species_display)};
     if (profile.ban_legendaries && FindLegendarySpecies(entry.nat_dex) != nullptr)
       return {false, fmt::format("banned species: {}", entry.species_display)};
+    if (profile.ban_doubles_ou && FindIn(DOUBLES_OU_BANNED_SPECIES, entry.nat_dex) != nullptr)
+      return {false, fmt::format("banned species: {}", entry.species_display)};
   }
 
   if (profile.ban_soul_dew)
@@ -148,6 +210,21 @@ Verdict ValidateEntries(const RulesProfile& profile, const std::vector<Entry>& e
     {
       if (entry.item_id == SOUL_DEW_ITEM_ID)
         return {false, fmt::format("banned item: {}", entry.item_display)};
+    }
+  }
+
+  if (profile.ban_doubles_ou)
+  {
+    for (const Entry& entry : entries)
+    {
+      for (const auto& [move_id, move_display] : entry.moves)
+      {
+        if (FindDoublesOuBannedMove(move_id) != nullptr)
+        {
+          return {false,
+                  fmt::format("banned move: {} ({})", move_display, entry.species_display)};
+        }
+      }
     }
   }
 
@@ -178,7 +255,8 @@ Verdict ValidateEntries(const RulesProfile& profile, const std::vector<Entry>& e
 
   // Item Clause: no duplicate held items among the party. Only mons that HOLD
   // an item participate (item_id != 0 was filtered by the builders), so any
-  // number of itemless mons coexist.
+  // number of itemless mons coexist. Doubles OU has no Item Clause.
+  if (profile.item_clause)
   {
     std::map<int, int> counts;
     for (const Entry& entry : entries)
@@ -212,6 +290,28 @@ bool IsOu(int format_key_value)
   return format_key_value == FORMAT_OU;
 }
 
+std::vector<int> SelectableFormats(bool include_multi)
+{
+  std::vector<int> formats = {FORMAT_ORRE_COLOSSEUM, FORMAT_OU,
+                              FORMAT_DOUBLES_OU,     FORMAT_ORRE_UNLIMITED,
+                              FORMAT_ORRE_LIMITED,   FORMAT_HOENN_STADIUM,
+                              FORMAT_HOENN_UNLIMITED, FORMAT_HOENN_LIMITED};
+  if (include_multi)
+    formats.push_back(FORMAT_MULTI);
+  formats.push_back(FORMAT_FREE);
+  return formats;
+}
+
+std::vector<int> KnownFormats()
+{
+  return SelectableFormats(/*include_multi=*/true);
+}
+
+bool IsKnownFormat(int format_key_value)
+{
+  return format_key_value >= FORMAT_FREE && format_key_value <= FORMAT_MULTI;
+}
+
 int FormatFixedLevel(int format_key_value)
 {
   return ProfileFor(format_key_value).max_level == 50 ? 50 :
@@ -228,6 +328,7 @@ bool HasTeamRules(int format_key_value)
   case FORMAT_HOENN_STADIUM:
   case FORMAT_HOENN_UNLIMITED:
   case FORMAT_HOENN_LIMITED:
+  case FORMAT_DOUBLES_OU:
     return true;
   default:
     return false;
@@ -245,6 +346,8 @@ const char* FormatDisplayName(int format_key_value)
   case FORMAT_HOENN_STADIUM: return "Hoenn Stadium";
   case FORMAT_HOENN_UNLIMITED: return "Hoenn Unlimited";
   case FORMAT_HOENN_LIMITED: return "Hoenn Limited";
+  case FORMAT_DOUBLES_OU: return "Doubles OU";
+  case FORMAT_MULTI: return "Multi";
   default: return "Free";
   }
 }
@@ -260,6 +363,8 @@ const char* FormatSessionTag(int format_key_value)
   case FORMAT_HOENN_STADIUM: return "[Hoenn] ";
   case FORMAT_HOENN_UNLIMITED: return "[Hoenn-U] ";
   case FORMAT_HOENN_LIMITED: return "[Hoenn-L] ";
+  case FORMAT_DOUBLES_OU: return "[DOU] ";
+  case FORMAT_MULTI: return "[Multi] ";
   default: return "";
   }
 }
@@ -297,6 +402,12 @@ Verdict ValidateSets(int format_key_value, const std::vector<ShowdownSet>& sets,
     }
     // No "@ item" in the paste: item_id stays 0 and this mon is invisible to
     // the Item Clause -- itemless mons must never collide with each other.
+    for (const std::string& move : set.moves)
+    {
+      // An unknown move name can never be on a ban list.
+      if (const std::optional<int> move_id = data.MoveId(move))
+        entry.moves.emplace_back(*move_id, move);  // name it what the user typed
+    }
     entries.push_back(std::move(entry));
   }
   return ValidateEntries(ProfileFor(format_key_value), entries);
@@ -331,11 +442,11 @@ Verdict ValidateParty(int format_key_value, std::span<const Gen3Mon> party, cons
     {
       entry.nat_dex = species_it->second->nat_dex;
       entry.species_key = species_it->second->nat_dex;
-      const BannedSpecies* banned = FindBannedSpecies(entry.nat_dex);
-      // Prefer the canonical spelling for the fixed ban list ("Ho-Oh" rather
+      const char* canonical = CanonicalBannedName(entry.nat_dex);
+      // Prefer the canonical spelling for the fixed ban lists ("Ho-Oh" rather
       // than a de-punctuated "hooh"); everything else gets the Gen3Data name.
       entry.species_display =
-          banned != nullptr ? banned->display : Capitalize(species_it->second->name);
+          canonical != nullptr ? std::string(canonical) : Capitalize(species_it->second->name);
     }
     else
     {
@@ -363,6 +474,13 @@ Verdict ValidateParty(int format_key_value, std::span<const Gen3Mon> party, cons
                                  Capitalize(item_it->second) :
                                  fmt::format("item #{}", entry.item_id);
       }
+    }
+    // Only the banned moves are ever named, so the fixed table's spelling is
+    // all a built mon needs; 0 is an empty move slot.
+    for (const u32 move : mon.moves)
+    {
+      if (const BannedMove* banned = FindDoublesOuBannedMove(static_cast<int>(move)))
+        entry.moves.emplace_back(banned->id, banned->display);
     }
     entries.push_back(std::move(entry));
   }

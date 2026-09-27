@@ -207,6 +207,13 @@ NetPlayServer::NetPlayServer(const u16 port, const bool forward_port, NetPlayUI*
                              const NetTraversalConfig& traversal_config)
     : m_dialog(dialog)
 {
+  // The room opens on the host's launcher pick. Values past a u8 behave as Free anyway
+  // (FormatRules treats every unknown id as Free), so they travel as Free.
+  {
+    const int format = Config::Get(Config::MAIN_XD_FORMAT);
+    m_xd_room_format = format >= 0 && format <= 0xFF ? format : 0;
+  }
+
   //--use server time
   if (enet_initialize() != 0)
   {
@@ -608,6 +615,7 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
   if (Config::Get(Config::NETPLAY_ENABLE_QOS))
     new_player.qos_session = Common::QoSSession(new_player.socket);
 
+  ENetPeer* const joined_socket = new_player.socket;
   {
     std::lock_guard lkp(m_crit.players);
     // add new player to list of players
@@ -620,6 +628,14 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
 
   // After the emplace: the joiner gets it behind its PlayerJoin and GameStatus burst.
   SendXdSeats();
+  // The room's format, late joiners included. A change queued after this read reaches them too:
+  // SetXdFormat's broadcast goes out on this thread after this join has finished.
+  {
+    sf::Packet spac;
+    spac << MessageID::XdFormat;
+    spac << static_cast<u8>(m_xd_room_format.load());
+    Send(joined_socket, spac);
+  }
 
   // The new player has not answered a ping yet, and the handshake traffic just
   // skewed everyone else's. Let the automatic buffer take one clean sample
@@ -2948,6 +2964,9 @@ XdStartClaim NetPlayServer::ClaimXdStart()
   // The announce goes out async, so it reaches everyone before StartGame and before any core runs.
   if (claim.opponent != 0 && stale && !ResetXdSlotLocked(/*announce=*/true))
     claim.slot_busy = true;
+  // Not stale (or just reset): a nonzero owner is the seated opponent.
+  claim.slot_is_guest = m_xd_slot_owner != 0;
+  claim.slot_owner_name = m_xd_slot_owner_name;
   // Leaves are not frozen: the start checks this pid is still here before it begins.
   m_xd_start_opponent = claim.opponent;
   return claim;
@@ -2963,6 +2982,66 @@ bool NetPlayServer::XdStartOpponentLeft()
     return false;
   m_dialog->AppendChat("Can't start: the opponent left.");
   return true;
+}
+
+// called from ---GUI--- thread (on Android the thread holding s_host_write_mutex)
+XdFormatChange NetPlayServer::SetXdFormat(int format,
+                                          const std::function<void(const XdSlotView&)>& judge,
+                                          const std::string& announce)
+{
+  XdFormatChange change;
+  // Waits out a TeamData write in progress, and keeps the next one out until the slot is judged.
+  std::lock_guard lk(m_xd_seat_mutex);
+  // Unreachable from the room UIs (they check first, on the thread that starts games), kept so a
+  // start's saves and codes can never change under it.
+  if (m_xd_frozen || IsStartingOrRunning())
+  {
+    change.busy = true;
+    return change;
+  }
+
+  m_xd_room_format = format >= 0 && format <= 0xFF ? format : 0;
+
+  {
+    std::lock_guard lkp(m_crit.players);
+    const PlayerId opponent = GetXdOpponentLocked();
+    if (m_xd_slot_owner == 0)
+    {
+      change.slot.state = XdSlotState::Spare;
+    }
+    else if (opponent != 0 && !XdSlotStaleLocked(opponent))
+    {
+      change.slot.state = XdSlotState::Guest;
+      change.slot.owner_pid = opponent;
+      change.slot.owner_name = m_xd_slot_owner_name;
+    }
+    else
+    {
+      change.slot.state = XdSlotState::Orphan;
+    }
+  }
+  // No m_crit lock held: judge reads the GBA saves (XDNetplay's own code), which the seat mutex
+  // allows and m_crit.players does not.
+  if (judge)
+    judge(change.slot);
+
+  sf::Packet spac;
+  spac << MessageID::XdFormat;
+  spac << static_cast<u8>(m_xd_room_format.load());
+  SendAsyncToClients(std::move(spac));
+  if (!announce.empty())
+    SendChatMessage(announce);
+  return change;
+}
+
+// called from ---GUI--- thread
+void NetPlayServer::SendXdNote(PlayerId pid, const std::string& msg)
+{
+  sf::Packet spac;
+  spac << MessageID::ChatMessage;
+  spac << PlayerId{0};  // server ID always 0
+  spac << msg;
+  SendAsync(std::move(spac), pid);
 }
 
 // called from ---GUI--- thread, after RequestStartGame has returned. A start that went through

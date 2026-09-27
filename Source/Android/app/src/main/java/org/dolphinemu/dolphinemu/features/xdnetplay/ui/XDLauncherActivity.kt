@@ -78,12 +78,12 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     private var musicId by mutableStateOf(0)
     private var venueId by mutableStateOf(0)
 
-    // The one-tap battle FORMAT pick (Free / Orre Colosseum / OU), persisted in the
-    // native Main/XDNetplay/Format key via the settings model, exactly like
-    // the Battle Style picks above. The key's value is what the enforcing
-    // gates in shared core read when this device hosts; a pick here is
-    // already "applied".
-    private var formatId by mutableStateOf(FormatBridge.FORMAT_FREE)
+    // The one-tap battle FORMAT pick (FormatBridge.selectableFormats), persisted
+    // in the native Main/XDNetplay/Format key via the settings model, exactly
+    // like the Battle Style picks above. The key's value is what the room
+    // opens with when this device hosts; a pick here is already "applied".
+    // Re-read from the key on resume; Orre Colosseum is the key's default.
+    private var formatId by mutableStateOf(FormatBridge.FORMAT_ORRE_COLOSSEUM)
     // Host's battle timer (native Main/XDNetplay/Timer* keys). Applied by
     // shared core through the same rules pin as the format when this device
     // hosts with a rules format; a joiner's values do nothing.
