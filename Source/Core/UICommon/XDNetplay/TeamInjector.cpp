@@ -779,9 +779,9 @@ bool SubmitHostTeam(const std::string& showdown_text, const std::string& trainer
     return fail("nothing recognizable in that paste");
 
   // FORMAT gate, host's own team: the same ruleset the room applies to a guest
-  // submission and to the host's saves before the room opens
-  // (ValidateHostPartiesForFormat). Runs before any file is opened, so a
-  // refused team leaves no trace. With format=Free this is one int compare.
+  // submission and to the host's saves at Start (CheckRoomTeams). Runs before
+  // any file is opened, so a refused team leaves no trace. With format=Free
+  // this is one int compare.
   if (const int format = Config::Get(Config::MAIN_XD_FORMAT); FormatRules::HasTeamRules(format))
   {
     const FormatRules::Verdict verdict = FormatRules::ValidateSets(format, sets, *data);
@@ -961,68 +961,128 @@ bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* s
 #endif
 }
 
-bool ValidateHostPartiesForFormat(std::string* reason)
+#ifdef HAS_LIBMGBA
+namespace
 {
-  // Free/OU (or any unknown key value): one int compare, nothing else -- no
-  // file reads, no validation, hosting proceeds exactly as before.
-  const int format = Config::Get(Config::MAIN_XD_FORMAT);
-  if (!FormatRules::HasTeamRules(format))
-    return true;
+// One party's verdict for the room's rules, or nullopt when there is nothing
+// to judge (no save, unreadable, FRLG, empty party): the gates stay lenient
+// about everything that is not a rules violation.
+std::optional<FormatRules::Verdict> ValidatePartyInSlot(int format, int device,
+                                                        const Gen3Data& data)
+{
+  // SavePathForDevice is the exact resolution SyncSaveData uses, so this
+  // judges the save the session will actually read.
+  const std::string save_path = SavePathForDevice(device);
+  if (save_path.empty() || !File::Exists(save_path))
+    return std::nullopt;  // not a rules question; the setup checklist owns missing saves
 
-#ifndef HAS_LIBMGBA
+  std::vector<u8> bytes;
+  if (!ReadFileBytes(save_path, &bytes))
+    return std::nullopt;
+  const auto save = EmeraldSave::Create(std::move(bytes));
+  if (!save)
+    return std::nullopt;  // unreadable save: surfaced elsewhere, not a format violation
+  // FRLG keeps its party at different section-1 offsets, so the shared
+  // Emerald-offset reader below would decode garbage -- skip rather than
+  // refuse on noise (FRLG hosting limits have their own loud refusals).
+  if (EmeraldSave::DetectGame(*save) == Gen3Game::FireRedLeafGreen)
+    return std::nullopt;
+  const auto party = save->ReadParty();
+  if (!party || party->empty())
+    return std::nullopt;
+  return FormatRules::ValidateParty(format, *party, data);
+}
+}  // namespace
+#endif
+
+RoomTeamCheck CheckRoomTeams(int format, bool judge_slot)
+{
+  // Free/OU/Multi (or any unknown key value): one int compare, nothing else.
+  RoomTeamCheck check;
+  if (!FormatRules::HasTeamRules(format))
+    return check;
+
+#ifdef HAS_LIBMGBA
+  const auto data = Gen3Data::LoadBundled();
+  // Without gen3data.json nothing anywhere can validate (the guest gates
+  // refuse submissions outright in this state); don't invent a blocker for a
+  // broken install on top of that.
+  if (!data)
+    return check;
+  if (auto verdict = ValidatePartyInSlot(format, 1, *data))
+    check.host = std::move(*verdict);
+  if (judge_slot)
+  {
+    if (auto verdict = ValidatePartyInSlot(format, 2, *data))
+      check.slot = std::move(*verdict);
+  }
+#endif
   // No GBA support means no socket saves to validate (and no session that
   // could play them).
-  return true;
-#else
-  std::string data_error;
-  const auto data = Gen3Data::LoadBundled(&data_error);
-  if (!data)
-  {
-    // Without gen3data.json nothing anywhere can validate (the guest gates
-    // refuse submissions outright in this state); don't invent a hosting
-    // blocker for a broken install on top of that.
+  return check;
+}
+
+bool ValidateHostPartiesForFormat(std::string* reason)
+{
+  const int format = Config::Get(Config::MAIN_XD_FORMAT);
+  const RoomTeamCheck check = CheckRoomTeams(format, /*judge_slot=*/true);
+  if (check.host.ok && check.slot.ok)
     return true;
-  }
-
-  // Both of the host's parties will be played under the room's rules: port 2
-  // is the host's own team, port 3 is the fallback the guest plays whenever
-  // they never submit one. Validate the saves the session will actually read
-  // -- SavePathForDevice is the exact resolution SyncSaveData uses.
-  for (const int device : {1, 2})
+  if (reason)
   {
-    const std::string save_path = SavePathForDevice(device);
-    if (save_path.empty() || !File::Exists(save_path))
-      continue;  // not a rules question; the setup checklist owns missing saves
+    const bool host_bad = !check.host.ok;
+    *reason = fmt::format("{} is not {} legal: {}.", host_bad ? "Your team" : "Your spare team",
+                          FormatRules::FormatDisplayName(format),
+                          host_bad ? check.host.reason : check.slot.reason);
+  }
+  return false;
+}
 
-    std::vector<u8> bytes;
-    if (!ReadFileBytes(save_path, &bytes))
-      continue;
-    const auto save = EmeraldSave::Create(std::move(bytes));
-    if (!save)
-      continue;  // unreadable save: surfaced elsewhere, not a format violation
-    // FRLG keeps its party at different section-1 offsets, so the shared
-    // Emerald-offset reader below would decode garbage -- skip rather than
-    // refuse on noise (FRLG hosting limits have their own loud refusals).
-    if (EmeraldSave::DetectGame(*save) == Gen3Game::FireRedLeafGreen)
-      continue;
-    const auto party = save->ReadParty();
-    if (!party || party->empty())
-      continue;
-
-    const FormatRules::Verdict verdict = FormatRules::ValidateParty(format, *party, *data);
-    if (!verdict.ok)
+FormatChangeNotes DescribeFormatChange(int format, const RoomTeamCheck& check, bool slot_is_guest,
+                                       const std::string& guest_name)
+{
+  FormatChangeNotes notes;
+  const char* name = FormatRules::FormatDisplayName(format);
+  if (!check.host.ok)
+    notes.host_lines.push_back(fmt::format("Your team is not {} legal: {}.", name, check.host.reason));
+  if (!check.slot.ok)
+  {
+    if (slot_is_guest)
     {
-      if (reason)
-      {
-        *reason = fmt::format("{} (GBA port {}) is not {} legal - {}",
-                              device == 1 ? "your team" : "the guest-slot fallback team",
-                              device + 1, FormatRules::FormatDisplayName(format), verdict.reason);
-      }
-      return false;
+      notes.guest_note = fmt::format("Your team is not {} legal: {}. Submit a new team.", name,
+                                     check.slot.reason);
+      notes.host_lines.push_back(fmt::format("{}'s team is not {} legal.", guest_name, name));
+    }
+    else
+    {
+      notes.host_lines.push_back(
+          fmt::format("Your spare team is not {} legal: {}.", name, check.slot.reason));
     }
   }
-  return true;
-#endif
+  return notes;
+}
+
+std::string StartFormatRefusal(int format, const RoomTeamCheck& check, bool slot_is_guest,
+                               const std::string& guest_name, std::string* guest_note)
+{
+  const char* name = FormatRules::FormatDisplayName(format);
+  if (!check.host.ok)
+    return fmt::format("Can't start: your team is not {} legal: {}.", name, check.host.reason);
+  if (check.slot.ok)
+    return {};
+  if (!slot_is_guest)
+  {
+    return fmt::format("Can't start: your spare team is not {} legal: {}.", name,
+                       check.slot.reason);
+  }
+  if (guest_note)
+  {
+    *guest_note =
+        fmt::format("Your team is not {} legal: {}. Submit a new team.", name, check.slot.reason);
+  }
+  // The host's line leaves out the reason, as DescribeFormatChange does: it
+  // would show the host a move or item from the opponent's hidden team.
+  return fmt::format("Can't start: {}'s team is not {} legal.", guest_name, name);
 }
 
 void RestoreHostTeam(int device)

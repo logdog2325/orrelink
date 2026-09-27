@@ -201,14 +201,16 @@ enum class IntSetting(
 
     // The one-tap battle FORMAT pick, persisted like the Battle Style keys.
     // Same key as the C++ MAIN_XD_FORMAT; values are FormatBridge.FORMAT_*:
-    // 0 = Free (default — no validation runs anywhere), 1 = Orre Colosseum.
+    // 1 = Orre Colosseum (the default for a user who never picked one, as in
+    // C++), 0 = Free (no validation runs anywhere), and the rest. The pickers
+    // write the key only when the user picks, so an explicit Free is kept.
     // The HOST's value governs a room; a joiner's own value only drives local
     // paste-time notes. Unknown values behave as Free, never clamped.
     MAIN_XD_FORMAT(
         Settings.FILE_DOLPHIN,
         Settings.SECTION_INI_XD_NETPLAY,
         "Format",
-        0
+        1
     ),
 
     // Same keys as the C++ MAIN_XD_TIMER_TURN_SECONDS / _GAME_MINUTES: the

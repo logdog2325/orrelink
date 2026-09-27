@@ -46,6 +46,7 @@ jmethodID GetNetplayOnHostInputAuthorityChanged();
 jmethodID GetNetplayOnPadBufferChanged();
 jmethodID GetNetplayOnChatMessageReceived();
 jmethodID GetNetplayUpdate();
+jmethodID GetNetplayOnRoomFormat();
 jmethodID GetNetplayOnShowChunkedProgressDialog();
 jmethodID GetNetplayOnSetChunkedProgress();
 jmethodID GetNetplayOnHideChunkedProgressDialog();

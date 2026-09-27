@@ -6,6 +6,7 @@
 #include <SFML/Network/Packet.hpp>
 
 #include <atomic>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -38,6 +39,32 @@ struct XdStartClaim
   PlayerId opponent = 0;
   bool slot_busy = false;
   bool starting = false;
+  // After any reset: the GBA 2 slot holds the seated opponent's submitted team (true), or the
+  // host's spare team (false). slot_owner_name is that opponent's name when true.
+  bool slot_is_guest = false;
+  std::string slot_owner_name;
+};
+
+// XD Netplay: whose team the GBA 2 slot holds when the room's format changes. Spare: the host's
+// own spare team. Guest: the seated opponent's submitted team (owner_pid, owner_name). Orphan: the
+// team of a player who no longer holds the seat; ClaimXdStart resets it before any Start reads it.
+enum class XdSlotState
+{
+  Spare,
+  Guest,
+  Orphan,
+};
+struct XdSlotView
+{
+  XdSlotState state = XdSlotState::Spare;
+  PlayerId owner_pid = 0;
+  std::string owner_name;
+};
+// What SetXdFormat did. busy: a start is claimed or a battle is running, nothing changed.
+struct XdFormatChange
+{
+  bool busy = false;
+  XdSlotView slot;
 };
 
 class NetPlayServer : public Common::TraversalClientClient
@@ -114,6 +141,21 @@ public:
   // ReleaseXdStart. Call RequestStartGame between the two, never under any other netplay lock.
   XdStartClaim ClaimXdStart();
   void ReleaseXdStart();
+
+  // XD Netplay: the room's battle format (a FormatRules id), shown to every player. Starts as the
+  // host's MAIN_XD_FORMAT when the server is created. Safe to read from any thread.
+  int GetXdRoomFormat() const { return m_xd_room_format.load(); }
+  // Host UI thread only (on Android under s_host_write_mutex), after the caller has passed the
+  // host-write check, validated the id and written MAIN_XD_FORMAT, all outside every netplay lock
+  // (Config::Set runs its callbacks synchronously, a JNI call on Android). Under m_xd_seat_mutex,
+  // so no TeamData write can land in between: stores the format, calls judge with a snapshot of
+  // the GBA 2 slot (judge may read files; it must not touch a UI or wait on a UI thread), then
+  // sends the format and the announce line to everyone. Refuses, changing nothing, while a start
+  // is claimed or a battle is running.
+  XdFormatChange SetXdFormat(int format, const std::function<void(const XdSlotView&)>& judge,
+                             const std::string& announce);
+  // A chat line from the server to one player only. Safe from the UI threads.
+  void SendXdNote(PlayerId pid, const std::string& msg);
 
   // RAII over ClaimXdStart / ReleaseXdStart, held until RequestStartGame has returned.
   class XdStartFreeze
@@ -304,6 +346,10 @@ private:
   // host's own data is there, and that player's name for the "cleared" line.
   u32 m_xd_slot_owner = 0;
   std::string m_xd_slot_owner_name;
+  // The room's battle format (GetXdRoomFormat). Written only by SetXdFormat under
+  // m_xd_seat_mutex; read anywhere. OnConnect sends it to each joiner, and SetXdFormat's broadcast
+  // queues behind that on the NETPLAY thread, so every player ends on the latest value.
+  std::atomic<int> m_xd_room_format{0};
   // The pid ClaimXdStart seated for the start it froze; 0 for a start that is not an XD Start.
   // Checked just before the game starts, since a leave before m_start_pending rises aborts nothing.
   std::atomic<PlayerId> m_xd_start_opponent{0};

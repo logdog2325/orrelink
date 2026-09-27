@@ -465,8 +465,8 @@ void XDLauncherDialog::CreateMainLayout()
   //
   // The first row is the battle FORMAT (v1.4.0) -- the one pick that is not
   // cosmetic. It is persisted in MAIN_XD_FORMAT exactly like the style keys;
-  // FormatRules' gates (host-party check before a room opens, guest-submission
-  // check on arrival) do the enforcing, never this dropdown.
+  // FormatRules' gates (the Start check, the guest-submission check on
+  // arrival) do the enforcing, never this dropdown.
   auto* style_box = new QGroupBox(tr("Battle Style"));
   auto* style_layout = new QGridLayout;
   int style_row = 0;
@@ -494,51 +494,40 @@ void XDLauncherDialog::CreateMainLayout()
     style_row++;
     return combo;
   };
-  m_format_combo = add_style_combo(
-      tr("Format:"),
-      tr("Applies when you host: your room plays under this ruleset.\n\n"
-         "The community formats are three RULESETS times two ENTRY SHAPES:\n\n"
-         "Orre Colosseum / Hoenn Stadium — the canon ruleset (Lv 100):\n"
-         "  • Gen 1–3 species, except Mewtwo, Mew, Lugia, Ho-Oh, Celebi,\n"
-         "    Kyogre, Groudon, Rayquaza, Jirachi and Deoxys\n"
-         "  • Species Clause and Item Clause — no duplicates\n"
-         "  • Soul Dew is banned\n"
-         "Unlimited — everything allowed, Soul Dew included; the clauses\n"
-         "still apply. Lv 100.\n"
-         "Limited — LEVEL 50 (Pokémon above Lv 50 cannot enter) and ALL\n"
-         "legendaries banned, the birds, beasts, Regis and Latis included.\n\n"
-         "Orre shapes: bring 6, pick 4.  Hoenn shapes: bring 6, pick 3.\n"
-         "The in-game rules screen is pre-set to match, and teams are checked\n"
-         "before a room opens (yours and the port-3 fallback) and on every\n"
-         "guest submission. Sleep, Freeze, Self-KO, Species and Item clauses\n"
-         "are enforced by the game itself — the pinned ruleset has them on.\n\n"
-         "OU — runs the community $XD OU Fixes patches for both players\n"
-         "(bring-6-pick-4 and its mechanics fixes). No team restrictions.\n\n"
-         "Free — no patches, no restrictions; sessions are exactly as before\n"
-         "this option existed. When you JOIN a room, the host's Format\n"
-         "applies, not yours; your own pick still gives you legality notes in\n"
-         "the Team Editor and the Submit Team dialog."));
-  // The entry labels come from FormatRules so the dropdown, the refusal
-  // dialogs and the room-chat messages all name the formats identically.
-  // Dropdown order mirrors FormatBridge.ALL_FORMATS on Android: Free, the
-  // Orre family, the Hoenn family, then OU.
-  for (const int format_id :
-       {XDNetplay::FormatRules::FORMAT_FREE, XDNetplay::FormatRules::FORMAT_ORRE_COLOSSEUM,
-        XDNetplay::FormatRules::FORMAT_ORRE_UNLIMITED, XDNetplay::FormatRules::FORMAT_ORRE_LIMITED,
-        XDNetplay::FormatRules::FORMAT_HOENN_STADIUM,
-        XDNetplay::FormatRules::FORMAT_HOENN_UNLIMITED,
-        XDNetplay::FormatRules::FORMAT_HOENN_LIMITED, XDNetplay::FormatRules::FORMAT_OU})
-  {
-    m_format_combo->addItem(
-        QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(format_id)), format_id);
-  }
+  m_format_tip =
+      tr("Applies when you host. The host can change it in the room too.\n\n"
+         "Orre Colosseum and Hoenn Stadium: the canon ruleset, Lv 100.\n"
+         "  No Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza,\n"
+         "  Jirachi or Deoxys. Species Clause and Item Clause. Soul Dew banned.\n"
+         "Unlimited: everything allowed, Soul Dew included. The clauses still\n"
+         "  apply. Lv 100.\n"
+         "Limited: Lv 50, and every legendary banned, the birds, beasts, Regis\n"
+         "  and Latis included.\n"
+         "Orre shapes: bring 6, pick 4, doubles. Hoenn shapes: bring 6, pick 3,\n"
+         "  singles. The game itself enforces the Sleep, Freeze, Self-KO,\n"
+         "  Species and Item clauses.\n\n"
+         "OU: the community $XD OU Fixes patches for both players (bring 6,\n"
+         "  pick 4, and its mechanics fixes). No team rules.\n"
+         "Doubles OU: Smogon ADV Doubles OU. Lv 100 doubles, all six battle.\n"
+         "  No Mewtwo, Mew, Lugia, Ho-Oh, Latias, Latios, Kyogre, Groudon,\n"
+         "  Rayquaza, Deoxys or Ninjask. No Double Team, Minimize, Fissure,\n"
+         "  Guillotine, Horn Drill, Sheer Cold, Self-Destruct or Explosion.\n"
+         "  Species Clause. Items are unrestricted.\n"
+         "Free: no patches, no rules.\n\n"
+         "Teams are checked at Start and on every guest submission. When you\n"
+         "join a room, the host's format applies.");
+  m_format_combo = add_style_combo(tr("Format:"), m_format_tip);
+  // The entries come from FormatRules (SelectableFormats, FormatDisplayName)
+  // so both launchers, both room pickers and the room-chat messages list and
+  // name the formats identically. RefreshFormatCombo fills it on every show.
+  RefreshFormatCombo();
   {
     // Battle timer: the other non-cosmetic pick. It is one word of the same
     // Custom-1 record the Format pins, so it only exists where a record is
     // pinned; RefreshTimerRow greys it for Free/OU.
     const QString timer_tip =
         tr("Host only. XD's per-turn and per-game timer, pinned for both players like the "
-           "format. Needs an Orre or Hoenn format; off by default.");
+           "format. Needs a format other than Free or OU. Off by default.");
     m_timer_check = new QCheckBox(tr("Battle timer"));
     m_timer_turn_spin = new QSpinBox;
     m_timer_turn_spin->setRange(10, 99);
@@ -765,11 +754,24 @@ void XDLauncherDialog::ConnectWidgets()
       Config::Save();
     });
   };
-  // The Format pick persists through the identical idiom: only the config key
-  // is written here. Everything that enforces a format (the host gate, the
+  // The Format pick persists through the same idiom: only the config key is
+  // written here. Everything that enforces a format (the Start gate, the
   // guest-submission gates, the "[Orre] " session tag) reads MAIN_XD_FORMAT
   // for itself at its own moment -- the dropdown never enforces anything.
-  connect_style_combo(m_format_combo, Config::MAIN_XD_FORMAT);
+  // While this machine hosts a room the room owns the format, so a pick that
+  // slipped past the lock is put back instead of written.
+  connect(m_format_combo, &QComboBox::currentIndexChanged, this, [this](int index) {
+    if (Settings::Instance().GetNetPlayServer())
+    {
+      QueueOnObject(this, [this] {
+        RefreshFormatCombo();
+        RefreshTimerRow();
+      });
+      return;
+    }
+    Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, m_format_combo->itemData(index).toInt());
+    Config::Save();
+  });
   connect_style_combo(m_style_host_model_combo, Config::MAIN_XD_STYLE_HOST_MODEL);
   connect_style_combo(m_style_guest_model_combo, Config::MAIN_XD_STYLE_GUEST_MODEL);
   connect_style_combo(m_style_music_combo, Config::MAIN_XD_STYLE_MUSIC);
@@ -835,11 +837,7 @@ void XDLauncherDialog::showEvent(QShowEvent* event)
     const int index = combo->findData(Config::Get(setting));
     combo->setCurrentIndex(index >= 0 ? index : 0);
   };
-  // Same story for the Format pick: findData on a value the dropdown does not
-  // carry lands on index 0 -- Free -- which is precisely how FormatRules::
-  // IsOrreColosseum treats an unknown key value (no enforcement, never a
-  // surprise lockout), so here too the UI and the code cannot disagree.
-  refresh_style_combo(m_format_combo, Config::MAIN_XD_FORMAT);
+  RefreshFormatCombo();
   refresh_style_combo(m_style_host_model_combo, Config::MAIN_XD_STYLE_HOST_MODEL);
   refresh_style_combo(m_style_guest_model_combo, Config::MAIN_XD_STYLE_GUEST_MODEL);
   refresh_style_combo(m_style_music_combo, Config::MAIN_XD_STYLE_MUSIC);
@@ -852,6 +850,38 @@ void XDLauncherDialog::showEvent(QShowEvent* event)
   }
   RefreshTimerRow();
   RefreshChecklist();
+}
+
+void XDLauncherDialog::changeEvent(QEvent* event)
+{
+  QDialog::changeEvent(event);
+  // The launcher is non-modal, so a room can open or close while it stays up.
+  if (event->type() == QEvent::ActivationChange && isActiveWindow())
+  {
+    RefreshFormatCombo();
+    RefreshTimerRow();
+  }
+}
+
+void XDLauncherDialog::RefreshFormatCombo()
+{
+  const QSignalBlocker blocker(m_format_combo);
+  m_format_combo->clear();
+  for (const int format_id :
+       XDNetplay::FormatRules::SelectableFormats(Config::Get(Config::MAIN_XD_MULTI_ENABLED)))
+  {
+    m_format_combo->addItem(
+        QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(format_id)), format_id);
+  }
+  // A value the list does not carry (an unknown id, or Multi while it is
+  // hidden) shows as Free, which is how FormatRules treats it: no
+  // enforcement, never a surprise lockout. So the UI and the code agree.
+  const int index = m_format_combo->findData(Config::Get(Config::MAIN_XD_FORMAT));
+  m_format_combo->setCurrentIndex(
+      index >= 0 ? index : m_format_combo->findData(XDNetplay::FormatRules::FORMAT_FREE));
+  const bool hosting = Settings::Instance().GetNetPlayServer() != nullptr;
+  m_format_combo->setEnabled(!hosting);
+  m_format_combo->setToolTip(hosting ? tr("Change the format in the room.") : m_format_tip);
 }
 
 void XDLauncherDialog::RefreshTimerRow()
