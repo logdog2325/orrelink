@@ -155,8 +155,9 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
 // patch lands in: RegenerateIni appends whatever this helper returns to the
 // assembled "$OrreLink Battle Style" block, and the helper consults the format
 // key (Config::MAIN_XD_FORMAT, values in FormatRules.h) to decide what to
-// emit: the six community formats pin the menu globals, the battle type
-// (Double for Orre shapes, Single for Hoenn shapes) and the whole Custom-1
+// emit: the six community formats, Realgam, Realgam Classic, Pyrite and
+// Phenac pin the menu globals, the battle type (Double for Orre shapes, the
+// four named ones included; Single for Hoenn shapes) and the whole Custom-1
 // ruleset slot (level preset, entries, entry mode 0); Doubles OU pins Double,
 // Lv100, the stock entry mode (all six battle) and its own clause bytes
 // (Species ON; Item, Sleep, Freeze and Self-KO OFF); Free/OU/Multi emit
