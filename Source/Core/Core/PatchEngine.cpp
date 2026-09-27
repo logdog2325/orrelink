@@ -235,6 +235,51 @@ void LoadPatches()
     for (const ActionReplay::ARCode& code : active)
       for (const ActionReplay::AREntry& op : code.ops)
         GBADetectLog::NoteBoot(fmt::format("ar op {:08X} {:08X}", op.cmd_addr, op.value));
+
+    // v1.7.5: the other two code paths that write game memory. Neither is synced by netplay:
+    // OnFrame patches come from each machine's own INIs (a player can tick the shipped savestate
+    // patch in Game Properties) and Gecko codes are synced but filtered locally. Log only; the two
+    // players' crc32= values must match like the 'ar active' ones.
+    std::string frame_blob;
+    size_t frame_patches = 0;
+    size_t frame_lines = 0;
+    for (const Patch& patch : s_on_frame)
+    {
+      if (!patch.enabled)
+        continue;
+      ++frame_patches;
+      for (const PatchEntry& entry : patch.entries)
+      {
+        frame_blob += fmt::format("{} {:08X} {:08X} {:08X} {}\n", static_cast<int>(entry.type),
+                                  entry.address, entry.value, entry.comparand,
+                                  entry.conditional ? 1 : 0);
+        ++frame_lines;
+      }
+    }
+    size_t debugger_patches = 0;
+    {
+      std::lock_guard lock(s_on_frame_memory_mutex);
+      debugger_patches = s_on_frame_memory.size();
+    }
+    // debugger= counts memory patches applied from the debugger each frame: they should be 0.
+    GBADetectLog::NoteBoot(
+        fmt::format("onframe active patches={} lines={} debugger={} crc32={:08x}", frame_patches,
+                    frame_lines, debugger_patches, Common::ComputeCRC32(frame_blob)));
+
+    const std::vector<Gecko::GeckoCode> gecko = Gecko::GetActiveCodesSnapshot();
+    std::string gecko_blob;
+    size_t gecko_lines = 0;
+    for (const Gecko::GeckoCode& code : gecko)
+    {
+      for (const Gecko::GeckoCode::Code& line : code.codes)
+      {
+        gecko_blob += fmt::format("{:08X} {:08X}\n", line.address, line.data);
+        ++gecko_lines;
+      }
+    }
+    GBADetectLog::NoteBoot(fmt::format("gecko active cheats={} codes={} lines={} crc32={:08x}",
+                                       Config::AreCheatsEnabled() ? 1 : 0, gecko.size(),
+                                       gecko_lines, Common::ComputeCRC32(gecko_blob)));
   }
 #endif
 
