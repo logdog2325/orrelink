@@ -48,10 +48,11 @@ bool IsXdGameId(const std::string& game_id);
 // Matching itself never keys off the name: it keys off player_count /
 // in_game / has_password, so a room named anything else is still joinable.
 // The tag exists purely so the lobby reads sensibly to people -- the format
-// prefixes (FormatRules::FormatSessionTag: "[Orre] ", "[OU] ", "[Hoenn-L] ",
-// ...) are human-readable labels only; no matchmaking filter keys off them,
-// and a Free room's name is byte-identical to before the Format feature
-// existed.
+// prefixes (FormatRules::FormatSessionTag: "[Orre] ", "[OU] ", "[DOU] ",
+// "[Hoenn-L] ", ...) are human-readable labels only; no matchmaking filter
+// keys off them, and a Free room's name is byte-identical to before the
+// Format feature existed. The tag is the format the room OPENED with: a
+// format change in the room does not republish the name.
 std::string MakeOpenSessionName(const std::string& nickname, int format_key_value);
 
 // True when an index entry's published "game" string looks like Pokemon XD.

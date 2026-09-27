@@ -1,7 +1,9 @@
 // Copyright 2026 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -63,6 +65,11 @@ static NetPlay::NetPlayServer* GetServerPointer(JNIEnv* env, jobject obj)
 // (NetPlayServer::IsStartingOrRunning). Without it the two players could boot
 // with different saves, which desyncs the battle.
 static std::mutex s_host_write_mutex;
+
+// Whether the host's room is on Pokemon XD (GXXE01), from nativeChangeGame.
+// The format checks only apply to XD rooms, as on desktop (IsXdGameId); the
+// room screen only offers Change Format there.
+static std::atomic<bool> s_host_game_is_xd{false};
 
 static constexpr const char* HOST_WRITE_BUSY = "A battle is starting. Try again after it ends.";
 static constexpr const char* HOST_WRITE_NO_ROOM = "The room has closed. Nothing was changed.";
@@ -299,6 +306,87 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetMusicAnd
 }
 
 JNIEXPORT jstring JNICALL
+Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeHostFormatNote(JNIEnv* env,
+                                                                                    jobject obj)
+{
+  // XD Netplay, host, once the room screen is up: the ADVISORY format check
+  // (mirrors the desktop MainWindow::NetPlayHost note). "" when the host's own
+  // team and spare team pass the room's format or the room is not on XD, else
+  // one line for the host.
+  // Reads the GBA saves, so call off the main thread. The lock keeps the
+  // server alive (nativeReleaseServer) and a host write out while it reads.
+  std::lock_guard lk(s_host_write_mutex);
+  auto* server = GetServerPointer(env, obj);
+  if (!server || !s_host_game_is_xd)
+    return ToJString(env, "");
+  const int format = server->GetXdRoomFormat();
+  const XDNetplay::RoomTeamCheck check = XDNetplay::CheckRoomTeams(format, /*judge_slot=*/true);
+  const XDNetplay::FormatChangeNotes notes =
+      XDNetplay::DescribeFormatChange(format, check, /*slot_is_guest=*/false, "");
+  return ToJString(env, notes.host_lines.empty() ? std::string{} : notes.host_lines.front());
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetRoomFormat(JNIEnv* env,
+                                                                                   jobject obj,
+                                                                                   jint jformat)
+{
+  // XD Netplay, host side: the room's "Change Format" dialog. The format is
+  // read at Start (the rules pin in the Battle Style block, the team checks),
+  // so it follows the host-write rule: never while a battle starts or runs.
+  //
+  // Returns "1" or "0" (did the format change or already match), the one-line
+  // result, then zero or more team notes for the host (shown red).
+  const auto reply = [env](bool ok, const std::vector<std::string>& lines) {
+    std::vector<std::string> result{ok ? "1" : "0"};
+    result.insert(result.end(), lines.begin(), lines.end());
+    return SpanToJStringArray(env, std::span<const std::string>(result));
+  };
+
+  std::lock_guard lk(s_host_write_mutex);
+  if (const char* refusal = HostWriteRefusal(env, obj))
+    return reply(false, {refusal});
+  auto* server = GetServerPointer(env, obj);
+
+  const int format = jformat;
+  const std::vector<int> formats =
+      XDNetplay::FormatRules::SelectableFormats(Config::Get(Config::MAIN_XD_MULTI_ENABLED));
+  if (std::find(formats.begin(), formats.end(), format) == formats.end())
+    return reply(false, {"That format is not available."});
+  const std::string name = XDNetplay::FormatRules::FormatDisplayName(format);
+  if (format == server->GetXdRoomFormat())
+    return reply(true, {"Format: " + name + "."});
+
+  // Outside every netplay lock: Config::Set runs its callbacks right here,
+  // including a JNI call into Kotlin. From this write on, a guest's submission
+  // is checked against the new format.
+  Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, format);
+  XDNetplay::RoomTeamCheck check;
+  const NetPlay::XdFormatChange change = server->SetXdFormat(
+      format,
+      [&check, format](const NetPlay::XdSlotView& slot) {
+        // A departed player's team is reset before any Start reads it: not judged.
+        check = XDNetplay::CheckRoomTeams(format, slot.state != NetPlay::XdSlotState::Orphan);
+      },
+      "Format: " + name + ".");
+  if (change.busy)
+  {
+    Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, server->GetXdRoomFormat());
+    return reply(false, {HOST_WRITE_BUSY});
+  }
+
+  const XDNetplay::FormatChangeNotes notes = XDNetplay::DescribeFormatChange(
+      format, check, change.slot.state == NetPlay::XdSlotState::Guest, change.slot.owner_name);
+  if (!notes.guest_note.empty())
+    server->SendXdNote(change.slot.owner_pid, notes.guest_note);
+  Config::Save();
+
+  std::vector<std::string> lines{"Format: " + name + "."};
+  lines.insert(lines.end(), notes.host_lines.begin(), notes.host_lines.end());
+  return reply(true, lines);
+}
+
+JNIEXPORT jstring JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSubmitSaveBundle(
     JNIEnv* env, jobject obj, jint jmodel, jboolean jraise)
 {
@@ -470,24 +558,9 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeHost(JNIEnv
   const u16 host_port = is_traversal ? Config::Get(Config::NETPLAY_LISTEN_PORT) :
                                        Config::Get(Config::NETPLAY_HOST_PORT);
 
-  // FORMAT host gate (mirrors the desktop MainWindow::NetPlayHost hook): with
-  // the Format pick on any format with team rules, the host's port-2 party
-  // and port-3 guest-fallback party must both be legal before a room can
-  // open. Runs BEFORE the disposable-save swap so a refusal leaves nothing
-  // swapped, and ships its reason through the same connection-error surface
-  // the FRLG/disposable hosting refusal uses. Format = Free/OU: one int
-  // compare, hosting untouched.
-  if (std::string format_reason; !XDNetplay::ValidateHostPartiesForFormat(&format_reason))
-  {
-    if (ui)
-    {
-      ui->OnConnectionError(
-          std::string("Cannot host a ") +
-          XDNetplay::FormatRules::FormatDisplayName(Config::Get(Config::MAIN_XD_FORMAT)) +
-          " room: " + format_reason + " - fix the team, or switch the Format back to Free");
-    }
-    return 0;
-  }
+  // The FORMAT check no longer gates hosting: the room always opens, the host
+  // sees an advisory line once it is up (nativeHostFormatNote), and Start is
+  // where legality is enforced (nativeStartGame).
 
   // Disposable host saves (mirrors the desktop MainWindow::NetPlayHost hook):
   // if a GBA port holds a user-imported save, swap in a rebuilt save carrying
@@ -524,6 +597,7 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeHost(JNIEnv
   // crashed session left orphaned in the local GXXE01.ini, and start with a
   // clean guest-model stash for the room this server is about to run.
   XDNetplay::BattleCustomizer::BeginSession();
+  s_host_game_is_xd = false;
 
   return reinterpret_cast<jlong>(server.release());
 }
@@ -540,6 +614,7 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeChangeGame(
   const auto& game_file = *reinterpret_cast<std::shared_ptr<const UICommon::GameFile>*>(
       env->GetLongField(jgame_file, IDCache::GetGameFilePointer()));
 
+  s_host_game_is_xd = game_file->GetGameID().starts_with("GXXE01");
   server->ChangeGame(game_file->GetSyncIdentifier(), game_file->GetLongName());
 }
 
@@ -582,6 +657,28 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
     return reply(false, "Can't start: no opponent yet.");
   if (claim.slot_busy)
     return reply(false, "Can't start: the last battle is still closing.");
+
+  // The room's format is what every player was shown; keep the key on it
+  // before PrepareForStart reads it (mirrors the desktop OnStart).
+  const int room_format = server->GetXdRoomFormat();
+  if (Config::Get(Config::MAIN_XD_FORMAT) != room_format)
+    Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, room_format);
+  // The format's legality gate, XD rooms only. The freeze keeps TeamData out,
+  // so the slot judged here is the one the start sends. Free/OU: one int
+  // compare.
+  if (s_host_game_is_xd)
+  {
+    std::string guest_note;
+    const std::string refusal = XDNetplay::StartFormatRefusal(
+        room_format, XDNetplay::CheckRoomTeams(room_format, /*judge_slot=*/true),
+        claim.slot_is_guest, claim.slot_owner_name, &guest_note);
+    if (!refusal.empty())
+    {
+      if (!guest_note.empty())
+        server->SendXdNote(claim.opponent, guest_note);
+      return reply(false, refusal);
+    }
+  }
 
   // Assign the XD GBA-vs-GBA ports before starting. Dolphin's netplay config
   // loader rebuilds every SI channel and every GBA ROM path at boot purely from

@@ -247,14 +247,17 @@ extern const Info<int> MAIN_XD_STYLE_MUSIC;
 extern const Info<int> MAIN_XD_STYLE_VENUE;
 
 // The one-tap battle FORMAT pick, persisted like the Battle Style keys and
-// offered by the same launcher area on both platforms. Values are
-// XDNetplay::FormatRules::FORMAT_*: 0 = Free (default -- no validation runs
-// anywhere, sessions stay byte-identical to a build without the feature),
-// 1 = Orre Colosseum (species ban list, Species Clause, Item Clause, Soul Dew
-// ban; see UICommon/XDNetplay/FormatRules.h). The HOST's value governs a room;
-// a joiner's own value is irrelevant while joining. Unknown values behave as
+// offered by the same launcher area on both platforms, and changed in the room
+// by the host. Values are XDNetplay::FormatRules::FORMAT_*: 1 = Orre Colosseum
+// (the default for a user who never picked one), 0 = Free (no validation runs
+// anywhere, sessions stay byte-identical to a build without the feature), and
+// the rest in UICommon/XDNetplay/FormatRules.h. The pickers write the key only
+// when the user picks, so an explicit Free is kept. The HOST's value governs a
+// room; a joiner's own value only drives local notes. Unknown values behave as
 // Free, never clamped.
 extern const Info<int> MAIN_XD_FORMAT;
+// Shows the Multi format in the format lists. Off: Multi is not built yet.
+extern const Info<bool> MAIN_XD_MULTI_ENABLED;
 // Host-side battle timer, folded into the format rules pin: when enabled and
 // the Format pins a rules record, BattleCustomizer emits that record's timer
 // word (+0x14 s16 minutes per game, +0x16 s16 seconds per turn; positive = on)

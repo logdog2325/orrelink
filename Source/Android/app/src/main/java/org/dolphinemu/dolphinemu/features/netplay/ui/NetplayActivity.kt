@@ -72,16 +72,20 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
         // lives, the sheet's own drafts already hold anything newer.
         val submitPrefill = viewModel.submitPrefill()
 
-        // THIS device's Format pick, read once for the sheet's non-blocking
-        // paste-time note. Only advisory here: the room is governed by the
-        // HOST's key, enforced host-side in shared core (TeamInjector).
+        // THIS device's Format pick, for the sheet's non-blocking paste-time
+        // note until the server has said the room's format. Only advisory: the
+        // room is governed by the HOST's format, enforced host-side in shared
+        // core (TeamInjector).
         val localFormat = IntSetting.MAIN_XD_FORMAT.int
-        val orreFormatLocal = FormatBridge.hasTeamRules(localFormat)
-        val localFormatName = FormatBridge.displayName(localFormat)
+        // The host's format list, from shared core (order and the Multi flag).
+        val formatOptions =
+            if (isHosting) FormatBridge.selectableFormats().toList() else emptyList()
 
         setContent {
             DolphinTheme {
                 val hostActionResult = viewModel.hostActionResult.collectAsState().value
+                val roomFormat = viewModel.roomFormat.collectAsState().value
+                val sheetFormat = roomFormat ?: localFormat
                 NetplayScreen(
                     onBackClicked = { finish() },
                     isHosting = viewModel.isHosting,
@@ -98,9 +102,15 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
                     initialModelId = submitPrefill.modelId,
                     initialUseMySave = submitPrefill.useMySave,
                     modelOptions = modelOptions,
-                    orreFormatLocal = orreFormatLocal,
-                    localFormatName = localFormatName,
-                    validateTeamForFormat = FormatBridge::validateShowdown,
+                    orreFormatLocal = FormatBridge.hasTeamRules(sheetFormat),
+                    localFormatName = FormatBridge.displayName(sheetFormat),
+                    validateTeamForFormat = { text ->
+                        FormatBridge.validateShowdown(text, sheetFormat)
+                    },
+                    roomFormatName = roomFormat?.let { FormatBridge.displayName(it) },
+                    roomFormat = roomFormat ?: FormatBridge.FORMAT_FREE,
+                    formatOptions = formatOptions.map { it to FormatBridge.displayName(it) },
+                    onSetRoomFormat = viewModel::setRoomFormat,
                     onSubmitHostTeam = viewModel::submitHostTeam,
                     initialHostModelId = initialHostModelId,
                     musicOptions = musicOptions,

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "Common/CommonTypes.h"
+#include "UICommon/XDNetplay/FormatRules.h"
 
 namespace XDNetplay
 {
@@ -198,26 +199,60 @@ std::string HostTrainerName();
 bool SubmitHostTeam(const std::string& showdown_text, const std::string& trainer_name,
                     std::string* status, bool raise_to_level_100 = false);
 
-// HOST gate for the one-tap FORMAT feature (FormatRules.h): when the host's
-// MAIN_XD_FORMAT key is Orre Colosseum, validate the parties the HOST brings
-// to the room -- the port-2 save (the host's own team) AND the port-3 save
-// (the guest-slot fallback, played whenever the guest never submits) -- since
-// both will be played under the room's rules. Returns true when hosting may
-// proceed; false with *reason set to a user-displayable sentence naming the
-// offending mon or item AND which slot it sits in. Callers block hosting on
-// false (desktop: ModalMessageBox in MainWindow::NetPlayHost; Android: the
-// connection-error surface in nativeHost -- the same place the FRLG/
-// disposable-save hosting refusals ship), strictly BEFORE the disposable-save
-// swap and the server, so a refusal leaves no swapped state behind.
+// The legality of the two parties a room plays under `format`: the host's own
+// team (the port-2 save, device 1) and the GBA 2 slot (the port-3 save,
+// device 2: the host's spare team, or a guest's submitted team). A verdict
+// that was not judged reads ok. judge_slot=false leaves the slot unjudged
+// (its team belongs to a player who left and is reset before any Start reads
+// it).
 //
-// With format=Free this returns true after one int compare -- no file is read,
-// no validation runs, hosting is byte-identical to a build without formats.
-// Deliberately lenient about anything that is not a rules violation: a port
-// with no save, an unreadable/FRLG save (whose party the Emerald-offset
-// readers cannot decode) or an empty party is SKIPPED, not refused -- those
-// conditions exist in Free too and have their own handling; this gate only
-// answers "is a readable party Orre-legal".
+// Free, OU, Multi and unknown values return at once: one int compare, no
+// file read. Deliberately lenient about anything that is not a rules
+// violation: no gen3data.json, a port with no save, an unreadable/FRLG save
+// (whose party the Emerald-offset readers cannot decode) or an empty party
+// all pass -- those conditions exist in Free too and have their own
+// handling; this only answers "is a readable party legal".
+//
+// File reads only, no UI and no config writes: safe under the netplay
+// server's seat mutex (NetPlayServer::SetXdFormat runs it there, so no
+// TeamData write can land between the slot snapshot and this read).
+struct RoomTeamCheck
+{
+  FormatRules::Verdict host;
+  FormatRules::Verdict slot;
+};
+RoomTeamCheck CheckRoomTeams(int format, bool judge_slot);
+
+// ADVISORY host check when a room opens (desktop: MainWindow::NetPlayHost;
+// Android: NetplaySession's first room screen), under the MAIN_XD_FORMAT
+// key: CheckRoomTeams(format, true). Returns true when both parties pass;
+// false with *reason set to one line for the host, "Your team is not <Format>
+// legal: <reason>." or "Your spare team is not <Format> legal: <reason>."
+// (the host's own team first). The room opens either way: the format can be
+// changed in the room, and Start is where legality is enforced.
 bool ValidateHostPartiesForFormat(std::string* reason);
+
+// The lines both room UIs show after the host changes the room's format
+// (NetPlayServer::SetXdFormat), from the CheckRoomTeams it ran. host_lines go
+// to the host only; guest_note goes to the seated opponent only, when
+// slot_is_guest and their submitted team breaks the new format. Nothing is
+// cleared: a resubmission overwrites the team, and switching back to a format
+// it passes unblocks Start.
+struct FormatChangeNotes
+{
+  std::vector<std::string> host_lines;
+  std::string guest_note;
+};
+FormatChangeNotes DescribeFormatChange(int format, const RoomTeamCheck& check, bool slot_is_guest,
+                                       const std::string& guest_name);
+
+// The Start gate of both room UIs: "" when CheckRoomTeams(format, true) passed,
+// else the one line the host sees ("Can't start: ..."), with the verdict's
+// reason for the host's own teams. When the seated opponent's team is the
+// problem, *guest_note receives the line to send them (with the reason; the
+// host's line leaves it out, as DescribeFormatChange does).
+std::string StartFormatRefusal(int format, const RoomTeamCheck& check, bool slot_is_guest,
+                               const std::string& guest_name, std::string* guest_note);
 
 // End-of-session cleanup: give the host their own team back AND leave no file
 // on this machine holding the opponent's party. Call it whenever a room ends,
