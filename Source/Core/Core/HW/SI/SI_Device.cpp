@@ -16,6 +16,7 @@
 #include "Core/HW/SI/SI_DeviceGBA.h"
 #ifdef HAS_LIBMGBA
 #include "Core/HW/SI/SI_DeviceGBAEmu.h"
+#include "Core/HW/SI/SI_DeviceXDMultiPort.h"
 #endif
 #include "Core/HW/SI/SI_DeviceAMBaseboard.h"
 #include "Core/HW/SI/SI_DeviceGCAdapter.h"
@@ -187,6 +188,17 @@ std::unique_ptr<ISIDevice> SIDevice_Create(Core::System& system, const SIDevices
       return std::make_unique<CSIDevice_Null>(system, SIDEVICE_NONE, port_number);
 
     return std::make_unique<CSIDevice_GBAEmu>(system, device, port_number);
+#else
+    PanicAlertFmtT("Error: This build does not support emulated GBA controllers");
+    return std::make_unique<CSIDevice_Null>(system, device, port_number);
+#endif
+
+  case SIDEVICE_GC_GBA_XDMULTI:
+#ifdef HAS_LIBMGBA
+    if (system.IsWii())
+      return std::make_unique<CSIDevice_Null>(system, SIDEVICE_NONE, port_number);
+
+    return std::make_unique<CSIDevice_XDMultiPort>(system, device, port_number);
 #else
     PanicAlertFmtT("Error: This build does not support emulated GBA controllers");
     return std::make_unique<CSIDevice_Null>(system, device, port_number);

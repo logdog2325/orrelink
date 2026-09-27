@@ -16,11 +16,13 @@
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/HW/SI/SI_Device.h"
+#include "Core/Movie.h"
 #include "Core/NetPlayProto.h"
 #include "Core/System.h"
 
 #include "DolphinQt/Config/Mapping/GCPadWiiUConfigDialog.h"
 #include "DolphinQt/Config/Mapping/MappingWindow.h"
+#include "DolphinQt/QtUtils/ModalMessageBox.h"
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 #include "DolphinQt/QtUtils/SignalBlocking.h"
 #include "DolphinQt/Settings.h"
@@ -40,7 +42,17 @@ static constexpr std::array s_gc_types = {
     SIDeviceName{SerialInterface::SIDEVICE_GC_GBA, _trans("GBA (TCP)")},
     SIDeviceName{SerialInterface::SIDEVICE_GC_KEYBOARD, _trans("Keyboard Controller")},
     SIDeviceName{SerialInterface::SIDEVICE_AM_BASEBOARD, _trans("Triforce Baseboard")},
+#ifdef HAS_LIBMGBA
+    // Port 1 only; must stay the last entry.
+    SIDeviceName{SerialInterface::SIDEVICE_GC_GBA_XDMULTI, _trans("XD Multi (Controller + GBA)")},
+#endif
 };
+
+// XD Multi is offered on Port 1 only.
+static bool IsGCTypeOffered(size_t port, SerialInterface::SIDevices sidevice)
+{
+  return port == 0 || sidevice != SerialInterface::SIDEVICE_GC_GBA_XDMULTI;
+}
 
 static std::optional<int> ToGCMenuIndex(const SerialInterface::SIDevices sidevice)
 {
@@ -55,6 +67,15 @@ static std::optional<int> ToGCMenuIndex(const SerialInterface::SIDevices sidevic
 static SerialInterface::SIDevices FromGCMenuIndex(const int menudevice)
 {
   return s_gc_types[menudevice].first;
+}
+
+// A movie records XD Multi as a plain pad, so it cannot be chosen while one is
+// recording or playing.
+static bool IsXDMultiBlockedByMovie(const QComboBox* box)
+{
+  const int index = box->currentIndex();
+  return index >= 0 && FromGCMenuIndex(index) == SerialInterface::SIDEVICE_GC_GBA_XDMULTI &&
+         Core::System::GetInstance().GetMovie().IsMovieActive();
 }
 
 GamecubeControllersWidget::GamecubeControllersWidget(QWidget* parent) : QWidget(parent)
@@ -84,7 +105,8 @@ void GamecubeControllersWidget::CreateLayout()
 
     for (const auto& item : s_gc_types)
     {
-      gc_box->addItem(tr(item.second));
+      if (IsGCTypeOffered(i, item.first))
+        gc_box->addItem(tr(item.second));
     }
 
     int controller_row = m_gc_layout->rowCount();
@@ -106,6 +128,13 @@ void GamecubeControllersWidget::ConnectWidgets()
   for (size_t i = 0; i < m_gc_controller_boxes.size(); ++i)
   {
     connect(m_gc_controller_boxes[i], &QComboBox::currentIndexChanged, this, [this, i] {
+      if (IsXDMultiBlockedByMovie(m_gc_controller_boxes[i]))
+      {
+        LoadSettings(Core::GetState(Core::System::GetInstance()));
+        ModalMessageBox::information(this, tr("XD Multi"),
+                                     tr("Stop the movie before choosing XD Multi."));
+        return;
+      }
       OnGCTypeChanged(i);
       SaveSettings();
     });
@@ -115,6 +144,8 @@ void GamecubeControllersWidget::ConnectWidgets()
 
 void GamecubeControllersWidget::OnGCTypeChanged(size_t index)
 {
+  if (m_gc_controller_boxes[index]->currentIndex() < 0)
+    return;
   const SerialInterface::SIDevices si_device =
       FromGCMenuIndex(m_gc_controller_boxes[index]->currentIndex());
   m_gc_buttons[index]->setEnabled(si_device != SerialInterface::SIDEVICE_NONE &&
@@ -125,12 +156,16 @@ void GamecubeControllersWidget::OnGCPadConfigure(size_t index)
 {
   MappingWindow::Type type;
 
+  if (m_gc_controller_boxes[index]->currentIndex() < 0)
+    return;
+
   switch (FromGCMenuIndex(m_gc_controller_boxes[index]->currentIndex()))
   {
   case SerialInterface::SIDEVICE_NONE:
   case SerialInterface::SIDEVICE_GC_GBA:
     return;
   case SerialInterface::SIDEVICE_GC_CONTROLLER:
+  case SerialInterface::SIDEVICE_GC_GBA_XDMULTI:
     type = MappingWindow::Type::MAPPING_GCPAD;
     break;
   case SerialInterface::SIDEVICE_WIIU_ADAPTER:
@@ -172,8 +207,10 @@ void GamecubeControllersWidget::LoadSettings(Core::State state)
   const bool running = state != Core::State::Uninitialized;
   for (size_t i = 0; i < m_gc_groups.size(); i++)
   {
-    const SerialInterface::SIDevices si_device =
+    SerialInterface::SIDevices si_device =
         Config::Get(Config::GetInfoForSIDevice(static_cast<int>(i)));
+    if (!IsGCTypeOffered(i, si_device))
+      si_device = SerialInterface::SIDEVICE_GC_CONTROLLER;
     const std::optional<int> gc_index = ToGCMenuIndex(si_device);
     if (gc_index)
     {
@@ -191,6 +228,8 @@ void GamecubeControllersWidget::SaveSettings()
 
     for (size_t i = 0; i < m_gc_groups.size(); ++i)
     {
+      if (m_gc_controller_boxes[i]->currentIndex() < 0)
+        continue;
       const SerialInterface::SIDevices si_device =
           FromGCMenuIndex(m_gc_controller_boxes[i]->currentIndex());
       Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(static_cast<int>(i)), si_device);

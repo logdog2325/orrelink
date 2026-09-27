@@ -881,6 +881,7 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="gcpad_am_baseboard">Triforce Baseboard</string>
     <string name="gcpad_gc_adapter">GameCube Adapter</string>
     <string name="gcpad_emulated_gba">Emulated GBA</string>
+    <string name="gcpad_xd_multi">XD Multi (Controller + GBA)</string>
 
     <string name="dual_screen_external_display">Use External Display</string>
     <string name="dual_screen_external_display_description">Automatically use an external display when GBA Link or Wii pointer touchpad support is configured.</string>

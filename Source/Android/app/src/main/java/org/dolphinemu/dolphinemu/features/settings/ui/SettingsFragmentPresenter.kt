@@ -1452,8 +1452,8 @@ class SettingsFragmentPresenter(
                 IntSetting.MAIN_SI_DEVICE_0,
                 R.string.controller_0,
                 0,
-                R.array.gcpadTypeEntries,
-                R.array.gcpadTypeValues,
+                R.array.gcpadTypeEntriesPort1,
+                R.array.gcpadTypeValuesPort1,
                 MenuTag.getGCPadMenuTag(0)
             )
         )
@@ -2651,12 +2651,22 @@ class SettingsFragmentPresenter(
             GbaLinkSettings.SIDEVICE_GC_GBA_EMULATED -> {
                 addGbaPadSubSettings(sl, gcPadNumber)
             }
+            GbaLinkSettings.SIDEVICE_GC_GBA_XDMULTI -> {
+                // XD Multi: the port's GC pad mapping plus its GBA ROM
+                val gcPad = EmulatedController.getGcPad(gcPadNumber)
+
+                addGbaRomPicker(sl, gcPadNumber)
+                if (!TextUtils.isEmpty(gameId)) {
+                    addControllerPerGameSettings(sl, gcPad, gcPadNumber)
+                } else {
+                    addControllerMetaSettings(sl, gcPad)
+                    addControllerMappingSettings(sl, gcPad, null)
+                }
+            }
         }
     }
 
-    private fun addGbaPadSubSettings(sl: ArrayList<SettingsItem>, gbaPadNumber: Int) {
-        val gbaPad = EmulatedController.getGbaPad(gbaPadNumber)
-
+    private fun addGbaRomPicker(sl: ArrayList<SettingsItem>, gbaPadNumber: Int) {
         sl.add(
             FilePicker(
                 context,
@@ -2667,6 +2677,12 @@ class SettingsFragmentPresenter(
                 null
             )
         )
+    }
+
+    private fun addGbaPadSubSettings(sl: ArrayList<SettingsItem>, gbaPadNumber: Int) {
+        val gbaPad = EmulatedController.getGbaPad(gbaPadNumber)
+
+        addGbaRomPicker(sl, gbaPadNumber)
 
         if (!TextUtils.isEmpty(gameId)) {
             addControllerPerGameSettings(sl, gbaPad, gbaPadNumber)
