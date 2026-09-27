@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <array>
+#include <optional>
 
 #include "Common/CommonTypes.h"
 #include "Common/Config/Config.h"
+#include "Common/Hash.h"
 #include "Common/Logging/Log.h"
 
 #include "Core/Config/SessionSettings.h"
@@ -367,5 +369,146 @@ void OSGetTime(const Core::CPUThreadGuard& guard)
   ppc_state.gpr[3] = static_cast<u32>(value >> 32);
   ppc_state.gpr[4] = static_cast<u32>(value);
   ppc_state.npc = lr;
+}
+
+namespace
+{
+// Pokemon XD (GXXE01 USA, main.dol sha256 c8659341...78f15) battle state that decides a link
+// battle, reverse-engineered from the binary and cross-checked adversarially. Every fixed address
+// is a .bss/.sbss/.sdata location in MEM1.
+struct XdRange
+{
+  u32 addr;
+  u32 len;
+};
+// Main PRNG (the game's own LCG): seed = seed * 0x343FD + 0x269EC3, stepped by every rand_u16
+// (407 callers) / rand_float (238) call; written once at boot from OSGetTime's low word
+// (0x800efa58). The pointer cell at +4 always reads 0x804E8610 (its only setter has no callers).
+constexpr u32 XD_RNG_SEED = 0x804E8610;
+// SDK CARD unlock LCG state (ANSI LCG, 0x804e81e0 = r13-31808), seeded from OSGetTick by CARD
+// DummyLen 0x800c0a50 / __CARDUnlock 0x800c0b14 (all 12 references) -- NOT JoyBoot: it only moves
+// on memory-card mount/unlock. Logged raw as jb= (name kept for log compatibility); under the
+// v1.5.11 clock those three reads are per-site ordinals, so it stays identical.
+constexpr u32 XD_JOYBOOT_LCG = 0x804E81E0;
+constexpr u32 XD_BATTLE_FLAGS = 0x804EB938;  // u32 bit flags, 263 refs in the engine
+// crcA: battle-engine scalars (.sbss: flags, command-ring indices, turn counters, scratch-block
+// pointer) + the .sdata battle event struct.
+constexpr XdRange XD_CRC_A[] = {{0x804EB8D0, 0xB0}, {0x804E85C0, 0x20}};
+// crcB: party state of the LIVE battle context. There are two 0x6ef0-byte context objects
+// (ctx[0]=0x804a1744, ctx[1]=0x804a8634); trainer = ctx+0x64+t*0x3744; party entry =
+// trainer+0x97c+i*0x300 (record at +4: species u16, +4 current HP u16, +0x11 level, +0x28
+// status, +0x80 moves/PP, +0x90 max HP); active slot = trainer+0x1b7c+s*0x894.
+// The cell at 0x804af528 (logged as ctx=) does NOT hold the context base: in the field it held
+// 804a3324, 804a3bb8, 804aa214 and 804aaaa8, which are ctx+0x64+0x1b7c(+0x894), a trainer's
+// active slot. Up to v1.7.4 crcB compared the cell against the two bases, never matched, and was
+// 00000000 on every line. The base is now recovered from whichever slot the cell names.
+constexpr u32 XD_CTX_PTR = 0x804AF528;
+constexpr u32 XD_CTX_A = 0x804A1744;
+constexpr u32 XD_CTX_B = 0x804A8634;
+constexpr u32 XD_TRAINER_OFF = 0x64;
+constexpr u32 XD_TRAINER_STRIDE = 0x3744;
+constexpr u32 XD_PARTY_OFF = 0x97C;
+constexpr u32 XD_PARTY_STRIDE = 0x300;
+constexpr u32 XD_SLOT_OFF = 0x1B7C;
+constexpr u32 XD_SLOT_STRIDE = 0x894;
+// crcC: GBA driver per-channel state, .sbss link state, battle mode word, and the ruleset table
+// entry the format pin writes (0x804334C0 = BattleCustomizer's ORRE_RULESET_BASE).
+constexpr XdRange XD_CRC_C[] = {
+    {0x80428338, 0x20}, {0x804EA768, 0x28}, {0x80429A00, 0x04}, {0x804334C0, 0x90}};
+constexpr u32 XD_DISC_ID_GXXE = 0x47585845;  // "GXXE" at 0x80000000
+
+// The context base the cell names: the base itself, or one of its trainers' two active slots.
+// The two objects are 0x6ef0 apart and the largest offset is 0x5bb8 (0x64 + 0x3744 + 0x1b7c +
+// 0x894), so no value is ambiguous.
+std::optional<u32> ContextBaseFromCell(u32 cell)
+{
+  for (const u32 base : {XD_CTX_A, XD_CTX_B})
+  {
+    if (cell == base)
+      return base;
+    for (u32 t = 0; t < 2; ++t)
+    {
+      for (u32 sl = 0; sl < 2; ++sl)
+      {
+        const u32 slot =
+            base + XD_TRAINER_OFF + t * XD_TRAINER_STRIDE + XD_SLOT_OFF + sl * XD_SLOT_STRIDE;
+        if (cell == slot)
+          return base;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+size_t AppendEmu(const Memory::MemoryManager& memory, u8* dst, size_t at, u32 addr, u32 len)
+{
+  memory.CopyFromEmu(dst + at, addr, len);
+  return at + len;
+}
+
+// FNV-1a over a u32, byte by byte in a fixed order (no type punning).
+u32 MixWord(u32 h, u32 v)
+{
+  for (int shift = 0; shift < 32; shift += 8)
+  {
+    h ^= (v >> shift) & 0xFF;
+    h *= 16777619u;
+  }
+  return h;
+}
+}  // namespace
+
+XdDigest ComputeXdDigest(const Memory::MemoryManager& memory)
+{
+  XdDigest d;
+  if (memory.Read_U32(0x80000000) != XD_DISC_ID_GXXE)
+    return d;
+  d.is_xd = true;
+  d.seed = memory.Read_U32(XD_RNG_SEED);
+  d.jb = memory.Read_U32(XD_JOYBOOT_LCG);
+  d.flags = memory.Read_U32(XD_BATTLE_FLAGS);
+  d.ctx = memory.Read_U32(XD_CTX_PTR);
+
+  // 2 x (6 x 0x50 + 2 x 0x40) = 1216 bytes is the largest range set.
+  std::array<u8, 2048> buf{};
+  size_t n = 0;
+  for (const XdRange& r : XD_CRC_A)
+    n = AppendEmu(memory, buf.data(), n, r.addr, r.len);
+  d.crc_a = Common::ComputeCRC32(buf.data(), n);
+
+  if (const std::optional<u32> base = ContextBaseFromCell(d.ctx))
+  {
+    n = 0;
+    for (u32 t = 0; t < 2; t++)
+    {
+      const u32 trainer = *base + XD_TRAINER_OFF + t * XD_TRAINER_STRIDE;
+      for (u32 i = 0; i < 6; i++)
+      {
+        const u32 record = trainer + XD_PARTY_OFF + i * XD_PARTY_STRIDE + 4;
+        n = AppendEmu(memory, buf.data(), n, record, 0x30);
+        n = AppendEmu(memory, buf.data(), n, record + 0x80, 0x20);
+      }
+      for (u32 sl = 0; sl < 2; sl++)
+        n = AppendEmu(memory, buf.data(), n, trainer + XD_SLOT_OFF + sl * XD_SLOT_STRIDE, 0x40);
+    }
+    d.crc_b = Common::ComputeCRC32(buf.data(), n);
+  }
+
+  n = 0;
+  for (const XdRange& r : XD_CRC_C)
+    n = AppendEmu(memory, buf.data(), n, r.addr, r.len);
+  d.crc_c = Common::ComputeCRC32(buf.data(), n);
+  return d;
+}
+
+u32 XdDigestHash(const XdDigest& digest)
+{
+  u32 h = 2166136261u;
+  for (const u32 v : {digest.is_xd ? 1u : 0u, digest.seed, digest.jb, digest.flags, digest.ctx,
+                      digest.crc_a, digest.crc_b, digest.crc_c})
+  {
+    h = MixWord(h, v);
+  }
+  return h;
 }
 }  // namespace HLE_XD

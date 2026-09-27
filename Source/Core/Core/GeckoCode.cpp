@@ -58,6 +58,12 @@ size_t CountEnabledCodes()
   return s_active_codes.size();
 }
 
+std::vector<GeckoCode> GetActiveCodesSnapshot()
+{
+  std::lock_guard guard(s_active_codes_lock);
+  return s_active_codes;
+}
+
 void SetActiveCodes(std::span<const GeckoCode> gcodes, const std::string& game_id, u16 revision)
 {
   std::lock_guard lk(s_active_codes_lock);

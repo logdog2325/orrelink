@@ -10,6 +10,11 @@ class CPUThreadGuard;
 class System;
 }  // namespace Core
 
+namespace Memory
+{
+class MemoryManager;
+}  // namespace Memory
+
 // OrreLink: deterministic clock for Pokemon XD (GXXE01) netplay rooms that mix CPU
 // architectures. HLE Replace hooks on OSGetTick/OSGetTime return a value that is a pure
 // function of game state plus a host-synced salt instead of Dolphin's block-granular time
@@ -35,4 +40,26 @@ u32 ClockModel();      // 2 = v1.5.12 field clock; logged so a reader knows what
 
 void OSGetTick(const Core::CPUThreadGuard& guard);  // hooks 0x800b225c
 void OSGetTime(const Core::CPUThreadGuard& guard);  // hooks 0x800b2244
+
+// Pokemon XD battle state, read from fixed MEM1 addresses (BAT identity mapping, no MMU) and
+// shared by the gba_detect 'xd' lines and the netplay state check. Every field is game RAM that
+// is identical on every machine running the same instruction stream: no XFB, EFB copy, audio
+// buffer or other per-machine data. is_xd is false (and the rest zero) when the disc at
+// 0x80000000 is not GXXE. CPU thread only, about 1.7 KB of reads. Read it at a point in the
+// game's own code (a GBA WRITE), not at a CoreTiming event: machines whose JITs split blocks
+// differently reach the same event after different instructions.
+struct XdDigest
+{
+  bool is_xd = false;
+  u32 seed = 0;   // main PRNG seed
+  u32 jb = 0;     // SDK CARD unlock LCG (logged as jb=)
+  u32 flags = 0;  // battle flag word
+  u32 ctx = 0;    // the battle context cell as read (0 between battles)
+  u32 crc_a = 0;  // battle-engine scalars and the battle event struct
+  u32 crc_b = 0;  // party state of the live battle context; 0 when there is none
+  u32 crc_c = 0;  // GBA driver state, link state, battle mode, format ruleset entry
+};
+XdDigest ComputeXdDigest(const Memory::MemoryManager& memory);
+// One word over every XdDigest field, for the netplay state check.
+u32 XdDigestHash(const XdDigest& digest);
 }  // namespace HLE_XD

@@ -124,6 +124,25 @@ namespace NetPlay
 // from 7.4 ms to 2.3 ms.
 namespace
 {
+// XD Netplay state check (OnStateDigest). Tags waiting for a player's report, and the players'
+// agreed reports kept for spectators: 64 tags is about two minutes.
+constexpr size_t STATE_PENDING_MAX = 64;
+constexpr size_t STATE_AGREED_MAX = 64;
+[[maybe_unused]] constexpr u32 STATE_DETAIL_MAX_LINES = 5;
+// A player's "left the game window" line at most this often.
+constexpr u64 XD_NOTICE_LEFT_REPEAT_MS = 20000;
+// An XD state difference is announced only when this many judged tags of one GBA port in a row
+// differ: a real split persists (the RNG seed never re-converges), a one-off does not. An inputs
+// difference is announced at once: that hash only depends on the pad entries.
+constexpr u32 STATE_XD_CONFIRM = 2;
+[[maybe_unused]] constexpr u32 STATE_TRANSIENT_MAX_LINES = 20;
+
+// Which parts of two reports differ: 1 = the inputs consumed, 2 = XD's battle state.
+u8 StateReportDiff(const NetPlayServer::StateReport& a, const NetPlayServer::StateReport& b)
+{
+  return static_cast<u8>((a.inputs != b.inputs ? 1 : 0) | (a.xd != b.xd ? 2 : 0));
+}
+
 // ceil(ping_ms / 16.667) in integer math: 1/16.667 == 3/50.
 constexpr u32 AUTOBUF_FRAME_NUM = 3;
 constexpr u32 AUTOBUF_FRAME_DEN = 50;
@@ -152,6 +171,23 @@ constexpr u64 AUTOBUF_COOLDOWN_MS = 5000;
 // disturbance but still worth one clean sample.
 constexpr u64 AUTOBUF_SETTLE_GAME_MS = 10000;
 constexpr u64 AUTOBUF_SETTLE_ROSTER_MS = 2000;
+// Slack (v1.7.5), from the players' PadHealth reports while a game runs. Ping alone walked a real
+// session from 15 to 10 (an XD buffer entry is 8.3 ms, not a frame) without one wait along the
+// way: waits only show once the slack is gone. A lockstep pair splits its slack by phase, and one
+// hitch longer than MaxFallback can move all of it to one side for good; that side then waits on
+// every remote pop while ping, and so the ping rule, sees nothing wrong.
+// - Lower veto: a lower sample counts only if every player's queues for the pads other machines
+//   own held at least AUTOBUF_KEEP_DEPTH entries before every pop of the last second, so at least
+//   two remain after the step.
+// - Cushion: AUTOBUF_CUSHION_SAMPLES seconds in a row in which a player waited on at least half
+//   of those pops with the queue empty raise the buffer by AUTOBUF_CUSHION_STEP, never past
+//   need + AUTOBUF_CUSHION_CAP or AUTOBUF_MAX_FRAMES. Every client re-anchors its throttle when a
+//   raise lands (OnPadBuffer), so a machine behind its pacing deadline keeps the new slack.
+// Either only changes how many entries the owners keep in flight, never which entries are used.
+constexpr u32 AUTOBUF_KEEP_DEPTH = 3;
+constexpr u32 AUTOBUF_CUSHION_SAMPLES = 3;
+constexpr u32 AUTOBUF_CUSHION_STEP = 4;
+constexpr u32 AUTOBUF_CUSHION_CAP = 12;
 
 u32 AutoBufferTargetForPing(u32 ping_ms)
 {
@@ -642,6 +678,7 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
   // before it believes anything (netplay thread owns these fields).
   m_auto_buffer_raise_streak = 0;
   m_auto_buffer_lower_streak = 0;
+  m_auto_buffer_cushion_streak = 0;
   m_auto_buffer_quiet_until_ms = Common::Timer::NowMs() + AUTOBUF_SETTLE_ROSTER_MS;
 
   return ConnectionError::NoError;
@@ -664,7 +701,20 @@ unsigned int NetPlayServer::OnDisconnect(const Client& player)
   // Roster change: same reasoning as in OnConnect.
   m_auto_buffer_raise_streak = 0;
   m_auto_buffer_lower_streak = 0;
+  m_auto_buffer_cushion_streak = 0;
   m_auto_buffer_quiet_until_ms = Common::Timer::NowMs() + AUTOBUF_SETTLE_ROSTER_MS;
+
+  // XD Netplay notices and state check: a pid can be reused by the next joiner.
+  m_xd_away.erase(pid);
+  m_xd_last_left_ms.erase(pid);
+  m_sd_spectators_warned.erase(pid);
+  m_sd_spec_streak.erase(pid);
+  for (auto& pending : m_sd_pending)
+  {
+    for (auto& reports : std::views::values(pending))
+      reports.erase(pid);
+  }
+  m_pad_health.erase(pid);
 
   if (m_is_running)
   {
@@ -863,6 +913,8 @@ void NetPlayServer::UpdateAutoPadBuffer()
 {
   const bool enabled = m_auto_buffer_enabled.load();
   const u64 now_ms = Common::Timer::NowMs();
+  // Consumed every tick, whatever returns early below, so a decision never reads old reports.
+  const PadHealthTick health = TakePadHealthTick();
 
   // Re-enabled from the UI: start from a clean slate and take one settled
   // sample before touching anything.
@@ -870,6 +922,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
   {
     m_auto_buffer_raise_streak = 0;
     m_auto_buffer_lower_streak = 0;
+    m_auto_buffer_cushion_streak = 0;
     m_auto_buffer_quiet_until_ms = now_ms + AUTOBUF_SETTLE_ROSTER_MS;
   }
   m_auto_buffer_was_enabled = enabled;
@@ -888,6 +941,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
     m_auto_buffer_was_running = m_is_running;
     m_auto_buffer_raise_streak = 0;
     m_auto_buffer_lower_streak = 0;
+    m_auto_buffer_cushion_streak = 0;
     m_auto_buffer_quiet_until_ms = now_ms + AUTOBUF_SETTLE_GAME_MS;
     return;
   }
@@ -898,6 +952,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
   {
     m_auto_buffer_raise_streak = 0;
     m_auto_buffer_lower_streak = 0;
+    m_auto_buffer_cushion_streak = 0;
     m_auto_buffer_quiet_until_ms = now_ms + AUTOBUF_SETTLE_GAME_MS;
     return;
   }
@@ -910,6 +965,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
   {
     m_auto_buffer_raise_streak = 0;
     m_auto_buffer_lower_streak = 0;
+    m_auto_buffer_cushion_streak = 0;
     return;
   }
 
@@ -941,45 +997,93 @@ void NetPlayServer::UpdateAutoPadBuffer()
   const u32 need = AutoBufferTargetForPing(max_ping);
   const u32 current = m_target_buffer_size;
 
-  if (need > current)
+  // Players report PadHealth only while a game runs; in the lobby ping alone decides, as before.
+  const bool use_health = m_is_running;
+  if (use_health)
   {
-    m_auto_buffer_lower_streak = 0;
-    ++m_auto_buffer_raise_streak;
+    if (health.starving)
+      ++m_auto_buffer_cushion_streak;
+    else if (health.all_reported)
+      m_auto_buffer_cushion_streak = 0;
   }
-  else if (need + AUTOBUF_LOWER_SLACK <= current)
-  {
-    m_auto_buffer_raise_streak = 0;
-    ++m_auto_buffer_lower_streak;
-  }
-  else
-  {
-    // Inside the dead band: the current size is right. Forget both streaks so
-    // a change always needs its full run of *consecutive* samples.
-    m_auto_buffer_raise_streak = 0;
-    m_auto_buffer_lower_streak = 0;
-    return;
-  }
-
-  if (now_ms - m_auto_buffer_last_change_ms < AUTOBUF_COOLDOWN_MS)
-    return;
 
   u32 next = current;
   const char* why = nullptr;
-  if (m_auto_buffer_raise_streak >= AUTOBUF_RAISE_SAMPLES)
+  std::string why_detail;
+  if (use_health && m_auto_buffer_cushion_streak >= AUTOBUF_CUSHION_SAMPLES &&
+      now_ms - m_auto_buffer_last_change_ms >= AUTOBUF_COOLDOWN_MS)
   {
-    // Jump straight to what the link needs: starvation hurts every frame until
-    // it is fixed, so there is nothing to gain by creeping upward.
-    next = need;
-    why = "raise";
+    const u32 cap = std::min(std::max(need + AUTOBUF_CUSHION_CAP, current), AUTOBUF_MAX_FRAMES);
+    const u32 cushion = std::min(current + AUTOBUF_CUSHION_STEP, cap);
+    if (cushion > current)
+    {
+      next = cushion;
+      why = "cushion";
+      why_detail = " " + health.detail;
+    }
   }
-  else if (m_auto_buffer_lower_streak >= AUTOBUF_LOWER_SAMPLES)
+
+  if (why == nullptr)
   {
-    // Give back one frame at a time. Shedding delay is never urgent, and a slow
-    // walk down re-measures at each step instead of overshooting into stutter.
-    // (The dead band already makes a lower vote impossible at the floor; the
-    // guard is here so the unsigned subtraction can never wrap regardless.)
-    next = current > AUTOBUF_MIN_FRAMES ? current - 1 : current;
-    why = "lower";
+    if (need > current)
+    {
+      m_auto_buffer_lower_streak = 0;
+      ++m_auto_buffer_raise_streak;
+    }
+    else if (need + AUTOBUF_LOWER_SLACK <= current)
+    {
+      m_auto_buffer_raise_streak = 0;
+      if (use_health && health.low)
+      {
+        // Ping says there is slack, but a player's queues say there is none on their side, and a
+        // lower takes an entry from both sides at once.
+        m_auto_buffer_lower_streak = 0;
+        if (!m_auto_buffer_veto_logged)
+        {
+          m_auto_buffer_veto_logged = true;
+          const std::string detail =
+              fmt::format("buf {} kept ping={}ms need={} why=lower-veto {}", current, max_ping,
+                          need, health.detail);
+          NOTICE_LOG_FMT(NETPLAY, "AutoBuffer {}", detail);
+#ifdef HAS_LIBMGBA
+          GBADetectLog::LogEvent(0, 0, "autobuf", detail);
+#endif
+        }
+        return;
+      }
+      // A player whose report has not come in yet: no vote either way this second.
+      if (use_health && !health.all_reported)
+        return;
+      ++m_auto_buffer_lower_streak;
+    }
+    else
+    {
+      // Inside the dead band: the current size is right. Forget both streaks so
+      // a change always needs its full run of *consecutive* samples.
+      m_auto_buffer_raise_streak = 0;
+      m_auto_buffer_lower_streak = 0;
+      return;
+    }
+
+    if (now_ms - m_auto_buffer_last_change_ms < AUTOBUF_COOLDOWN_MS)
+      return;
+
+    if (m_auto_buffer_raise_streak >= AUTOBUF_RAISE_SAMPLES)
+    {
+      // Jump straight to what the link needs: starvation hurts every frame until
+      // it is fixed, so there is nothing to gain by creeping upward.
+      next = need;
+      why = "raise";
+    }
+    else if (m_auto_buffer_lower_streak >= AUTOBUF_LOWER_SAMPLES)
+    {
+      // Give back one frame at a time. Shedding delay is never urgent, and a slow
+      // walk down re-measures at each step instead of overshooting into stutter.
+      // (The dead band already makes a lower vote impossible at the floor; the
+      // guard is here so the unsigned subtraction can never wrap regardless.)
+      next = current > AUTOBUF_MIN_FRAMES ? current - 1 : current;
+      why = "lower";
+    }
   }
 
   if (why == nullptr || next == current)
@@ -987,11 +1091,13 @@ void NetPlayServer::UpdateAutoPadBuffer()
 
   m_auto_buffer_raise_streak = 0;
   m_auto_buffer_lower_streak = 0;
+  m_auto_buffer_cushion_streak = 0;
+  m_auto_buffer_veto_logged = false;
   m_auto_buffer_last_change_ms = now_ms;
 
   const std::string detail =
-      fmt::format("buf {}->{} ping={}ms need={} why={} players={} running={}", current, next,
-                  max_ping, need, why, m_players.size(), m_is_running ? 1 : 0);
+      fmt::format("buf {}->{} ping={}ms need={} why={}{} players={} running={}", current, next,
+                  max_ping, need, why, why_detail, m_players.size(), m_is_running ? 1 : 0);
   NOTICE_LOG_FMT(NETPLAY, "AutoBuffer {}", detail);
 #ifdef HAS_LIBMGBA
   // Same session log and same sock=0 channel as the NetLat lines, so a user's
@@ -1002,6 +1108,34 @@ void NetPlayServer::UpdateAutoPadBuffer()
 #endif
 
   AdjustPadBufferSize(next);
+}
+
+// ---NETPLAY--- thread, once per UpdateAutoPadBuffer tick: fold the players' PadHealth reports
+// since the last tick and start the next window. Players are those with a pad in the running game.
+NetPlayServer::PadHealthTick NetPlayServer::TakePadHealthTick()
+{
+  PadHealthTick tick;
+  for (const auto& [pid, client] : m_players)
+  {
+    if (!m_is_running || client.current_game != m_current_game || !PlayerHasControllerMapped(pid))
+      continue;
+    PadHealthState& state = m_pad_health[pid];
+    if (!state.reported)
+    {
+      tick.all_reported = false;
+      continue;
+    }
+    if (state.low || state.starving)
+    {
+      tick.low = tick.low || state.low;
+      tick.starving = tick.starving || state.starving;
+      if (tick.detail.empty())
+        tick.detail = state.detail;
+    }
+  }
+  for (auto& state : std::views::values(m_pad_health))
+    state = PadHealthState{};
+  return tick;
 }
 
 void NetPlayServer::SetPadBufferSizeManual(unsigned int size)
@@ -1510,6 +1644,62 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
       spac << addr_word << value;
     }
     SendToClients(spac, player.pid);
+  }
+  break;
+
+  case MessageID::XdNotice:
+  {
+    u8 kind = 0;
+    u8 arg = 0;
+    packet >> kind >> arg;
+    OnXdNoticeFrom(player, kind, arg);
+  }
+  break;
+
+  case MessageID::StateDigest:
+  {
+    u8 kind = 0;
+    u32 tag = 0;
+    u32 value = 0;
+    StateReport report;
+    packet >> kind >> tag >> value >> report.seed >> report.crc_a >> report.crc_b >> report.crc_c;
+    // A report from the previous game still in flight is ignored, as PadData is.
+    if (!m_is_running || player.current_game != m_current_game || kind >= STATE_KINDS)
+      break;
+    if (kind == 0)
+      report.inputs = value;
+    else
+      report.xd = value;
+    OnStateDigest(player.pid, kind, tag, report);
+  }
+  break;
+
+  case MessageID::PadHealth:
+  {
+    u16 max_wait_ms = 0;
+    u16 starve = 0;
+    u16 pops = 0;
+    u16 min_depth = 0xFFFF;
+    packet >> max_wait_ms >> starve >> pops >> min_depth;
+    if (!m_is_running || player.current_game != m_current_game ||
+        !PlayerHasControllerMapped(player.pid))
+    {
+      break;
+    }
+    // Folded until the next autobuf tick. A second with no pop of a remote pad (min_depth
+    // 0xFFFF, pops 0) says nothing about slack either way.
+    PadHealthState& state = m_pad_health[player.pid];
+    const bool low = pops > 0 && min_depth < AUTOBUF_KEEP_DEPTH;
+    const bool starving =
+        pops > 0 && min_depth == 0 && static_cast<u32>(starve) * 2 >= static_cast<u32>(pops);
+    state.reported = true;
+    if ((low || starving) && (state.detail.empty() || starving))
+    {
+      state.detail = fmt::format("pid={} depth={} starve={}/{} max={}ms", player.pid, min_depth,
+                                 starve, pops, max_wait_ms);
+    }
+    state.low = state.low || low;
+    state.starving = state.starving || starving;
   }
   break;
 
@@ -3032,6 +3222,254 @@ XdFormatChange NetPlayServer::SetXdFormat(int format,
   if (!announce.empty())
     SendChatMessage(announce);
   return change;
+}
+
+// ---NETPLAY--- thread. XD Netplay state check: every machine in the game reports each tag of each
+// kind (0: the pad entries consumed, tagged by the marker pad's pop count; 1-4: XD's state at a
+// GBA port's WRITE, tagged by that port's WRITE count; see NetPlayClient). The players' reports
+// are compared once all of them are in; a spectator's is compared with the players' agreed
+// report, since a spectator only replays the players' inputs later.
+//
+// Who is told what:
+// - Players disagree: the battle itself has split. Every machine logs 'statesync mismatch' and
+//   shows one room chat line ("Out of sync since ..."), once per game. The game is not stopped.
+//   An inputs difference is announced at once. An XD state difference is announced when
+//   STATE_XD_CONFIRM judged tags of that port differ in a row; a single one is only logged here
+//   ('statesync xd-transient'), since a real split never closes again by itself.
+// - Only a spectator disagrees with the players: the players' battle is fine; only that
+//   spectator's copy went wrong (a spectator runs full cores of its own). Every machine logs it,
+//   but only that spectator gets a chat line, once per game. Spectators never decide what the
+//   players are told.
+// Comparing never stops: the host log keeps the first few differing tags with every value, so
+// the order in which the parts diverged can be read afterwards.
+void NetPlayServer::OnStateDigest(PlayerId pid, u8 kind, u32 tag, const StateReport& report)
+{
+  if (m_sd_game != m_current_game)
+  {
+    m_sd_game = m_current_game;
+    for (auto& pending : m_sd_pending)
+      pending.clear();
+    for (auto& agreed : m_sd_agreed)
+      agreed.clear();
+    m_sd_judged.fill(0);
+    m_sd_xd_streak.fill(0);
+    m_sd_players_warned = false;
+    m_sd_detail_lines = 0;
+    m_sd_transient_lines = 0;
+    m_sd_incomplete_logged = false;
+    m_sd_spectators_warned.clear();
+    m_sd_spec_streak.clear();
+  }
+
+  std::vector<PlayerId> players;
+  for (const auto& [id, client] : m_players)
+  {
+    if (client.current_game == m_current_game && PlayerHasControllerMapped(id))
+      players.push_back(id);
+  }
+  const bool plays = std::ranges::find(players, pid) != players.end();
+
+  auto& pending = m_sd_pending[kind];
+  auto& agreed = m_sd_agreed[kind];
+  if (!plays)
+  {
+    if (const auto it = agreed.find(tag); it != agreed.end())
+    {
+      CheckSpectatorReport(pid, kind, tag, report, it->second);
+      return;
+    }
+    // Already judged without an agreed report to keep (the players differed there, or it aged
+    // out): nothing to compare with. Otherwise the players have not all reported it yet (a late
+    // player): wait with them.
+    if (tag <= m_sd_judged[kind] && !pending.contains(tag))
+      return;
+  }
+
+  auto& reports = pending[tag];
+  reports[pid] = report;
+
+  const bool complete = !players.empty() && std::ranges::all_of(players, [&reports](PlayerId id) {
+    return reports.contains(id);
+  });
+  if (!complete)
+  {
+    // Bounded: a tag a player never reports (the game ended under it) is dropped eventually.
+    while (pending.size() > STATE_PENDING_MAX)
+    {
+      if (!m_sd_incomplete_logged)
+      {
+        m_sd_incomplete_logged = true;
+#ifdef HAS_LIBMGBA
+        GBADetectLog::LogPostSession(fmt::format("statesync incomplete kind={} tag={} reports={}",
+                                                 kind, pending.begin()->first,
+                                                 pending.begin()->second.size()));
+#endif
+      }
+      pending.erase(pending.begin());
+    }
+    return;
+  }
+
+  m_sd_judged[kind] = std::max(m_sd_judged[kind], tag);
+  const StateReport& reference = reports.at(players.front());
+  u8 comps = 0;
+  for (const PlayerId id : players)
+    comps |= StateReportDiff(reference, reports.at(id));
+
+  if (comps != 0)
+  {
+    const bool confirmed = kind == 0 || ++m_sd_xd_streak[kind] >= STATE_XD_CONFIRM;
+#ifdef HAS_LIBMGBA
+    if (confirmed ? m_sd_detail_lines < STATE_DETAIL_MAX_LINES :
+                    m_sd_transient_lines < STATE_TRANSIENT_MAX_LINES)
+    {
+      ++(confirmed ? m_sd_detail_lines : m_sd_transient_lines);
+      std::string values;
+      for (const auto& [id, r] : reports)
+      {
+        values += fmt::format(" | pid={} in={:08x} xd={:08x} seed={:08x} crcA={:08x} crcB={:08x} "
+                              "crcC={:08x}",
+                              id, r.inputs, r.xd, r.seed, r.crc_a, r.crc_b, r.crc_c);
+      }
+      GBADetectLog::LogPostSession(fmt::format("statesync {} kind={} tag={} comp={}{}",
+                                               confirmed ? "mismatch-detail" : "xd-transient",
+                                               kind, tag, comps, values));
+    }
+#endif
+    if (confirmed && !m_sd_players_warned)
+    {
+      m_sd_players_warned = true;
+      SendStateMismatch(kind, tag, 0, 0, comps);
+    }
+  }
+  else
+  {
+    m_sd_xd_streak[kind] = 0;
+    agreed[tag] = reference;
+    while (agreed.size() > STATE_AGREED_MAX)
+      agreed.erase(agreed.begin());
+    // Spectators that reported this tag before the last player did.
+    for (const auto& [id, r] : reports)
+    {
+      if (std::ranges::find(players, id) == players.end())
+        CheckSpectatorReport(id, kind, tag, r, reference);
+    }
+  }
+  pending.erase(tag);
+}
+
+void NetPlayServer::CheckSpectatorReport(PlayerId pid, u8 kind, u32 tag, const StateReport& report,
+                                         const StateReport& agreed)
+{
+  const u8 comps = StateReportDiff(agreed, report);
+  u32& streak = m_sd_spec_streak[pid][kind];
+  if (comps == 0)
+  {
+    streak = 0;
+    return;
+  }
+  // The same confirmation as the players' XD state.
+  if (kind != 0 && ++streak < STATE_XD_CONFIRM)
+    return;
+  if (m_sd_spectators_warned.contains(pid))
+    return;
+  m_sd_spectators_warned.insert(pid);
+#ifdef HAS_LIBMGBA
+  GBADetectLog::LogPostSession(fmt::format(
+      "statesync mismatch-detail kind={} tag={} comp={} spectator={} in={:08x}/{:08x} "
+      "xd={:08x}/{:08x}",
+      kind, tag, comps, pid, report.inputs, agreed.inputs, report.xd, agreed.xd));
+#endif
+  SendStateMismatch(kind, tag, 1, pid, comps);
+}
+
+void NetPlayServer::SendStateMismatch(u8 kind, u32 tag, u8 scope, PlayerId spectator, u8 comps)
+{
+  sf::Packet spac;
+  spac << MessageID::StateMismatch << kind << tag << scope << spectator << comps;
+  std::lock_guard lkp(m_crit.players);
+  SendToClients(spac);
+}
+
+void NetPlayServer::SendXdNoticeToAll(XdNoticeKind kind, PlayerId who, u8 arg)
+{
+  sf::Packet spac;
+  spac << MessageID::XdNotice << static_cast<u8>(kind) << who << arg;
+  std::lock_guard lkp(m_crit.players);
+  SendToClients(spac);
+}
+
+// ---NETPLAY--- thread. A player's notice, checked against this server's own view before it is
+// relayed: only for the running game, "left" and "back" only from a player with a pad, "back"
+// only after a relayed "left", and "left" at most every XD_NOTICE_LEFT_REPEAT_MS.
+void NetPlayServer::OnXdNoticeFrom(const Client& player, u8 kind, u8 arg)
+{
+  const PlayerId pid = player.pid;
+  const bool in_game = m_is_running && player.current_game == m_current_game;
+  const u64 now = Common::Timer::NowMs();
+
+  switch (static_cast<XdNoticeKind>(kind))
+  {
+  case XdNoticeKind::LeftWindow:
+  {
+    if (!in_game || !PlayerHasControllerMapped(pid))
+      return;
+    if (const auto it = m_xd_away.find(pid); it != m_xd_away.end() && it->second == m_current_game)
+      return;
+    if (const auto it = m_xd_last_left_ms.find(pid);
+        it != m_xd_last_left_ms.end() && now - it->second < XD_NOTICE_LEFT_REPEAT_MS)
+    {
+      return;
+    }
+    m_xd_away[pid] = m_current_game;
+    m_xd_last_left_ms[pid] = now;
+    SendXdNoticeToAll(XdNoticeKind::LeftWindow, pid, 0);
+    break;
+  }
+  case XdNoticeKind::BackInWindow:
+  {
+    const auto it = m_xd_away.find(pid);
+    if (it == m_xd_away.end())
+      return;
+    const bool same_game = it->second == m_current_game;
+    m_xd_away.erase(it);
+    if (!in_game || !same_game)
+      return;
+    SendXdNoticeToAll(XdNoticeKind::BackInWindow, pid, 0);
+    break;
+  }
+  case XdNoticeKind::GbaStartFailed:
+  {
+    if (!in_game || arg > 3)
+      return;
+    const bool plays = PlayerHasControllerMapped(pid);
+#ifdef HAS_LIBMGBA
+    GBADetectLog::LogPostSession(
+        fmt::format("gba-start-failed pid={} port={} plays={}", pid, arg, plays ? 1 : 0));
+#endif
+    SendXdNoticeToAll(plays ? XdNoticeKind::GbaStartFailed : XdNoticeKind::GbaStartFailedWatcher,
+                      pid, arg);
+    sf::Packet spac;
+    spac << MessageID::StopGame;
+    if (plays)
+    {
+      // The battle cannot go on: that machine's XD sees no GBA where every other one sees one.
+      // Same as a StopGame from a player.
+      m_is_running = false;
+      std::lock_guard lkp(m_crit.players);
+      SendToClients(spac);
+    }
+    else
+    {
+      // A spectator's copy is its own: stop only that one.
+      std::lock_guard lkp(m_crit.players);
+      Send(player.socket, spac);
+    }
+    break;
+  }
+  default:
+    break;
+  }
 }
 
 // called from ---GUI--- thread

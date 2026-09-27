@@ -48,6 +48,7 @@
 #include "Common/TraversalClient.h"
 #include "Core/NetPlayCommon.h"
 
+#include "Core/AchievementManager.h"
 #include "Core/Boot/Boot.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
@@ -650,6 +651,20 @@ void NetPlayDialog::OnStart()
       DisplayMessage(tr("Can't start: the last battle is still closing."), "red");
       return;
     }
+    // The previous game's GBA cores write their saves back as they shut down, which can land
+    // after this Start has read and sent them: wait until emulation is fully down.
+    if (!Core::IsUninitialized(Core::System::GetInstance()))
+    {
+      DisplayMessage(tr("Can't start: the last battle is still closing."), "red");
+      return;
+    }
+    // Hardcore mode filters this machine's Action Replay codes, not the synced copy the other
+    // player runs, so the two would play different rules.
+    if (AchievementManager::GetInstance().IsHardcoreModeActive())
+    {
+      DisplayMessage(tr("Can't start: RetroAchievements hardcore mode is on."), "red");
+      return;
+    }
     // The room's format is what every player was shown. The non-modal
     // launcher can write the key while a room is open, so put it back before
     // PrepareForStart reads it.
@@ -1089,6 +1104,18 @@ void NetPlayDialog::AppendChat(const std::string& msg)
 {
   DisplayMessage(QString::fromStdString(msg), "");
   QApplication::alert(this);
+}
+
+// The room chat only: DisplayMessage would also draw the line over the running game, and XD
+// Netplay's in-battle notices must not appear on screen during the GBA link.
+void NetPlayDialog::AppendChatQuiet(const std::string& msg)
+{
+  const QString text = QString::fromStdString(msg);
+  QueueOnObject(m_chat_edit, [this, text] {
+    m_chat_edit->append(QStringLiteral("<font color='%1'>%2</font>")
+                            .arg(QStringLiteral("darkorange"), text.toHtmlEscaped()));
+    QApplication::alert(this);
+  });
 }
 
 std::string NetPlayDialog::OnTeamSubmission(const std::string& player, const std::string& text)
