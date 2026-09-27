@@ -392,6 +392,31 @@
         <item>12</item>
         <item>13</item>
     </integer-array>
+    <!-- Port 1 also offers XD Multi (14). -->
+    <string-array name="gcpadTypeEntriesPort1">
+        <item>@string/gcpad_disabled</item>
+        <item>@string/gcpad_emulated</item>
+        <item>@string/gcpad_keyboard</item>
+        <item>@string/gcpad_steering_wheel</item>
+        <item>@string/gcpad_dance_mat</item>
+        <item>@string/gcpad_taru_konga</item>
+        <item>@string/gcpad_am_baseboard</item>
+        <item>@string/gcpad_gc_adapter</item>
+        <item>@string/gcpad_emulated_gba</item>
+        <item>@string/gcpad_xd_multi</item>
+    </string-array>
+    <integer-array name="gcpadTypeValuesPort1">
+        <item>0</item>
+        <item>6</item>
+        <item>7</item>
+        <item>8</item>
+        <item>9</item>
+        <item>10</item>
+        <item>11</item>
+        <item>12</item>
+        <item>13</item>
+        <item>14</item>
+    </integer-array>
 
     <string-array name="gbaLinkScaleModeEntries">
         <item>@string/gba_link_scale_fit</item>

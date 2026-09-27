@@ -265,6 +265,10 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
         if (IntSetting.MAIN_SI_DEVICE_2.int != 0) {
             IntSetting.MAIN_SI_DEVICE_2.setInt(NativeConfig.LAYER_BASE, 0); changed = true
         }
+        // XD Multi (14) owns an Emerald core on port 1; PBR gets a plain pad (6).
+        if (IntSetting.MAIN_SI_DEVICE_0.int == 14) {
+            IntSetting.MAIN_SI_DEVICE_0.setInt(NativeConfig.LAYER_BASE, 6); changed = true
+        }
         if (!BooleanSetting.MAIN_ENABLE_CHEATS.boolean) {
             BooleanSetting.MAIN_ENABLE_CHEATS.setBoolean(NativeConfig.LAYER_BASE, true); changed = true
         }
