@@ -372,11 +372,13 @@ constexpr StyleOption MUSICS[] = {
     {1265, "Battle Sim", Tier::TestedSafe},
     {1293, "Pokespot Battle", Tier::TestedSafe},
     {1410, "Willie Battle", Tier::TestedSafe},
+    // Field-tested in VS battles (2026-09).
+    {1068, "Mt. Battle", Tier::TestedSafe},
+    {1370, "Gateon Port 2", Tier::TestedSafe},
+    {1485, "Battle Now 2", Tier::TestedSafe},
     // Looping non-battle BGM (locations, themes, menus).
-    {1068, "Mt. Battle", Tier::Experimental},
     {1075, "Pokemon Center", Tier::Experimental},
     {1070, "Gateon Port", Tier::Experimental},
-    {1370, "Gateon Port 2", Tier::Experimental},
     {1124, "HQ Lab", Tier::Experimental},
     {1292, "S.S. Libra", Tier::Experimental},
     {1317, "Snagem Hideout", Tier::Experimental},
@@ -391,7 +393,6 @@ constexpr StyleOption MUSICS[] = {
     {1419, "Title Theme", Tier::Experimental},
     {1266, "Battle Now Menu", Tier::Experimental},
     {1267, "Group Battle Menu", Tier::Experimental},
-    {1485, "Battle Now 2", Tier::Experimental},
     {1133, "World Map", Tier::Experimental},
     {1193, "Mt. Battle Rest Area", Tier::Experimental},
     {1194, "Mt. Battle Reception", Tier::Experimental},
@@ -447,6 +448,9 @@ constexpr StyleOption VENUES[] = {
     {36, "Pyrite Colosseum", Tier::TestedSafe},
     {37, "Mt. Battle Colosseum", Tier::TestedSafe},
     {38, "Realgam Colosseum", Tier::TestedSafe},
+    // Field-tested in VS battles (2026-09); still alters Nature Power etc.
+    {53, "HQ Lab grounds", Tier::TestedSafe},
+    {57, "Rock Pokespot", Tier::TestedSafe},
     // Colosseums outside the retail VS pool.
     {35, "Phenac Colosseum", Tier::Experimental},
     {39, "Orre Colosseum", Tier::Experimental},
@@ -485,11 +489,9 @@ constexpr StyleOption VENUES[] = {
     {49, "Citadark outer dome", Tier::Experimental},
     {50, "Citadark shore", Tier::Experimental},
     {52, "Pokemon HQ Lab", Tier::Experimental},
-    {53, "HQ Lab grounds", Tier::Experimental},
     {55, "Gateon lighthouse top", Tier::Experimental},
     {56, "Kaminko's manor grounds", Tier::Experimental},
     {34, "Snagem Hideout", Tier::Experimental},
-    {57, "Rock Pokespot", Tier::Experimental},
     {58, "Oasis Pokespot", Tier::Experimental},
     {59, "Cave Pokespot", Tier::Experimental},
 };
