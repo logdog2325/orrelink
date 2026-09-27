@@ -12,6 +12,8 @@ import java.io.File
 
 object GbaLinkSettings {
     const val SIDEVICE_GC_GBA_EMULATED = 13
+    // Port 1 only: a GC controller that becomes an integrated GBA for XD multi battles.
+    const val SIDEVICE_GC_GBA_XDMULTI = 14
 
     const val SCALE_MODE_FIT = 0
     const val SCALE_MODE_STRETCH = 1
@@ -40,13 +42,19 @@ object GbaLinkSettings {
     }
 
     fun hasAnyEmulatedGbaPortConfigured(): Boolean =
-        siDeviceSettings.any { it.int == SIDEVICE_GC_GBA_EMULATED }
+        siDeviceSettings.indices.any { index -> hasGbaCore(index) }
 
     fun shouldWarnAboutMissingBios(): Boolean =
         siDeviceSettings.indices.any { index ->
-            siDeviceSettings[index].int == SIDEVICE_GC_GBA_EMULATED &&
-                    gbaRomSettings[index].string.isBlank()
+            hasGbaCore(index) && gbaRomSettings[index].string.isBlank()
         } && !hasUsableBios()
+
+    // XD Multi runs a GBA core only on port 1.
+    private fun hasGbaCore(index: Int): Boolean {
+        val type = siDeviceSettings[index].int
+        return type == SIDEVICE_GC_GBA_EMULATED ||
+                (index == 0 && type == SIDEVICE_GC_GBA_XDMULTI)
+    }
 
     fun hasConfiguredPhysicalController(deviceNumber: Int): Boolean {
         val defaultDevice = getGbaPhysicalDevice(deviceNumber) ?: return false

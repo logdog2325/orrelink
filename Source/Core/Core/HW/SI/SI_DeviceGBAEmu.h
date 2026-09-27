@@ -82,6 +82,17 @@ public:
   static u16 GbaKeysFromPad(const GCPadStatus& pad_status);
   static std::string DescribeGbaKeys(u16 keys);
 
+  // Used by CSIDevice_XDMultiPort, which owns a GBA core on channel 0. None of
+  // these run for a plain integrated GBA.
+  // The post-sample half of GetData: keys, the keys log and the X-button reset.
+  void ApplyPadStatus(const GCPadStatus& pad_status);
+  // Diagnostics only, racy, never control.
+  bool IsLinkUpForDiag() const;
+  // Clears the link/battle latches (as a rematch release does).
+  void ReleaseLinkLatches(const char* reason);
+  // Tick-anchored reset decided from synced state.
+  void RequestSyncedReset(u64 tick, const char* reason);
+
 private:
   enum class NextAction
   {

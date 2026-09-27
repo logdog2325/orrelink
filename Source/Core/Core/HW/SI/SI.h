@@ -63,6 +63,9 @@ public:
   void AddDevice(std::unique_ptr<ISIDevice> device);
 
   SIDevices GetDeviceType(int channel) const;
+  bool IsChannelPollEnabled(int channel) const;
+  // Diagnostics only (gba_detect log); never a control input.
+  u32 GetStatusRegisterForDiag() const { return m_status_reg.hex; }
 
   u32 GetPollXLines();
 
