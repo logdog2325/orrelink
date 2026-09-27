@@ -103,6 +103,9 @@ public:
   u64 GetTicks() const;
   u64 GetIdleTicks() const;
   TimePoint GetTargetHostTime(s64 target_cycle);
+  // Restarts wall-clock pacing from the current tick, as unpausing does, so time the CPU thread
+  // spent blocked is not caught up afterwards. CPU thread only.
+  void ResetThrottleToNow();
 
   void RefreshConfig();
 
