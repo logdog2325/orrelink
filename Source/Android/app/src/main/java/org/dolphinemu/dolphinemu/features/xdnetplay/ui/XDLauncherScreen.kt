@@ -294,63 +294,31 @@ private fun BattleStyleCard(
                 fontWeight = FontWeight.SemiBold
             )
             // The one-tap battle FORMAT pick. Unlike everything below it is
-            // NOT cosmetic — with Orre Colosseum picked, hosting validates
-            // both host-side parties, and guest submissions are gated (shared
-            // core's FormatRules; the battle-time clauses in the hint are
-            // enforced by the game's own pinned ruleset, not at these
-            // gates). It therefore sits above the
-            // "Cosmetic only" hint, which introduces the style dropdowns.
-            // The dropdown reuses BattleStyleDropdown: the default entry
-            // (id 0) is Free, so an unknown key value renders as Free —
-            // matching how the core treats it (no enforcement, no clamp).
-            BattleStyleDropdown(
+            // NOT cosmetic: the room plays under it, Start checks both of the
+            // host's parties against it, and guest submissions are gated
+            // (shared core's FormatRules; the battle-time clauses in the hint
+            // are enforced by the game's own pinned ruleset, not at these
+            // gates). It therefore sits above the "Cosmetic only" hint, which
+            // introduces the style dropdowns. The list, its order and the
+            // names come from shared core; an unknown key value shows as
+            // Free, matching how the core treats it (no enforcement, no clamp).
+            val formats = remember {
+                FormatBridge.selectableFormats().map { it to FormatBridge.displayName(it) }
+            }
+            val shownFormat =
+                if (formats.any { it.first == formatId }) formatId else FormatBridge.FORMAT_FREE
+            FormatDropdown(
                 label = stringResource(R.string.xd_format_label),
-                options = listOf(
-                    BattleStyleBridge.StyleOption(
-                        id = FormatBridge.FORMAT_ORRE_COLOSSEUM,
-                        name = stringResource(R.string.xd_format_orre),
-                        experimental = false
-                    ),
-                    BattleStyleBridge.StyleOption(
-                        id = FormatBridge.FORMAT_ORRE_UNLIMITED,
-                        name = stringResource(R.string.xd_format_orre_unlimited),
-                        experimental = false
-                    ),
-                    BattleStyleBridge.StyleOption(
-                        id = FormatBridge.FORMAT_ORRE_LIMITED,
-                        name = stringResource(R.string.xd_format_orre_limited),
-                        experimental = false
-                    ),
-                    BattleStyleBridge.StyleOption(
-                        id = FormatBridge.FORMAT_HOENN_STADIUM,
-                        name = stringResource(R.string.xd_format_hoenn),
-                        experimental = false
-                    ),
-                    BattleStyleBridge.StyleOption(
-                        id = FormatBridge.FORMAT_HOENN_UNLIMITED,
-                        name = stringResource(R.string.xd_format_hoenn_unlimited),
-                        experimental = false
-                    ),
-                    BattleStyleBridge.StyleOption(
-                        id = FormatBridge.FORMAT_HOENN_LIMITED,
-                        name = stringResource(R.string.xd_format_hoenn_limited),
-                        experimental = false
-                    ),
-                    BattleStyleBridge.StyleOption(
-                        id = FormatBridge.FORMAT_OU,
-                        name = stringResource(R.string.xd_format_ou),
-                        experimental = false
-                    )
-                ),
-                selectedId = formatId,
-                defaultLabel = stringResource(R.string.xd_format_free),
+                formats = formats,
+                selectedId = shownFormat,
+                fallbackId = FormatBridge.FORMAT_FREE,
                 onSelected = onFormatChanged,
                 modifier = Modifier.fillMaxWidth(),
                 supportingText = run {
                     // The Hoenn shapes share their ruleset's hint plus the
                     // bring-6-pick-3 suffix; every other id has its own text.
                     val hoenn = stringResource(R.string.xd_format_hint_hoenn_suffix)
-                    when (formatId) {
+                    when (shownFormat) {
                         FormatBridge.FORMAT_ORRE_COLOSSEUM ->
                             stringResource(R.string.xd_format_hint_orre)
                         FormatBridge.FORMAT_ORRE_UNLIMITED ->
@@ -365,6 +333,10 @@ private fun BattleStyleCard(
                             stringResource(R.string.xd_format_hint_limited) + hoenn
                         FormatBridge.FORMAT_OU ->
                             stringResource(R.string.xd_format_hint_ou)
+                        FormatBridge.FORMAT_DOUBLES_OU ->
+                            stringResource(R.string.xd_format_hint_doubles_ou)
+                        FormatBridge.FORMAT_MULTI ->
+                            stringResource(R.string.xd_format_hint_multi)
                         else -> stringResource(R.string.xd_format_hint_free)
                     }
                 }

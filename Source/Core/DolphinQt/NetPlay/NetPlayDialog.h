@@ -45,6 +45,9 @@ public:
 
   void show(std::string nickname, bool use_traversal);
   void reject() override;
+  // XD Netplay, host: one advisory line for the host only, e.g. the format check when the room
+  // opens (MainWindow::NetPlayHost). Any thread.
+  void ShowHostNote(const std::string& line);
 
   // NetPlayUI methods
   void BootGame(const std::string& filename,
@@ -117,6 +120,7 @@ private:
   void ApplyHostTeam(const std::string& showdown_text, const std::string& trainer_name,
                      bool raise_to_level_100);
   void OnStyleSettings();
+  void OnChangeFormat();
   void OnSetHostName();
   void OnStart();
   static QString JoinerSubmitTeamToolTip();
@@ -137,6 +141,8 @@ private:
   QPushButton* m_chat_send_button;
   QPushButton* m_submit_team_button;
   QPushButton* m_style_button;
+  QPushButton* m_format_button;
+  QLabel* m_format_label;
   QCheckBox* m_watch_box;
   QLineEdit* m_host_name_edit;
   QPushButton* m_host_name_button;

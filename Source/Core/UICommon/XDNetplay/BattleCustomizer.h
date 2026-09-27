@@ -157,12 +157,14 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
 // key (Config::MAIN_XD_FORMAT, values in FormatRules.h) to decide what to
 // emit: the six community formats pin the menu globals, the battle type
 // (Double for Orre shapes, Single for Hoenn shapes) and the whole Custom-1
-// ruleset slot (level preset, entries, entry mode 0); Free/OU emit nothing
-// and stay byte-identical to stock. Species/item ban legality is NOT this
-// seam's business -- FormatRules validates that at the submission/host gates
-// -- but the battle-time clauses (Sleep, Freeze, Self-KO, Species, Item)
-// ARE covered here: the pinned stock clause bytes have them all ON, so the
-// game itself enforces them in battle.
+// ruleset slot (level preset, entries, entry mode 0); Doubles OU pins Double,
+// Lv100, the stock entry mode (all six battle) and its own clause bytes
+// (Species ON; Item, Sleep, Freeze and Self-KO OFF); Free/OU/Multi emit
+// nothing and stay byte-identical to stock. Species/item/move ban legality is
+// NOT this seam's business -- FormatRules validates that at the submission
+// and Start gates -- but the battle-time clauses (Sleep, Freeze, Self-KO,
+// Species, Item) ARE covered here: the pinned stock clause bytes have them
+// all ON, so the game itself enforces them in battle.
 std::string FormatRuleLines();
 
 // The host's four launcher selections. 0 (the config default) = game default.

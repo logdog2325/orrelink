@@ -20,11 +20,12 @@
 // data and get back either "ok" or one specific, human-readable reason.
 //
 // The format is the HOST's choice, persisted in the MAIN_XD_FORMAT config key
-// exactly like the Battle Style picks:
+// exactly like the Battle Style picks, and changeable in the room by the host
+// (NetPlayServer::SetXdFormat carries it to every player):
 //
-//     0 = Free           the default; changes NOTHING. No validation ever
-//                        runs, sessions stay byte-identical to a build
-//                        without this feature.
+//     0 = Free           no validation ever runs, sessions stay byte-identical
+//                        to a build without this feature. Chosen explicitly;
+//                        the key's default is Orre Colosseum.
 //     1 = Orre Colosseum the canon in-game ruleset of XD's Orre Colosseum.
 //     2 = OU             the community "$XD OU Fixes" patch set (bring 6 pick
 //                        4 and its mechanics fixes). No party-legality layer:
@@ -33,6 +34,14 @@
 //                        code enabled (BattleCustomizer derives the cheats
 //                        flag from this key -- the format dropdown REPLACED
 //                        the old standalone "OU Fixes" toggle).
+//     8 = Doubles OU     Smogon ADV Doubles OU: double battle, Lv 100, all six
+//                        battle. Its own ban list and move bans (see
+//                        DOUBLES_OU_BANNED_SPECIES / _MOVES in the .cpp),
+//                        Species Clause, NO Item Clause, no Soul Dew ban. It
+//                        does NOT use the $XD OU Fixes code (only OU does).
+//     9 = Multi          reserved, not built yet: hidden from every list
+//                        unless MAIN_XD_MULTI_ENABLED is on, and until then it
+//                        behaves as Free in every gate.
 //
 // What "Orre Colosseum" enforces HERE (the party-legality layer):
 //   * Species ban list: Gen 1-3 species EXCEPT the restricted legendaries and
@@ -47,19 +56,21 @@
 //   * The battle type, level preset, entries and entry mode are the IN-GAME
 //     rules layer: BattleCustomizer::FormatRuleLines() pins them per format
 //     (Double/Single, Lv100/Lv50, pick 4/3 with entry mode 0 so the game's
-//     own pick-N flow runs).
+//     own pick-N flow runs; Doubles OU keeps the stock entry mode, all six).
 //   * Sleep Clause, Freeze Clause and the Self-KO Clause are enforced by the
 //     GAME, not here: BattleCustomizer pins the stock tournament ruleset
-//     whose decoded clause bytes have them all ON.
+//     whose decoded clause bytes have them all ON (Doubles OU turns them,
+//     and the in-game Item Clause, OFF in the same clause bytes).
 //
 // Enforcement sites (the callers):
 //   * guest submission gate -- InjectGuestTeam / InjectGuestBundle validate
 //     before any lifecycle side effect; the refusal reason rides the existing
-//     status -> room-chat path prefixed "Orre Colosseum: ".
-//   * host gate -- ValidateHostPartiesForFormat (TeamInjector.h) checks the
-//     host's port-2 party and port-3 fallback party before hosting begins.
+//     status -> room-chat path prefixed "<Format>: ".
+//   * Start gate -- CheckRoomTeams (TeamInjector.h) checks the host's port-2
+//     party and the port-3 slot when the host presses Start. Opening a room
+//     and changing the format in the room only produce advisory lines.
 //   * paste-time feedback -- team editors and the Submit dialog show a
-//     non-blocking note; only the two gates above ever block.
+//     non-blocking note; only the gates above ever block.
 namespace XDNetplay::FormatRules
 {
 // Values of the MAIN_XD_FORMAT config key. An int (not an enum class) because
@@ -79,6 +90,24 @@ constexpr int FORMAT_ORRE_LIMITED = 4;
 constexpr int FORMAT_HOENN_STADIUM = 5;
 constexpr int FORMAT_HOENN_UNLIMITED = 6;
 constexpr int FORMAT_HOENN_LIMITED = 7;
+// Smogon ADV Doubles OU (see the table above). The next free id after the six.
+constexpr int FORMAT_DOUBLES_OU = 8;
+// Reserved for the multi battle format, which is not built yet. Hidden unless
+// MAIN_XD_MULTI_ENABLED is on; behaves as Free everywhere until designed.
+constexpr int FORMAT_MULTI = 9;
+
+// The one ordered format list every picker shows (both launchers, both room
+// pickers): Orre Colosseum, OU, Doubles OU, Orre Unlimited, Orre Limited,
+// Hoenn Stadium, Hoenn Unlimited, Hoenn Limited, then Multi (only when
+// include_multi, i.e. MAIN_XD_MULTI_ENABLED), then Free.
+std::vector<int> SelectableFormats(bool include_multi);
+
+// Every known format id, Multi included, whatever the flag says. For
+// recognizing names built from any format (auto-published session names).
+std::vector<int> KnownFormats();
+
+// True for the ids above (0..9). Anything else behaves as Free.
+bool IsKnownFormat(int format_key_value);
 
 // True only for the exact Orre Colosseum value: an unknown/garbage key value
 // behaves as Free (no enforcement), never as a surprise lockout.
@@ -88,7 +117,8 @@ bool IsOrreColosseum(int format_key_value);
 bool IsOu(int format_key_value);
 
 // The fixed battle level a format pins, or 0 for none. Standard/Unlimited
-// (Orre Colosseum, Orre Unlimited, Hoenn Stadium, Hoenn Unlimited) pin 100;
+// (Orre Colosseum, Orre Unlimited, Hoenn Stadium, Hoenn Unlimited) and
+// Doubles OU pin 100;
 // the two Limited formats pin 50; Free/OU and unknown values pin nothing (0).
 // Used to decide whether a "raise team to the format level" convenience is
 // offered -- it is ONLY offered for the level-100 formats, and only ever
@@ -97,7 +127,8 @@ int FormatFixedLevel(int format_key_value);
 
 // True for every format that carries a party-legality layer (the six
 // community formats -- Unlimited included, since Species and Item Clause
-// still apply there). False for Free, OU and every unknown value: those
+// still apply there -- and Doubles OU). False for Free, OU, Multi and every
+// unknown value: those
 // validate nothing, so the callers' "one int compare then nothing" contract
 // holds.
 bool HasTeamRules(int format_key_value);
@@ -109,7 +140,7 @@ bool HasTeamRules(int format_key_value);
 const char* FormatSessionTag(int format_key_value);
 
 // Short display name for a format key value ("Free" / "Orre Colosseum" /
-// "OU"), shared by both platforms' UI so the dropdowns and messages agree.
+// "Doubles OU" / ...), shared by both platforms' UI so the dropdowns and messages agree.
 const char* FormatDisplayName(int format_key_value);
 
 // Validation outcome. When !ok, reason is one specific human sentence naming
@@ -118,6 +149,7 @@ const char* FormatDisplayName(int format_key_value);
 //     "banned item: Soul Dew"
 //     "duplicate species: Snorlax"
 //     "duplicate item: Leftovers (x2)"
+//     "banned move: Explosion (Metagross)"
 struct Verdict
 {
   bool ok = true;
@@ -131,7 +163,8 @@ struct Verdict
 // SKIPPED here, because MonFactory::Build will refuse that whole set and the
 // mon can never land in the save -- validating it would risk refusing a paste
 // whose offending entry was never going to play. Validates ALL resolvable
-// sets, whatever the party size (1..6; a paste is capped downstream).
+// sets, whatever the party size (1..6; a paste is capped downstream). A move
+// name that does not resolve can never be a banned move and is ignored.
 Verdict ValidateSets(int format_key_value, const std::vector<ShowdownSet>& sets,
                      const Gen3Data& data);
 
@@ -141,6 +174,7 @@ Verdict ValidateSets(int format_key_value, const std::vector<ShowdownSet>& sets,
 // apply (the two id spaces diverge from Hoenn onward: Kyogre is internal 404,
 // National 382). held_item == 0 means "no item" and never counts toward the
 // Item Clause. Validates every non-empty mon in the span (party size 1..6).
+// mon.moves carries internal move ids (0 = empty slot) for the move bans.
 Verdict ValidateParty(int format_key_value, std::span<const Gen3Mon> party,
                       const Gen3Data& data);
 }  // namespace XDNetplay::FormatRules
