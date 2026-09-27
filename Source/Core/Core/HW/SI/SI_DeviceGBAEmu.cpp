@@ -83,7 +83,15 @@ CSIDevice_GBAEmu::CSIDevice_GBAEmu(Core::System& system, SIDevices device, int d
                          fmt::format("edge={} fullboot={}", m_edge_reset_enabled ? 1 : 0,
                                      m_fullboot_presence ? 1 : 0));
   m_core = std::make_shared<HW::GBA::Core>(system, m_device_number);
-  m_core->Start(system.GetCoreTiming().GetTicks());
+  const u64 start_tick = system.GetCoreTiming().GetTicks();
+  const bool started = m_core->Start(start_tick);
+  // A core that fails to start (netplay's BIOS check, an unreadable ROM or save) answers nothing,
+  // so this machine's XD sees no GBA on this port while every other machine sees a live one. Under
+  // netplay that is a split from the first poll: stop the game for everyone, with the reason in
+  // the room chat. Solo keeps running as before, with the port simply empty.
+  GBADetectLog::LogEvent(m_device_number, start_tick, "gba-start", started ? "ok" : "failed");
+  if (!started && NetPlay::IsNetPlayRunning())
+    NetPlay::ReportGbaStartFailure(m_device_number);
   m_gbahost = Host_CreateGBAHost(m_core);
   m_core->SetHost(m_gbahost);
   system.GetSerialInterface().ScheduleEvent(m_device_number,
@@ -101,59 +109,13 @@ CSIDevice_GBAEmu::~CSIDevice_GBAEmu()
 
 namespace
 {
-// Pokemon XD (GXXE01 USA, main.dol sha256 c8659341...78f15) battle state that
-// decides a link battle, reverse-engineered from the binary and cross-checked
-// adversarially. Every fixed address is a .bss/.sbss/.sdata location in MEM1
-// (BAT identity mapping: read directly, no MMU). ~1.6 KB per hook.
-struct XdRange
-{
-  u32 addr;
-  u32 len;
-};
+// The battle-state ranges and their reverse-engineering notes live with HLE_XD::ComputeXdDigest,
+// which the netplay state check shares with the 'xd' lines below.
 constexpr u32 XD_DISC_ID_GXXE = 0x47585845;  // "GXXE" at 0x80000000; anything else: no line
-// Main PRNG (the game's own LCG): seed = seed * 0x343FD + 0x269EC3, stepped by
-// every rand_u16 (407 callers) / rand_float (238) call; written once at boot from
-// OSGetTime's low word (0x800efa58). The pointer cell at +4 always reads
-// 0x804E8610 (its only setter has no callers).
-constexpr u32 XD_RNG_SEED = 0x804E8610;
-// SDK CARD unlock LCG state (ANSI LCG, 0x804e81e0 = r13-31808), seeded from OSGetTick by
-// CARD DummyLen 0x800c0a50 / __CARDUnlock 0x800c0b14 (all 12 references) -- NOT JoyBoot: it
-// only moves on memory-card mount/unlock. Logged raw as jb= (name kept for log compatibility);
-// under the v1.5.11 clock those three reads are per-site ordinals, so it stays identical.
-constexpr u32 XD_JOYBOOT_LCG = 0x804E81E0;
-constexpr u32 XD_BATTLE_FLAGS = 0x804EB938;  // u32 bit flags, 263 refs in the engine
-// crcA: battle-engine scalars (.sbss: flags, command-ring indices, turn counters,
-// scratch-block pointer) + the .sdata battle event struct.
-constexpr XdRange XD_CRC_A[] = {{0x804EB8D0, 0xB0}, {0x804E85C0, 0x20}};
-// crcB: party state of the LIVE battle context. The context is a runtime
-// pointer (cell 0x804af528) to one of two 0x6ef0-byte objects (ctx[0]=0x804a1744,
-// ctx[1]=0x804a8634); trainer = ctx+0x64+t*0x3744; party entry =
-// trainer+0x97c+i*0x300 (record at +4: species u16, +4 current HP u16, +0x11
-// level, +0x28 status, +0x80 moves/PP, +0x90 max HP); active slot =
-// trainer+0x1b7c+s*0x894. Skipped (crcB=0) when the pointer is not one of the
-// two objects; the pointer is logged as ctx=.
-constexpr u32 XD_CTX_PTR = 0x804AF528;
-constexpr u32 XD_CTX_A = 0x804A1744;
-constexpr u32 XD_CTX_B = 0x804A8634;
-constexpr u32 XD_TRAINER_OFF = 0x64;
-constexpr u32 XD_TRAINER_STRIDE = 0x3744;
-constexpr u32 XD_PARTY_OFF = 0x97C;
-constexpr u32 XD_PARTY_STRIDE = 0x300;
-constexpr u32 XD_SLOT_OFF = 0x1B7C;
-constexpr u32 XD_SLOT_STRIDE = 0x894;
-// crcC (informational, never gates a line): GBA driver per-channel state, .sbss
-// link state, battle mode word, and the ruleset table entry the format pin
-// writes (0x804334C0 = BattleCustomizer's ORRE_RULESET_BASE).
-constexpr XdRange XD_CRC_C[] = {
-    {0x80428338, 0x20}, {0x804EA768, 0x28}, {0x80429A00, 0x04}, {0x804334C0, 0x90}};
 constexpr u32 XD_UPLOAD_WRITES = 26900;  // multiboot client upload, same as the OSD phase logic
 constexpr u32 XD_MAX_LINES_PER_SOCKET = 80000;  // ~6 MB worst case, under the file cap
-
-size_t AppendEmu(const Memory::MemoryManager& memory, u8* dst, size_t at, u32 addr, u32 len)
-{
-  memory.CopyFromEmu(dst + at, addr, len);
-  return at + len;
-}
+// Netplay state check: STATE_SAMPLE_WRITES in NetPlayClient.cpp (logged in 'statesync on').
+constexpr u32 XD_STATESYNC_WRITES = 256;
 }  // namespace
 
 // One gba_detect 'xd' line: RNG seed + CRC32s of the battle state, keyed by
@@ -189,10 +151,11 @@ void CSIDevice_GBAEmu::LogXdState(const u8* request, const char* why, bool force
       return;
   }
 
-  const u32 seed = memory.Read_U32(XD_RNG_SEED);
-  const u32 joyboot = memory.Read_U32(XD_JOYBOOT_LCG);
-  const u32 flags = memory.Read_U32(XD_BATTLE_FLAGS);
-  const u32 ctx = memory.Read_U32(XD_CTX_PTR);
+  const HLE_XD::XdDigest xd = HLE_XD::ComputeXdDigest(memory);
+  const u32 seed = xd.seed;
+  const u32 joyboot = xd.jb;
+  const u32 flags = xd.flags;
+  const u32 ctx = xd.ctx;
   // OrreLink v1.5.12: XD's frame counters and the frame-exact logical time base
   // (HLE_XD, no per-call term). Identical on every machine at the same wseq while the games are
   // in step; lt=00000000 when the clock is not installed (solo, same-arch room).
@@ -203,35 +166,11 @@ void CSIDevice_GBAEmu::LogXdState(const u8* request, const char* why, bool force
   const u32 lt =
       HLE_XD::IsInstalled() ? static_cast<u32>(HLE_XD::FrameExactTimeBase(m_system)) : 0;
 
-  u8 buf[2048];
-  size_t n = 0;
-  for (const XdRange& r : XD_CRC_A)
-    n = AppendEmu(memory, buf, n, r.addr, r.len);
-  const u32 crc_a = Common::ComputeCRC32(buf, n);
-
-  u32 crc_b = 0;
-  if (ctx == XD_CTX_A || ctx == XD_CTX_B)
-  {
-    n = 0;
-    for (u32 t = 0; t < 2; t++)
-    {
-      const u32 trainer = ctx + XD_TRAINER_OFF + t * XD_TRAINER_STRIDE;
-      for (u32 i = 0; i < 6; i++)
-      {
-        const u32 record = trainer + XD_PARTY_OFF + i * XD_PARTY_STRIDE + 4;
-        n = AppendEmu(memory, buf, n, record, 0x30);
-        n = AppendEmu(memory, buf, n, record + 0x80, 0x20);
-      }
-      for (u32 sl = 0; sl < 2; sl++)
-        n = AppendEmu(memory, buf, n, trainer + XD_SLOT_OFF + sl * XD_SLOT_STRIDE, 0x40);
-    }
-    crc_b = Common::ComputeCRC32(buf, n);
-  }
-
-  n = 0;
-  for (const XdRange& r : XD_CRC_C)
-    n = AppendEmu(memory, buf, n, r.addr, r.len);
-  const u32 crc_c = Common::ComputeCRC32(buf, n);
+  // v1.7.5: crcB is the party state of the context the ctx cell names (it was always 0 before,
+  // see ComputeXdDigest).
+  const u32 crc_a = xd.crc_a;
+  const u32 crc_b = xd.crc_b;
+  const u32 crc_c = xd.crc_c;
 
   // jb (the JoyBoot LCG) participates: it is the very word the v1.5.9 evidence
   // points at, and both sockets' key exchanges share it.
@@ -877,6 +816,20 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     // Gated inside LogXdState: upload suppressed, changed-state only, <=60/s.
     if (m_link_established && m_last_cmd == EBufferCommands::CMD_WRITE_GBA)
       LogXdState(buffer, "write", /*forced=*/false);
+
+    // Netplay state check, XD part: XD's battle state at every 256th WRITE of this socket. The
+    // WRITE is the game's own MMIO store, so every machine reads XD's memory after the same
+    // instruction, which a pad pop (a CoreTiming event, landing wherever each JIT ended its
+    // block) cannot promise; and the count is the wseq of the 'xd' lines, so both line up in a
+    // log. Deliberately gated on nothing else: the link latches above read the GBA thread's link
+    // flag and tick gaps, which differ per machine. Read only; the netplay client sends it.
+    if (m_last_cmd == EBufferCommands::CMD_WRITE_GBA && m_diag_wr_count != 0 &&
+        m_diag_wr_count % XD_STATESYNC_WRITES == 0 && Core::IsCPUThread() &&
+        NetPlay::IsNetPlayRunning() && m_system.GetMemory().Read_U32(0x80000000) == XD_DISC_ID_GXXE)
+    {
+      NetPlay::ReportXdStateSample(m_device_number, m_diag_wr_count,
+                                   HLE_XD::ComputeXdDigest(m_system.GetMemory()));
+    }
 
     auto& si = m_system.GetSerialInterface();
     si.RemoveEvent(m_device_number);

@@ -22,6 +22,7 @@
 #include "Common/Event.h"
 #include "Common/SPSCQueue.h"
 #include "Common/TraversalClient.h"
+#include "Core/HLE/HLE_XD.h"
 #include "Core/NetPlayProto.h"
 #include "Core/SyncIdentifier.h"
 #include "InputCommon/GCPadStatus.h"
@@ -67,6 +68,11 @@ public:
 
   virtual void Update() = 0;
   virtual void AppendChat(const std::string& msg) = 0;
+  // A room chat line that is never drawn over the game. XD Netplay's in-battle notices (out of
+  // sync, a player left the game window, a GBA that did not start) use it, because the fork keeps
+  // on-screen text off during the GBA link. Android's AppendChat is already chat-only, so that is
+  // the default.
+  virtual void AppendChatQuiet(const std::string& msg) { AppendChat(msg); }
   // XD Netplay, host side: a joiner submitted a Showdown team. The
   // implementation writes it into the GBA save that will be synced at start
   // (UICommon/XDNetplay/TeamInjector.h -- Core cannot call uicommon directly,
@@ -235,6 +241,29 @@ public:
 
   static void SendTimeBase();
   bool DoAllPlayersHaveGame();
+
+  // XD Netplay state check (v1.7.5), two parts with their own tags. Inputs: every
+  // STATE_SAMPLE_POPS pops of the first mapped pad, a hash of the pad entries this machine
+  // consumed since the last report (every pad, in pop order, as they travel on the wire), tagged
+  // with that pop count; pops only happen in the SI poll, in channel order, so the windows are
+  // identical everywhere. XD state: HLE_XD::ComputeXdDigest read at every STATE_SAMPLE_WRITES-th
+  // GC->GBA WRITE of a GBA port, tagged with that WRITE count. A pad pop is the same emulated
+  // tick on every machine but not the same instruction when the CPUs split JIT blocks
+  // differently, so XD's memory is read at the WRITE, an MMIO store in the game's own code (the
+  // point the 'xd' log lines have always matched at across x86 and ARM). Warn only: nothing here
+  // changes what any machine emulates.
+  struct StateSample
+  {
+    u32 tag = 0;
+    u32 inputs = 0;
+  };
+  // ---CPU--- thread, under crit_netplay_client.
+  std::optional<StateSample> TakeStateSampleDue();
+  void SendInputsSample(const StateSample& sample);
+  void SendXdStateSample(int port, u32 write_count, const HLE_XD::XdDigest& xd);
+  // A GBA core of this game did not start on this machine (SI port 0-3). The emulation thread,
+  // under crit_netplay_client (NetPlay::ReportGbaStartFailure).
+  void OnLocalGbaStartFailed(int port);
 
   const PadMappingArray& GetPadMapping() const;
   const GBAConfigArray& GetGBAConfig() const;
@@ -474,6 +503,11 @@ private:
   void OnGameDigestAbort();
   void OnXdSeats(sf::Packet& packet);
   void OnXdFormat(sf::Packet& packet);
+  void OnXdNotice(sf::Packet& packet);
+  void OnStateMismatch(sf::Packet& packet);
+  // ---NETPLAY--- thread, every loop: the "left the game window" notice.
+  void UpdateFocusNotice();
+  void SendXdNotice(XdNoticeKind kind, u8 arg);
 
   bool m_is_connected = false;
   ConnectionState m_connection_state = ConnectionState::Failure;
@@ -537,6 +571,50 @@ private:
 
   u64 m_initial_rtc = 0;
   u32 m_timebase_frame = 0;
+
+  // XD Netplay state check (TakeStateSampleDue). m_sd_marker_pad is the pad whose pop count tags
+  // the reports, fixed at OnStartGame: the first mapped pad in a Pokemon XD room without host input
+  // authority, -1 otherwise (no reports). m_sd_inputs and m_sd_due are CPU-thread state, reset in
+  // OnStartGame for the same reason the live-style counters are.
+  std::atomic<int> m_sd_marker_pad{-1};
+  u32 m_sd_inputs = 0;
+  std::optional<StateSample> m_sd_due;
+  u32 m_sd_lines = 0;
+  // This machine's wall clock at its recent reports, keyed (kind << 32 | tag), for the "since
+  // HH:MM:SS" in a mismatch line. Leaf lock: nothing is taken while holding it.
+  std::mutex m_sd_time_mutex;
+  std::array<std::pair<u64, std::string>, 64> m_sd_times{};
+  size_t m_sd_time_next = 0;
+  // ---NETPLAY--- thread: this game's players' mismatch line was shown. m_sd_warned_since: the
+  // time in the line this machine showed (players', or its own spectator view's), repeated once
+  // in the room chat when the game stops (the line is easy to miss during a battle).
+  bool m_sd_warned = false;
+  std::string m_sd_warned_since;
+  bool m_sd_warned_view_only = false;
+
+  // Set by OnPadBuffer when the buffer is raised; the CPU thread then re-anchors the throttle at
+  // its next pop, so a machine that had fallen behind its pacing deadline keeps the new slack
+  // instead of sprinting through it. Wall-clock pacing only.
+  std::atomic<bool> m_throttle_reanchor{false};
+  // A player reports its pad waits once a second (MessageID::PadHealth) for the automatic buffer.
+  // The counters cover the pads this machine does not own; CPU thread only.
+  std::atomic<bool> m_send_pad_health{false};
+  u64 m_health_wait_max_us = 0;
+  u32 m_health_starve_pops = 0;
+  u32 m_health_pops = 0;
+  u32 m_health_min_depth = 0xFFFFFFFF;
+
+  // "Left the game window" notice (UpdateFocusNotice). m_focus_watch: this machine plays a pad in
+  // the running XD game. m_focus_gate_off_since_ms: when Dolphin's input gate closed (desktop: the
+  // game window lost focus with Background Input off), 0 while open; written on the CPU thread.
+  // m_focus_paused_since_ms: when the netplay thread first saw this machine's core paused (Pause
+  // on Focus Loss, the pause button, Android leaving the game screen), 0 while running. The rest
+  // is netplay-thread state.
+  std::atomic<bool> m_focus_watch{false};
+  std::atomic<u64> m_focus_gate_off_since_ms{0};
+  u64 m_focus_paused_since_ms = 0;
+  bool m_focus_left_sent = false;
+  u64 m_focus_last_left_ms = 0;
 
   std::unique_ptr<IOS::HLE::FS::FileSystem> m_wii_sync_fs;
   std::vector<u64> m_wii_sync_titles;

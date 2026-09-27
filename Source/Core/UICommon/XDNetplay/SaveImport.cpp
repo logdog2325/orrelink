@@ -7,6 +7,7 @@
 #include <string_view>
 #include <utility>
 
+#include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/DisposableSave.h"
 
 #include <fmt/format.h>
@@ -160,10 +161,14 @@ bool RefuseIfSaveIsLive(int device, const std::string& save_path, std::string* e
   // imported port to a disposable save at creation (DisposableSave.h), and an
   // import landing NOW would bypass that swap -- the next Start would sync the
   // complete file to the guest, the exact leak the disposable exists to close.
-  if (NetPlay::IsNetPlayRunning())
+  // NetPlay::IsNetPlayRunning() alone is GAME-scoped: false in the lobby and while a Start is
+  // still syncing saves, which is exactly when an import would give the two machines different
+  // parties (the host's save already shipped, the file it boots rewritten). The room is open from
+  // BattleCustomizer::BeginSession until it closes.
+  if (NetPlay::IsNetPlayRunning() || BattleCustomizer::IsNetplaySessionActive())
   {
     if (error)
-      *error = "A netplay room is open — close it first, then import.";
+      *error = "A netplay room is open. Close it to import.";
     return true;
   }
   return false;

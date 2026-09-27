@@ -421,6 +421,12 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
     /** Boot Pokemon XD directly by game ID, bypassing the game picker (which
      * would otherwise default to whatever ISO sorts first in the folder). */
     private fun bootXd() {
+        // Not while a netplay room is open: the Battle Style rewrite below would change what
+        // this device boots for the room's next battle.
+        if (NetplayManager.activeSession?.isClosed == false) {
+            statusMessage = "A netplay room is open. Close it to boot solo."
+            return
+        }
         val xd = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID)
         if (xd != null) {
             // XD arms its GBA detection from the player's own menu navigation;
