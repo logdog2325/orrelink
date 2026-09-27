@@ -1,0 +1,49 @@
+From 6622072d2ed3daf0aaba6ef14cec8b9eef6858a5 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 13:45:57 -0700
+Subject: [PATCH 154/157] XD Netplay: Mecha Theme 1 music and the Phenac City
+ streets location are field-tested
+
+---
+ Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+index 3f1106e..d42f0fc 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+@@ -376,6 +376,7 @@ constexpr StyleOption MUSICS[] = {
+     {1068, "Mt. Battle", Tier::TestedSafe},
+     {1370, "Gateon Port 2", Tier::TestedSafe},
+     {1485, "Battle Now 2", Tier::TestedSafe},
++    {1132, "Mecha Theme 1", Tier::TestedSafe},
+     // Looping non-battle BGM (locations, themes, menus).
+     {1075, "Pokemon Center", Tier::Experimental},
+     {1070, "Gateon Port", Tier::Experimental},
+@@ -401,7 +402,6 @@ constexpr StyleOption MUSICS[] = {
+     {1342, "Pokespot", Tier::Experimental},
+     {1291, "Kaminko's Manor 2", Tier::Experimental},
+     {4, "Kaminko's Manor", Tier::Experimental},
+-    {1132, "Mecha Theme 1", Tier::Experimental},
+     {1412, "Mecha Theme 2", Tier::Experimental},
+     {1371, "Chiriru Theme", Tier::Experimental},
+     {1383, "Music Player 1", Tier::Experimental},
+@@ -451,6 +451,7 @@ constexpr StyleOption VENUES[] = {
+     // Field-tested in VS battles (2026-09); still alters Nature Power etc.
+     {53, "HQ Lab grounds", Tier::TestedSafe},
+     {57, "Rock Pokespot", Tier::TestedSafe},
++    {7, "Phenac City streets", Tier::TestedSafe},
+     // Colosseums outside the retail VS pool.
+     {35, "Phenac Colosseum", Tier::Experimental},
+     {39, "Orre Colosseum", Tier::Experimental},
+@@ -458,7 +459,6 @@ constexpr StyleOption VENUES[] = {
+     // battles stage there).
+     {54, "Gateon Port docks", Tier::Experimental},
+     {5, "Outskirt Stand", Tier::Experimental},
+-    {7, "Phenac City streets", Tier::Experimental},
+     {9, "Phenac Pre Gym", Tier::Experimental},
+     {8, "Phenac house interior", Tier::Experimental},
+     {10, "Pyrite Town streets", Tier::Experimental},
+-- 
+2.39.5 (Apple Git-154)
+

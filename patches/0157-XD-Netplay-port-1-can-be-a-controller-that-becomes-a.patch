@@ -1,0 +1,1715 @@
+From 076ef1f6dd8bdfe7b1a83a08ecbb12ecedb2e358 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 13:57:42 -0700
+Subject: [PATCH 157/157] XD Netplay: port 1 can be a controller that becomes a
+ GBA for XD multi battles (solo test)
+
+New SI device type 14 (XD Multi, Port 1 only). It is a GC controller until
+XD asks for a GBA in socket 1, answers NOREP+RDST until XD unplugs the pad,
+then runs an integrated GBA on channel 0 until the battle, a cancel, an
+error or a link lost before the battle hands socket 1 back to the pad.
+Every switch is decided from XD RAM, SIPOLL, the synced pad sample and
+tick-anchored GBA resets, and is logged to gba_detect. Hold X+Y+L+R for 3 s
+to leave GBA mode or retry while XD still waits at the socket 1 prompt.
+
+Existing device types behave as before. Savestates keep their format;
+multi-battle states need this build. Movie recording cannot start with XD
+Multi on port 1, and port 1 cannot switch to it during a movie. Netplay
+only gets the config hook for now.
+---
+ .../features/dualscreen/GbaLinkSettings.kt    |  14 +-
+ .../settings/ui/SettingsFragmentPresenter.kt  |  26 +-
+ .../xdnetplay/ui/PbrLauncherActivity.kt       |   4 +
+ .../xdnetplay/ui/XDLauncherActivity.kt        |   4 +
+ .../app/src/main/res/values/arrays.xml        |  25 +
+ .../app/src/main/res/values/strings.xml       |   1 +
+ Source/Core/Core/CMakeLists.txt               |   2 +
+ .../ConfigLoaders/NetPlayConfigLoader.cpp     |   4 +-
+ Source/Core/Core/HW/SI/SI.cpp                 |  23 +
+ Source/Core/Core/HW/SI/SI.h                   |   3 +
+ Source/Core/Core/HW/SI/SI_Device.cpp          |  12 +
+ Source/Core/Core/HW/SI/SI_Device.h            |   5 +
+ Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp    |  44 +-
+ Source/Core/Core/HW/SI/SI_DeviceGBAEmu.h      |  11 +
+ .../Core/Core/HW/SI/SI_DeviceXDMultiPort.cpp  | 921 ++++++++++++++++++
+ Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.h | 130 +++
+ Source/Core/Core/NetPlayProto.h               |   4 +
+ Source/Core/DolphinLib.props                  |   2 +
+ .../Config/GamecubeControllersWidget.cpp      |  43 +-
+ Source/Core/DolphinQt/MainWindow.cpp          |  17 +-
+ .../DolphinQt/XDNetplay/PbrLauncherDialog.cpp |   6 +
+ 21 files changed, 1288 insertions(+), 13 deletions(-)
+ create mode 100644 Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.cpp
+ create mode 100644 Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.h
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaLinkSettings.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaLinkSettings.kt
+index 0dbdc9d..cecf27d 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaLinkSettings.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaLinkSettings.kt
+@@ -12,6 +12,8 @@ import java.io.File
+ 
+ object GbaLinkSettings {
+     const val SIDEVICE_GC_GBA_EMULATED = 13
++    // Port 1 only: a GC controller that becomes an integrated GBA for XD multi battles.
++    const val SIDEVICE_GC_GBA_XDMULTI = 14
+ 
+     const val SCALE_MODE_FIT = 0
+     const val SCALE_MODE_STRETCH = 1
+@@ -40,14 +42,20 @@ object GbaLinkSettings {
+     }
+ 
+     fun hasAnyEmulatedGbaPortConfigured(): Boolean =
+-        siDeviceSettings.any { it.int == SIDEVICE_GC_GBA_EMULATED }
++        siDeviceSettings.indices.any { index -> hasGbaCore(index) }
+ 
+     fun shouldWarnAboutMissingBios(): Boolean =
+         siDeviceSettings.indices.any { index ->
+-            siDeviceSettings[index].int == SIDEVICE_GC_GBA_EMULATED &&
+-                    gbaRomSettings[index].string.isBlank()
++            hasGbaCore(index) && gbaRomSettings[index].string.isBlank()
+         } && !hasUsableBios()
+ 
++    // XD Multi runs a GBA core only on port 1.
++    private fun hasGbaCore(index: Int): Boolean {
++        val type = siDeviceSettings[index].int
++        return type == SIDEVICE_GC_GBA_EMULATED ||
++                (index == 0 && type == SIDEVICE_GC_GBA_XDMULTI)
++    }
++
+     fun hasConfiguredPhysicalController(deviceNumber: Int): Boolean {
+         val defaultDevice = getGbaPhysicalDevice(deviceNumber) ?: return false
+         return ControllerInterface.getDevice(defaultDevice) != null
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/settings/ui/SettingsFragmentPresenter.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/settings/ui/SettingsFragmentPresenter.kt
+index 1b33f0e..8ef2e88 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/settings/ui/SettingsFragmentPresenter.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/settings/ui/SettingsFragmentPresenter.kt
+@@ -1452,8 +1452,8 @@ class SettingsFragmentPresenter(
+                 IntSetting.MAIN_SI_DEVICE_0,
+                 R.string.controller_0,
+                 0,
+-                R.array.gcpadTypeEntries,
+-                R.array.gcpadTypeValues,
++                R.array.gcpadTypeEntriesPort1,
++                R.array.gcpadTypeValuesPort1,
+                 MenuTag.getGCPadMenuTag(0)
+             )
+         )
+@@ -2651,12 +2651,22 @@ class SettingsFragmentPresenter(
+             GbaLinkSettings.SIDEVICE_GC_GBA_EMULATED -> {
+                 addGbaPadSubSettings(sl, gcPadNumber)
+             }
++            GbaLinkSettings.SIDEVICE_GC_GBA_XDMULTI -> {
++                // XD Multi: the port's GC pad mapping plus its GBA ROM
++                val gcPad = EmulatedController.getGcPad(gcPadNumber)
++
++                addGbaRomPicker(sl, gcPadNumber)
++                if (!TextUtils.isEmpty(gameId)) {
++                    addControllerPerGameSettings(sl, gcPad, gcPadNumber)
++                } else {
++                    addControllerMetaSettings(sl, gcPad)
++                    addControllerMappingSettings(sl, gcPad, null)
++                }
++            }
+         }
+     }
+ 
+-    private fun addGbaPadSubSettings(sl: ArrayList<SettingsItem>, gbaPadNumber: Int) {
+-        val gbaPad = EmulatedController.getGbaPad(gbaPadNumber)
+-
++    private fun addGbaRomPicker(sl: ArrayList<SettingsItem>, gbaPadNumber: Int) {
+         sl.add(
+             FilePicker(
+                 context,
+@@ -2667,6 +2677,12 @@ class SettingsFragmentPresenter(
+                 null
+             )
+         )
++    }
++
++    private fun addGbaPadSubSettings(sl: ArrayList<SettingsItem>, gbaPadNumber: Int) {
++        val gbaPad = EmulatedController.getGbaPad(gbaPadNumber)
++
++        addGbaRomPicker(sl, gbaPadNumber)
+ 
+         if (!TextUtils.isEmpty(gameId)) {
+             addControllerPerGameSettings(sl, gbaPad, gbaPadNumber)
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/PbrLauncherActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/PbrLauncherActivity.kt
+index ed8e13b..913b049 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/PbrLauncherActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/PbrLauncherActivity.kt
+@@ -265,6 +265,10 @@ class PbrLauncherActivity : AppCompatActivity(), ThemeProvider {
+         if (IntSetting.MAIN_SI_DEVICE_2.int != 0) {
+             IntSetting.MAIN_SI_DEVICE_2.setInt(NativeConfig.LAYER_BASE, 0); changed = true
+         }
++        // XD Multi (14) owns an Emerald core on port 1; PBR gets a plain pad (6).
++        if (IntSetting.MAIN_SI_DEVICE_0.int == 14) {
++            IntSetting.MAIN_SI_DEVICE_0.setInt(NativeConfig.LAYER_BASE, 6); changed = true
++        }
+         if (!BooleanSetting.MAIN_ENABLE_CHEATS.boolean) {
+             BooleanSetting.MAIN_ENABLE_CHEATS.setBoolean(NativeConfig.LAYER_BASE, true); changed = true
+         }
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+index e31a945..b6c9ad3 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+@@ -736,6 +736,10 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+         if (IntSetting.MAIN_SI_DEVICE_2.int != 13) {
+             IntSetting.MAIN_SI_DEVICE_2.setInt(NativeConfig.LAYER_BASE, 13); changed = true
+         }
++        // The 1v1 link wants a plain pad on port 1, not XD Multi (14).
++        if (IntSetting.MAIN_SI_DEVICE_0.int == 14) {
++            IntSetting.MAIN_SI_DEVICE_0.setInt(NativeConfig.LAYER_BASE, 6); changed = true
++        }
+         // Cheats are DERIVED state for XD sessions: shared core's
+         // PrepareForStart turns MAIN_ENABLE_CHEATS on exactly when the session
+         // needs the AR engine (a Battle Style/rules block, or Format = OU, the
+diff --git a/Source/Android/app/src/main/res/values/arrays.xml b/Source/Android/app/src/main/res/values/arrays.xml
+index 8ae490d..9d009d8 100644
+--- a/Source/Android/app/src/main/res/values/arrays.xml
++++ b/Source/Android/app/src/main/res/values/arrays.xml
+@@ -392,6 +392,31 @@
+         <item>12</item>
+         <item>13</item>
+     </integer-array>
++    <!-- Port 1 also offers XD Multi (14). -->
++    <string-array name="gcpadTypeEntriesPort1">
++        <item>@string/gcpad_disabled</item>
++        <item>@string/gcpad_emulated</item>
++        <item>@string/gcpad_keyboard</item>
++        <item>@string/gcpad_steering_wheel</item>
++        <item>@string/gcpad_dance_mat</item>
++        <item>@string/gcpad_taru_konga</item>
++        <item>@string/gcpad_am_baseboard</item>
++        <item>@string/gcpad_gc_adapter</item>
++        <item>@string/gcpad_emulated_gba</item>
++        <item>@string/gcpad_xd_multi</item>
++    </string-array>
++    <integer-array name="gcpadTypeValuesPort1">
++        <item>0</item>
++        <item>6</item>
++        <item>7</item>
++        <item>8</item>
++        <item>9</item>
++        <item>10</item>
++        <item>11</item>
++        <item>12</item>
++        <item>13</item>
++        <item>14</item>
++    </integer-array>
+ 
+     <string-array name="gbaLinkScaleModeEntries">
+         <item>@string/gba_link_scale_fit</item>
+diff --git a/Source/Android/app/src/main/res/values/strings.xml b/Source/Android/app/src/main/res/values/strings.xml
+index a7335c2..0107c7b 100644
+--- a/Source/Android/app/src/main/res/values/strings.xml
++++ b/Source/Android/app/src/main/res/values/strings.xml
+@@ -881,6 +881,7 @@ It can efficiently compress both junk data and encrypted Wii data.
+     <string name="gcpad_am_baseboard">Triforce Baseboard</string>
+     <string name="gcpad_gc_adapter">GameCube Adapter</string>
+     <string name="gcpad_emulated_gba">Emulated GBA</string>
++    <string name="gcpad_xd_multi">XD Multi (Controller + GBA)</string>
+ 
+     <string name="dual_screen_external_display">Use External Display</string>
+     <string name="dual_screen_external_display_description">Automatically use an external display when GBA Link or Wii pointer touchpad support is configured.</string>
+diff --git a/Source/Core/Core/CMakeLists.txt b/Source/Core/Core/CMakeLists.txt
+index a0d184e..8e4571d 100644
+--- a/Source/Core/Core/CMakeLists.txt
++++ b/Source/Core/Core/CMakeLists.txt
+@@ -754,6 +754,8 @@ if(USE_MGBA)
+     HW/GBADetectLog.h
+     HW/SI/SI_DeviceGBAEmu.cpp
+     HW/SI/SI_DeviceGBAEmu.h
++    HW/SI/SI_DeviceXDMultiPort.cpp
++    HW/SI/SI_DeviceXDMultiPort.h
+   )
+   target_link_libraries(core PUBLIC mGBA::mgba)
+   target_compile_definitions(core PUBLIC -DHAS_LIBMGBA)
+diff --git a/Source/Core/Core/ConfigLoaders/NetPlayConfigLoader.cpp b/Source/Core/Core/ConfigLoaders/NetPlayConfigLoader.cpp
+index 969c4bd..4f60601 100644
+--- a/Source/Core/Core/ConfigLoaders/NetPlayConfigLoader.cpp
++++ b/Source/Core/Core/ConfigLoaders/NetPlayConfigLoader.cpp
+@@ -152,7 +152,9 @@ public:
+ 
+       if (m_settings.gba_config[i].enabled && player_id > 0)
+       {
+-        layer->Set(config_info, SerialInterface::SIDEVICE_GC_GBA_EMULATED);
++        layer->Set(config_info, (i == 0 && m_settings.xd_multi_p1) ?
++                                    SerialInterface::SIDEVICE_GC_GBA_XDMULTI :
++                                    SerialInterface::SIDEVICE_GC_GBA_EMULATED);
+       }
+       else if (player_id == m_settings.local_player_id)
+       {
+diff --git a/Source/Core/Core/HW/SI/SI.cpp b/Source/Core/Core/HW/SI/SI.cpp
+index 429897c..c98cafb 100644
+--- a/Source/Core/Core/HW/SI/SI.cpp
++++ b/Source/Core/Core/HW/SI/SI.cpp
+@@ -535,6 +535,12 @@ void SerialInterfaceManager::UpdateDevices()
+     case DataResponse::Success:
+       m_status_reg.hex |= GetRDSTBit(i);
+       break;
++    case DataResponse::ErrorNoResponseReady:
++      m_status_reg.hex |= GetRDSTBit(i);
++      SetNoResponse(i);
++      errlatch = 1;
++      m_channel[i].in_hi.ERRSTAT = 1;
++      break;
+     case DataResponse::ErrorNoResponse:
+       SetNoResponse(i);
+       [[fallthrough]];
+@@ -561,6 +567,23 @@ SIDevices SerialInterfaceManager::GetDeviceType(int channel) const
+   return m_channel[channel].device->GetDeviceType();
+ }
+ 
++bool SerialInterfaceManager::IsChannelPollEnabled(int channel) const
++{
++  switch (channel)
++  {
++  case 0:
++    return m_poll.EN0 != 0;
++  case 1:
++    return m_poll.EN1 != 0;
++  case 2:
++    return m_poll.EN2 != 0;
++  case 3:
++    return m_poll.EN3 != 0;
++  default:
++    return false;
++  }
++}
++
+ u32 SerialInterfaceManager::GetPollXLines()
+ {
+   return m_poll.X;
+diff --git a/Source/Core/Core/HW/SI/SI.h b/Source/Core/Core/HW/SI/SI.h
+index daec278..19627f7 100644
+--- a/Source/Core/Core/HW/SI/SI.h
++++ b/Source/Core/Core/HW/SI/SI.h
+@@ -63,6 +63,9 @@ public:
+   void AddDevice(std::unique_ptr<ISIDevice> device);
+ 
+   SIDevices GetDeviceType(int channel) const;
++  bool IsChannelPollEnabled(int channel) const;
++  // Diagnostics only (gba_detect log); never a control input.
++  u32 GetStatusRegisterForDiag() const { return m_status_reg.hex; }
+ 
+   u32 GetPollXLines();
+ 
+diff --git a/Source/Core/Core/HW/SI/SI_Device.cpp b/Source/Core/Core/HW/SI/SI_Device.cpp
+index dcfa4e6..706cc6b 100644
+--- a/Source/Core/Core/HW/SI/SI_Device.cpp
++++ b/Source/Core/Core/HW/SI/SI_Device.cpp
+@@ -16,6 +16,7 @@
+ #include "Core/HW/SI/SI_DeviceGBA.h"
+ #ifdef HAS_LIBMGBA
+ #include "Core/HW/SI/SI_DeviceGBAEmu.h"
++#include "Core/HW/SI/SI_DeviceXDMultiPort.h"
+ #endif
+ #include "Core/HW/SI/SI_DeviceAMBaseboard.h"
+ #include "Core/HW/SI/SI_DeviceGCAdapter.h"
+@@ -192,6 +193,17 @@ std::unique_ptr<ISIDevice> SIDevice_Create(Core::System& system, const SIDevices
+     return std::make_unique<CSIDevice_Null>(system, device, port_number);
+ #endif
+ 
++  case SIDEVICE_GC_GBA_XDMULTI:
++#ifdef HAS_LIBMGBA
++    if (system.IsWii())
++      return std::make_unique<CSIDevice_Null>(system, SIDEVICE_NONE, port_number);
++
++    return std::make_unique<CSIDevice_XDMultiPort>(system, device, port_number);
++#else
++    PanicAlertFmtT("Error: This build does not support emulated GBA controllers");
++    return std::make_unique<CSIDevice_Null>(system, device, port_number);
++#endif
++
+   case SIDEVICE_GC_KEYBOARD:
+     return std::make_unique<CSIDevice_Keyboard>(system, device, port_number);
+ 
+diff --git a/Source/Core/Core/HW/SI/SI_Device.h b/Source/Core/Core/HW/SI/SI_Device.h
+index d8713f9..c16116d 100644
+--- a/Source/Core/Core/HW/SI/SI_Device.h
++++ b/Source/Core/Core/HW/SI/SI_Device.h
+@@ -101,6 +101,9 @@ enum SIDevices : int
+   SIDEVICE_AM_BASEBOARD,
+   SIDEVICE_WIIU_ADAPTER,
+   SIDEVICE_GC_GBA_EMULATED,
++  // Port 1 only: a GC controller that becomes an integrated GBA for XD multi
++  // battles. Must stay 14; the Android settings hardcode the ints.
++  SIDEVICE_GC_GBA_XDMULTI,
+   // Not a valid device. Used for checking whether enum values are valid.
+   SIDEVICE_COUNT,
+ };
+@@ -110,6 +113,8 @@ enum class DataResponse
+   NoData,
+   Success,
+   ErrorNoResponse,
++  // NOREP+ERRSTAT+ERRLATCH+RDST; only CSIDevice_XDMultiPort returns it
++  ErrorNoResponseReady,
+ };
+ 
+ class ISIDevice
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+index 7092223..3750611 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+@@ -1043,7 +1043,12 @@ DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
+   }
+   SerialInterface::CSIDevice_GCController::HandleMoviePadStatus(m_system.GetMovie(),
+                                                                 m_device_number, &pad_status);
++  ApplyPadStatus(pad_status);
++  return DataResponse::NoData;
++}
+ 
++void CSIDevice_GBAEmu::ApplyPadStatus(const GCPadStatus& pad_status)
++{
+   m_keys = GbaKeysFromPad(pad_status);
+   if (m_keys != m_diag_prev_keys)
+   {
+@@ -1066,8 +1071,45 @@ DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
+       GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "x-reset", {});
+   }
+   m_diag_prev_xreset = x_now;
++}
+ 
+-  return DataResponse::NoData;
++bool CSIDevice_GBAEmu::IsLinkUpForDiag() const
++{
++  // Diagnostics only, racy, never control.
++  return m_core->IsLinkEnabled();
++}
++
++void CSIDevice_GBAEmu::ReleaseLinkLatches(const char* reason)
++{
++  // Safe from a synced path only because these latches never feed an SI
++  // return value; they reach emulation only through resets.
++  const u64 now = m_system.GetCoreTiming().GetTicks();
++  GBADetectLog::LogEvent(m_device_number, now, "rematch-release",
++                         fmt::format("reason={} was_locked={} was_est={}", reason,
++                                     m_battle_locked, m_link_established));
++  m_link_established = false;
++  m_battle_locked = false;
++  m_data_cmd_count = 0;
++  m_probe_link_down_streak = 0;
++  if (GBALinkDiag* diag = DiagSlot(m_device_number))
++  {
++    diag->established.store(false, std::memory_order_relaxed);
++    diag->locked.store(false, std::memory_order_relaxed);
++  }
++}
++
++void CSIDevice_GBAEmu::RequestSyncedReset(u64 tick, const char* reason)
++{
++  // Deterministic on every peer: the caller's decision is, and RequestReset is
++  // tick-anchored. This is also the netplay path (no Pad::SetGBAReset).
++  m_core->RequestReset(tick);
++  if (GBALinkDiag* diag = DiagSlot(m_device_number))
++    diag->reset_count.fetch_add(1, std::memory_order_relaxed);
++  m_last_auto_reset = tick;
++  m_window_since_reset = false;
++  m_data_cmd_count = 0;
++  GBADetectLog::LogEvent(m_device_number, tick, "auto-reset",
++                         fmt::format("reason={} src=xdmulti", reason));
+ }
+ 
+ void CSIDevice_GBAEmu::SendCommand(u32 command, u8 poll)
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.h b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.h
+index 7be0484..2c6cabe 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.h
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.h
+@@ -82,6 +82,17 @@ public:
+   static u16 GbaKeysFromPad(const GCPadStatus& pad_status);
+   static std::string DescribeGbaKeys(u16 keys);
+ 
++  // Used by CSIDevice_XDMultiPort, which owns a GBA core on channel 0. None of
++  // these run for a plain integrated GBA.
++  // The post-sample half of GetData: keys, the keys log and the X-button reset.
++  void ApplyPadStatus(const GCPadStatus& pad_status);
++  // Diagnostics only, racy, never control.
++  bool IsLinkUpForDiag() const;
++  // Clears the link/battle latches (as a rematch release does).
++  void ReleaseLinkLatches(const char* reason);
++  // Tick-anchored reset decided from synced state.
++  void RequestSyncedReset(u64 tick, const char* reason);
++
+ private:
+   enum class NextAction
+   {
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.cpp b/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.cpp
+new file mode 100644
+index 0000000..b3cc36e
+--- /dev/null
++++ b/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.cpp
+@@ -0,0 +1,921 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#ifdef HAS_LIBMGBA
++
++#include "Core/HW/SI/SI_DeviceXDMultiPort.h"
++
++#include <algorithm>
++#include <array>
++#include <memory>
++#include <string>
++
++#include <fmt/format.h>
++
++#include "Common/ChunkFile.h"
++#include "Common/CommonTypes.h"
++#include "Core/CoreTiming.h"
++#include "Core/HW/GBADetectLog.h"
++#include "Core/HW/GBAPad.h"
++#include "Core/HW/GCPad.h"
++#include "Core/HW/Memmap.h"
++#include "Core/HW/SI/SI.h"
++#include "Core/HW/SI/SI_DeviceGBAEmu.h"
++#include "Core/HW/SI/SI_DeviceGCController.h"
++#include "Core/HW/SystemTimers.h"
++#include "Core/Movie.h"
++#include "Core/NetPlayProto.h"
++#include "Core/System.h"
++#include "InputCommon/GCPadStatus.h"
++
++namespace SerialInterface
++{
++namespace
++{
++// XD USA (GXXE) main.dol. See the port-1 device spec for where each is written.
++constexpr u32 XD_DISC_ID_GXXE = 0x47585845;
++constexpr u32 XD_CTX = 0x804354A8;       // u32 ctx[4]: per-channel connection state
++constexpr u32 XD_CTX_CH = 0x804354C9;    // u8: channel being connected
++constexpr u32 XD_CTX_24 = 0x804354CC;    // log only
++constexpr u32 XD_CTX_28 = 0x804354D0;    // u32: 0x8004F80C wait result
++constexpr u32 XD_CTX_MODE = 0x804354D4;  // u32: flow mode, 3 = socket 1 must be a GBA
++constexpr u32 XD_CTX_30 = 0x804354D8;    // u8, log only
++constexpr u32 XD_CTX_48 = 0x804354F0;    // u8, log only
++constexpr u32 XD_ERRFLAG = 0x804EA840;   // u8: set when the link error handler posts
++constexpr u32 XD_BFLAG = 0x804EA834;     // u32: 1 while the VS battle runner runs
++constexpr u32 XD_VSROW = 0x804349EC;
++constexpr u32 XD_FORMAT = 0x80429A00;
++constexpr u32 XD_LINK_A = 0x80428338;
++constexpr u32 XD_LINK_B = 0x80428348;
++constexpr u32 XD_PORT_MASK = 0x80445AFE;
++constexpr u32 XD_PORT_RECS = 0x80444AF8;
++constexpr u32 XD_PORT_REC_STRIDE = 0x7C;
++constexpr u32 XD_SI_TYPE0 = 0x803D4E20;
++constexpr u32 XD_SI_TT0 = 0x80442CD0;
++constexpr u32 XD_SI_POLL = 0x803D4E10;
++constexpr u32 XD_PAD_EN = 0x804EACBC;
++constexpr u32 XD_PAD_RST = 0x804EACC0;
++constexpr u32 XD_PAD_WAIT = 0x804EACC8;
++constexpr u32 XD_RST_CH = 0x804E819C;
++constexpr u32 XD_TYPE_TABLE = 0x803226C0;
++constexpr u32 XD_TYPE_DEBOUNCE = 0x803226D0;
++
++constexpr u32 CTX_PROMPT = 2;
++constexpr u32 CTX_LINKING = 4;
++constexpr u32 CTX_LINKED = 5;
++constexpr u32 CTX_CANCELLED = 6;
++constexpr u32 CTX_ERROR = 7;
++constexpr u32 MODE_MULTI = 3;
++
++constexpr u16 COMBO_BUTTONS = PAD_BUTTON_X | PAD_BUTTON_Y | PAD_TRIGGER_L | PAD_TRIGGER_R;
++constexpr u16 GBA_KEY_MASK = PAD_BUTTON_A | PAD_BUTTON_B | PAD_TRIGGER_Z | PAD_BUTTON_START |
++                             PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_UP |
++                             PAD_BUTTON_DOWN | PAD_TRIGGER_R | PAD_TRIGGER_L;
++constexpr int STICK_DEADZONE = 48;
++constexpr u8 TRIGGER_DIGITAL = 0xC0;
++
++enum WantReason : u8
++{
++  WANT_NONE = 0,
++  WANT_ERR,
++  WANT_CANCEL,
++  WANT_COMBO,
++  WANT_POST_BATTLE,
++  WANT_POST_BATTLE_LATE,
++  WANT_MODE_EXIT,
++  WANT_ORPHAN,
++  WANT_LINK_LOST,
++};
++
++const char* WantReasonName(u8 reason)
++{
++  switch (reason)
++  {
++  case WANT_ERR:
++    return "err";
++  case WANT_CANCEL:
++    return "cancel";
++  case WANT_COMBO:
++    return "combo";
++  case WANT_POST_BATTLE:
++    return "post-battle";
++  case WANT_POST_BATTLE_LATE:
++    return "post-battle-late";
++  case WANT_MODE_EXIT:
++    return "mode-exit";
++  case WANT_ORPHAN:
++    return "orphan";
++  case WANT_LINK_LOST:
++    return "link-lost";
++  default:
++    return "none";
++  }
++}
++
++const char* ModeName(CSIDevice_XDMultiPort::Mode mode)
++{
++  switch (mode)
++  {
++  case CSIDevice_XDMultiPort::Mode::Pad:
++    return "pad";
++  case CSIDevice_XDMultiPort::Mode::Unplug:
++    return "unplug";
++  case CSIDevice_XDMultiPort::Mode::Gba:
++    return "gba";
++  }
++  return "?";
++}
++
++// Timer starts use 0 as "not started".
++u64 Stamp(u64 now)
++{
++  return now == 0 ? 1 : now;
++}
++
++u64 Since(u64 now, u64 then)
++{
++  return now > then ? now - then : 0;
++}
++}  // namespace
++
++CSIDevice_XDMultiPort::CSIDevice_XDMultiPort(Core::System& system, SIDevices device,
++                                             int device_number)
++    : ISIDevice(system, device, device_number)
++{
++  m_controller =
++      std::make_unique<CSIDevice_GCController>(system, SIDEVICE_GC_CONTROLLER, device_number);
++  const u64 now = system.GetCoreTiming().GetTicks();
++  if (device_number == 0)
++  {
++    m_gba = std::make_unique<CSIDevice_GBAEmu>(system, SIDEVICE_GC_GBA_EMULATED, device_number);
++    m_mode_tick = now;
++    Log(now, "init ch=0 mode=pad armed=1", true);
++  }
++  else
++  {
++    Log(now, fmt::format("inert ch={}", device_number), true);
++  }
++}
++
++CSIDevice_XDMultiPort::~CSIDevice_XDMultiPort() = default;
++
++void CSIDevice_XDMultiPort::Log(u64 now, const std::string& detail, bool flush) const
++{
++  GBADetectLog::LogEvent(m_device_number, now, "xdmulti", detail, flush);
++}
++
++CSIDevice_XDMultiPort::XdRam CSIDevice_XDMultiPort::ReadXdRam() const
++{
++  XdRam ram;
++  const auto& memory = m_system.GetMemory();
++  if (memory.Read_U32(0x80000000) != XD_DISC_ID_GXXE)
++    return ram;
++  ram.is_xd = true;
++  for (u32 i = 0; i < 4; ++i)
++    ram.ctx[i] = memory.Read_U32(XD_CTX + 4 * i);
++  ram.ctxch = memory.Read_U8(XD_CTX_CH);
++  ram.ctx28 = memory.Read_U32(XD_CTX_28);
++  ram.ctxmode = memory.Read_U32(XD_CTX_MODE);
++  ram.errflag = memory.Read_U8(XD_ERRFLAG);
++  ram.bflag = memory.Read_U32(XD_BFLAG);
++  for (u32 i = 0; i < 4; ++i)
++  {
++    ram.link_a[i] = memory.Read_U32(XD_LINK_A + 4 * i);
++    ram.link_b[i] = memory.Read_U32(XD_LINK_B + 4 * i);
++  }
++  return ram;
++}
++
++GCPadStatus CSIDevice_XDMultiPort::ToGba(const GCPadStatus& pad)
++{
++  constexpr u16 PASS = PAD_BUTTON_A | PAD_BUTTON_B | PAD_TRIGGER_Z | PAD_BUTTON_START |
++                       PAD_BUTTON_LEFT | PAD_BUTTON_RIGHT | PAD_BUTTON_UP | PAD_BUTTON_DOWN;
++  GCPadStatus out{};
++  u16 button = pad.button & PASS;
++  const int x = static_cast<int>(pad.stickX) - GCPadStatus::MAIN_STICK_CENTER_X;
++  const int y = static_cast<int>(pad.stickY) - GCPadStatus::MAIN_STICK_CENTER_Y;
++  if (x < -STICK_DEADZONE)
++    button |= PAD_BUTTON_LEFT;
++  if (x > STICK_DEADZONE)
++    button |= PAD_BUTTON_RIGHT;
++  if (y > STICK_DEADZONE)
++    button |= PAD_BUTTON_UP;
++  if (y < -STICK_DEADZONE)
++    button |= PAD_BUTTON_DOWN;
++  if ((pad.button & PAD_TRIGGER_L) || pad.triggerLeft >= TRIGGER_DIGITAL)
++    button |= PAD_TRIGGER_L;
++  if ((pad.button & PAD_TRIGGER_R) || pad.triggerRight >= TRIGGER_DIGITAL)
++    button |= PAD_TRIGGER_R;
++  out.button = button;
++  return out;
++}
++
++void CSIDevice_XDMultiPort::EvaluateTransitions(u64 now, bool en0)
++{
++  const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
++  const XdRam ram = ReadXdRam();
++
++  const bool at_prompt = ram.is_xd && ram.ctxmode == MODE_MULTI && ram.ctx[0] == CTX_PROMPT &&
++                         ram.ctxch == 0;
++  // XD is still waiting at the prompt: 0x8004F80C clears ctx28 on entry and
++  // returns at once while any ctx is 7. An error abort from the prompt leaves
++  // ctx[0] == 2 behind with ctx28 == 8 and a ctx at 7 until the next flow.
++  bool prompt_live = at_prompt && ram.ctx28 == 0;
++  for (int i = 0; i < 4; ++i)
++  {
++    if (ram.ctx[i] == CTX_ERROR)
++      prompt_live = false;
++  }
++
++  // Error edge: a ctx turning 7 (primary) or the error flag rising.
++  bool err_edge = false;
++  int err_ctx = -1;
++  if (ram.is_xd && ram.ctxmode == MODE_MULTI)
++  {
++    for (int i = 0; i < 4; ++i)
++    {
++      if (ram.ctx[i] == CTX_ERROR && m_ctx_prev[i] != CTX_ERROR)
++      {
++        err_edge = true;
++        err_ctx = i;
++        break;
++      }
++    }
++    if (!err_edge && ram.errflag == 1 && m_errflag_prev == 0)
++      err_edge = true;
++  }
++
++  // Escape combo: X+Y+L+R held continuously for 3 s; fires once per hold.
++  bool combo_fire = false;
++  const bool combo_now = (m_last_buttons & COMBO_BUTTONS) == COMBO_BUTTONS;
++  if (combo_now && m_combo_released)
++  {
++    if (m_combo_since == 0)
++    {
++      m_combo_since = Stamp(now);
++    }
++    else if (Since(now, m_combo_since) >= 3 * tps)
++    {
++      combo_fire = true;
++      m_combo_released = false;
++      m_combo_since = 0;
++    }
++  }
++  else if (!combo_now)
++  {
++    m_combo_since = 0;
++  }
++  if ((m_last_buttons & COMBO_BUTTONS) == 0)
++  {
++    m_combo_released = true;
++    m_combo_since = 0;
++  }
++
++  if (ram.ctx[0] != CTX_CANCELLED)
++    m_replug6_done = false;
++
++  if (!ram.is_xd && m_mode != Mode::Pad)
++  {
++    if (!m_gba_pending)
++      SwitchMode(Mode::Pad, "not-xd", ram, now);
++  }
++  else
++  {
++    switch (m_mode)
++    {
++    case Mode::Pad:
++      EvaluatePad(ram, at_prompt, prompt_live, combo_fire, now);
++      break;
++    case Mode::Unplug:
++      EvaluateUnplug(ram, at_prompt, err_edge, combo_fire, en0, now);
++      break;
++    case Mode::Gba:
++      EvaluateGba(ram, err_edge, err_ctx, combo_fire, now);
++      break;
++    }
++  }
++
++  LogDiagnostics(ram, en0, now);
++
++  m_ctx_prev = ram.ctx;
++  m_errflag_prev = ram.errflag;
++  m_bflag_prev = ram.bflag;
++}
++
++void CSIDevice_XDMultiPort::EvaluatePad(const XdRam& ram, bool at_prompt, bool prompt_live,
++                                        bool combo_fire, u64 now)
++{
++  if (!at_prompt)
++  {
++    m_armed = true;
++    m_trigger_streak = 0;
++    if (combo_fire)
++      Log(now, "combo-ignored");
++    return;
++  }
++  if (m_armed)
++  {
++    if (m_trigger_streak == 0)
++      Log(now, "trigger-seen");
++    ++m_trigger_streak;
++    if (m_trigger_streak >= 2)
++    {
++      m_armed = false;
++      SwitchMode(Mode::Unplug, "socket1", ram, now);
++    }
++    return;
++  }
++  // Manual re-trigger after a combo escape, only while XD still waits there.
++  if (combo_fire)
++  {
++    if (!prompt_live)
++    {
++      Log(now, "combo-ignored");
++      return;
++    }
++    Log(now, "combo-fired");
++    SwitchMode(Mode::Unplug, "combo", ram, now);
++  }
++}
++
++void CSIDevice_XDMultiPort::EvaluateUnplug(const XdRam& ram, bool at_prompt, bool err_edge,
++                                           bool combo_fire, bool en0, u64 now)
++{
++  const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
++  if (err_edge)
++  {
++    SwitchMode(Mode::Pad, "err", ram, now);
++    return;
++  }
++  if (combo_fire)
++  {
++    Log(now, "combo-fired");
++    SwitchMode(Mode::Pad, "combo", ram, now);
++    return;
++  }
++  if (!at_prompt)
++  {
++    if (m_cond_since == 0)
++      m_cond_since = Stamp(now);
++    if (Since(now, m_cond_since) >= tps / 2)
++      SwitchMode(Mode::Pad, "cancel", ram, now);
++    return;
++  }
++  m_cond_since = 0;
++  if (!en0)
++  {
++    SwitchMode(Mode::Gba, "en0-clear", ram, now);
++    return;
++  }
++  if (Since(now, m_mode_tick) >= 2 * tps)
++  {
++    // The snapshot carries EN1-3 and SISR.
++    Log(now, fmt::format("unplug-stuck {}", Snapshot(now)), true);
++    SwitchMode(Mode::Gba, "unplug-timeout", ram, now);
++  }
++}
++
++void CSIDevice_XDMultiPort::EvaluateGba(const XdRam& ram, bool err_edge, int err_ctx,
++                                        bool combo_fire, u64 now)
++{
++  const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
++
++  // Battle bookkeeping.
++  if (ram.bflag != 0 && m_bflag_prev == 0)
++  {
++    m_battle_seen = true;
++    Log(now, "battle start");
++  }
++  else if (ram.bflag == 0 && m_bflag_prev != 0)
++  {
++    m_battle_end_tick = now;
++    Log(now, "battle end");
++  }
++
++  const u64 quiet = Since(now, std::max(m_last_data_tick, m_mode_tick));
++
++  // Cancel: XD parked a cancelled socket (B, or an earlier accept) in its
++  // "controller in socket 1" wait. Never ctx 4 and never ctx28 == 0.
++  const bool cancel_cond = ram.ctxmode == MODE_MULTI && ram.ctxch <= 3 &&
++                           ram.ctx[ram.ctxch] == CTX_CANCELLED &&
++                           (ram.ctx28 == 2 || ram.ctx28 == 4);
++  if (!cancel_cond)
++    m_cond_since = 0;
++  else if (m_cond_since == 0)
++    m_cond_since = Stamp(now);
++  const bool cancel = cancel_cond && Since(now, m_cond_since) >= tps / 4;
++
++  // Link lost after the connect flow, before the battle. XD marks a dropped
++  // socket 7 only inside the connect flow (0x8004F6A0); later drops go to the
++  // menu error path 0x80081724, which waits for a socket 1 controller. Same
++  // test as 0x8004F6A0: a socket at 4 or 5 whose port is not linked
++  // (0x80028C5C: link A != 0 and link B == 0).
++  bool link_lost_cond = false;
++  int lost_socket = -1;
++  if (!m_battle_seen && ram.bflag == 0 && ram.ctxmode == MODE_MULTI && ram.ctxch == 0 &&
++      ram.ctx[0] == CTX_LINKED)
++  {
++    for (int i = 0; i < 4; ++i)
++    {
++      const bool linked = ram.link_a[i] != 0 && ram.link_b[i] == 0;
++      if ((ram.ctx[i] == CTX_LINKING || ram.ctx[i] == CTX_LINKED) && !linked)
++      {
++        link_lost_cond = true;
++        lost_socket = i;
++        break;
++      }
++    }
++  }
++  if (!link_lost_cond)
++    m_link_lost_since = 0;
++  else if (m_link_lost_since == 0)
++    m_link_lost_since = Stamp(now);
++  const bool link_lost = link_lost_cond && Since(now, m_link_lost_since) >= tps;
++
++  if (!m_want_pad)
++  {
++    u8 reason = WANT_NONE;
++    if (err_edge)
++      reason = WANT_ERR;
++    else if (cancel)
++      reason = WANT_CANCEL;
++    else if (combo_fire)
++      reason = WANT_COMBO;
++    else if (link_lost)
++      reason = WANT_LINK_LOST;
++    else if (m_battle_seen && ram.bflag == 0 && Since(now, m_battle_end_tick) >= tps &&
++             quiet >= tps)
++      reason = WANT_POST_BATTLE;
++    else if (m_battle_seen && ram.bflag == 0 && Since(now, m_battle_end_tick) >= 5 * tps)
++      reason = WANT_POST_BATTLE_LATE;
++    else if (ram.ctxmode != MODE_MULTI && ram.bflag == 0 && quiet >= 4 * tps)
++      reason = WANT_MODE_EXIT;
++    else if (m_data_seen && !m_battle_seen && quiet >= 20 * tps && m_probe_fail_streak >= 600)
++      reason = WANT_ORPHAN;
++
++    if (reason != WANT_NONE)
++    {
++      m_want_pad = true;
++      m_want_reason = reason;
++      if (reason == WANT_COMBO)
++        Log(now, "combo-fired");
++      std::string detail;
++      if (reason == WANT_ERR)
++        detail = fmt::format(" ctx7={}", err_ctx);
++      else if (reason == WANT_LINK_LOST)
++        detail = fmt::format(" ch={}", lost_socket);
++      Log(now,
++          fmt::format("want-pad reason={}{} pend={}", WantReasonName(reason), detail,
++                      m_gba_pending ? 1 : 0),
++          true);
++    }
++  }
++  else if (combo_fire)
++  {
++    Log(now, "combo-ignored");
++  }
++
++  if (m_want_pad && !m_gba_pending)
++  {
++    SwitchMode(Mode::Pad, WantReasonName(m_want_reason), ram, now);
++    return;
++  }
++
++  // Re-plug: XD re-enters the socket-1 wait while the GBA may still read as
++  // present in its type table, which only 3+ non-GBA updates clear.
++  const bool retry6 = ram.ctx[0] == CTX_CANCELLED && ram.ctx28 == 0;
++  if (retry6)
++    ++m_trigger_streak;
++  else
++    m_trigger_streak = 0;
++
++  if (m_gba_pending || m_want_pad || ram.ctxmode != MODE_MULTI || ram.ctxch != 0)
++    return;
++
++  int kind = 0;
++  if (ram.ctx[0] == CTX_PROMPT && m_ctx_prev[0] != CTX_PROMPT)
++    kind = 2;
++  else if (retry6 && m_trigger_streak >= 2 && !m_replug6_done)
++    kind = 6;
++  if (kind == 0)
++    return;
++
++  if (kind == 6)
++    m_replug6_done = true;
++  m_silent_until = now + 3 * tps / 20;
++  m_gba->ReleaseLinkLatches("xdmulti-replug");
++  m_gba->RequestSyncedReset(now, "xdmulti-replug");
++  Log(now, fmt::format("replug kind={} {}", kind, Snapshot(now)), true);
++}
++
++void CSIDevice_XDMultiPort::SwitchMode(Mode to, const char* reason, const XdRam& ram, u64 now)
++{
++  // Hard rule: never change mode in the middle of a GBA transfer.
++  if (m_gba_pending || to == m_mode)
++    return;
++
++  const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
++  const Mode from = m_mode;
++  const u64 dur_ms = Since(now, m_mode_tick) / std::max<u64>(tps / 1000, 1);
++  const std::string snapshot = Snapshot(now);
++
++  m_mode = to;
++  m_mode_tick = now;
++  m_cond_since = 0;
++  m_link_lost_since = 0;
++  m_want_pad = false;
++  m_want_reason = WANT_NONE;
++  m_trigger_streak = 0;
++  m_silent_until = 0;
++
++  Log(now,
++      fmt::format("mode from={} to={} reason={} dur_ms={} armed={} {}", ModeName(from),
++                  ModeName(to), reason, dur_ms, m_armed ? 1 : 0, snapshot),
++      true);
++
++  if (to == Mode::Gba)
++  {
++    m_data_seen = false;
++    m_battle_seen = false;
++    m_probe_fail_streak = 0;
++    m_last_data_tick = 0;
++    // The prompt's own 2 is not a re-plug.
++    m_ctx_prev[0] = ram.ctx[0];
++    m_gba->ReleaseLinkLatches("xdmulti-attach");
++    // A fresh Emerald boot, the same path sockets 2-4 take, even on a rematch
++    // where the old client is still running.
++    m_gba->RequestSyncedReset(now, "xdmulti-attach");
++    m_diag_ctx_lines = 0;
++    m_diag_padok_armed = false;
++  }
++  else if (to == Mode::Pad)
++  {
++    if (from == Mode::Gba)
++      m_gba->ReleaseLinkLatches("xdmulti-detach");
++    // Fresh controller: clears the combo timer and restores the default
++    // origin. XD's PADReset re-sends the analog mode.
++    m_controller =
++        std::make_unique<CSIDevice_GCController>(m_system, SIDEVICE_GC_CONTROLLER, m_device_number);
++    m_diag_pad_since = Stamp(now);
++    m_diag_padok_armed = true;
++    m_diag_padwait_logged = false;
++    m_diag_padok_start = now;
++  }
++}
++
++DataResponse CSIDevice_XDMultiPort::GetData(u32& hi, u32& low)
++{
++  m_fresh = false;
++  if (!m_gba)
++    return m_controller->GetData(hi, low);
++
++  const u64 now = m_system.GetCoreTiming().GetTicks();
++  auto& movie = m_system.GetMovie();
++
++  // GetGBAStatus consumes the GBA window's reset request, so it is sampled once
++  // per call and never in netplay or movie playback.
++  const bool solo = !NetPlay::IsNetPlayRunning() && !movie.IsPlayingInput();
++  GCPadStatus gl{};
++  if (solo)
++    gl = Pad::GetGBAStatus(m_device_number);
++  const u16 reset = gl.button & PAD_BUTTON_X;
++
++  EvaluateTransitions(now, m_system.GetSerialInterface().IsChannelPollEnabled(m_device_number));
++  const bool en0 = m_system.GetSerialInterface().IsChannelPollEnabled(m_device_number);
++
++  if (m_mode == Mode::Pad)
++  {
++    // The field-proven controller, including Success while EN0 is clear.
++    const DataResponse r = m_controller->GetData(hi, low);
++    m_last_buttons = r == DataResponse::Success ? static_cast<u16>(hi >> 16) : 0;
++    GCPadStatus g{};
++    g.button = reset;
++    m_gba->ApplyPadStatus(g);
++    return r;
++  }
++
++  // Exactly one synced pad pop per call, as in Pad mode.
++  GCPadStatus s{};
++  if (!NetPlay::IsNetPlayRunning())
++    s = Pad::GetStatus(m_device_number);
++  CSIDevice_GCController::HandleMoviePadStatus(movie, m_device_number, &s);
++  m_last_buttons = s.button;
++
++  if (m_mode == Mode::Unplug)
++  {
++    hi = 0;
++    low = 0;
++    GCPadStatus g{};
++    g.button = reset;
++    m_gba->ApplyPadStatus(g);
++    return en0 ? DataResponse::ErrorNoResponseReady : DataResponse::NoData;
++  }
++
++  GCPadStatus g = ToGba(s);
++  g.button |= (gl.button & GBA_KEY_MASK) | reset;
++  m_gba->ApplyPadStatus(g);
++  if (en0)
++  {
++    hi = 0;
++    low = 0;
++    return DataResponse::ErrorNoResponseReady;
++  }
++  return DataResponse::NoData;
++}
++
++int CSIDevice_XDMultiPort::RunBuffer(u8* buffer, int request_length)
++{
++  m_fresh = false;
++  if (!m_gba)
++    return m_controller->RunBuffer(buffer, request_length);
++
++  const u64 now = m_system.GetCoreTiming().GetTicks();
++  const u8 cmd = buffer[0];
++
++  switch (m_mode)
++  {
++  case Mode::Pad:
++    switch (static_cast<EBufferCommands>(cmd))
++    {
++    case EBufferCommands::CMD_STATUS:
++    case EBufferCommands::CMD_RESET:
++    case EBufferCommands::CMD_DIRECT:
++    case EBufferCommands::CMD_ORIGIN:
++    case EBufferCommands::CMD_RECALIBRATE:
++      return m_controller->RunBuffer(buffer, request_length);
++    default:
++      // GBA link traffic (0x14/0x15/0x1D...) finds no GBA here.
++      ++m_diag_pad_rejects;
++      if (!m_diag_reject_logged[cmd])
++      {
++        m_diag_reject_logged[cmd] = true;
++        Log(now, fmt::format("pad-reject cmd={:02x}", cmd));
++      }
++      return -1;
++    }
++
++  case Mode::Unplug:
++    return -1;
++
++  case Mode::Gba:
++    break;
++  }
++
++  if (now < m_silent_until && !m_gba_pending)
++  {
++    ++m_diag_silent_rejects;
++    return -1;
++  }
++
++  if (!m_gba_pending)
++    m_pending_cmd = cmd;
++  const int r = m_gba->RunBuffer(buffer, request_length);
++  m_gba_pending = r == 0;
++
++  const u8 sent = m_pending_cmd;
++  const bool data_cmd = sent == static_cast<u8>(EBufferCommands::CMD_READ_GBA) ||
++                        sent == static_cast<u8>(EBufferCommands::CMD_WRITE_GBA);
++  const bool probe_cmd = sent == static_cast<u8>(EBufferCommands::CMD_STATUS) ||
++                         sent == static_cast<u8>(EBufferCommands::CMD_RESET);
++  if (r > 0 && data_cmd)
++  {
++    m_last_data_tick = now;
++    if (!m_data_seen)
++    {
++      m_data_seen = true;
++      Log(now, fmt::format("first-data cmd={:02x}", sent));
++    }
++  }
++  if (r > 0)
++    m_probe_fail_streak = 0;
++  else if (r < 0 && probe_cmd && m_probe_fail_streak < 0xffffffffu)
++    ++m_probe_fail_streak;
++  return r;
++}
++
++int CSIDevice_XDMultiPort::TransferInterval()
++{
++  if (!m_gba)
++    return m_controller->TransferInterval();
++  const u64 now = m_system.GetCoreTiming().GetTicks();
++  const bool silent = now < m_silent_until && !m_gba_pending;
++  if (m_gba_pending || (m_mode == Mode::Gba && !silent))
++    return m_gba->TransferInterval();
++  return m_controller->TransferInterval();
++}
++
++void CSIDevice_XDMultiPort::SendCommand(u32 command, u8 poll)
++{
++  // Only the pad sees direct commands; anything else would PanicAlert in it.
++  if (m_gba && m_mode != Mode::Pad)
++    return;
++
++  m_controller->SendCommand(command, poll);
++
++  // The controller's own rumble is a no-op for this device type, so drive the
++  // local pad directly, mirroring CSIDevice_GCController::SendCommand.
++  const UCommand controller_command(command);
++  if (static_cast<EDirectCommands>(controller_command.command) == EDirectCommands::CMD_WRITE)
++  {
++    const int pad_num = CSIDevice_GCController::NetPlay_InGamePadToLocalPad(m_device_number);
++    if (pad_num < 4 &&
++        m_system.GetSerialInterface().GetDeviceType(pad_num) == SIDEVICE_GC_GBA_XDMULTI)
++    {
++      Pad::Rumble(pad_num, controller_command.parameter1 == 1 ? 1.0 : 0.0);
++    }
++  }
++}
++
++void CSIDevice_XDMultiPort::OnEvent(u64 userdata, s64 cycles_late)
++{
++  m_fresh = false;
++  // The channel's sync event always belongs to the GBA core.
++  if (m_gba)
++    m_gba->OnEvent(userdata, cycles_late);
++}
++
++void CSIDevice_XDMultiPort::DoState(PointerWrap& p)
++{
++  p.Do(m_mode);
++  p.Do(m_mode_tick);
++  p.Do(m_armed);
++  p.Do(m_trigger_streak);
++  p.Do(m_gba_pending);
++  p.Do(m_pending_cmd);
++  p.Do(m_data_seen);
++  p.Do(m_last_data_tick);
++  p.Do(m_probe_fail_streak);
++  p.Do(m_battle_seen);
++  p.Do(m_bflag_prev);
++  p.Do(m_battle_end_tick);
++  p.Do(m_ctx_prev);
++  p.Do(m_errflag_prev);
++  p.Do(m_want_pad);
++  p.Do(m_want_reason);
++  p.Do(m_cond_since);
++  p.Do(m_silent_until);
++  p.Do(m_replug6_done);
++  p.Do(m_last_buttons);
++  p.Do(m_combo_since);
++  p.Do(m_combo_released);
++  p.Do(m_link_lost_since);
++
++  m_controller->DoState(p);
++  if (m_gba)
++    m_gba->DoState(p);
++
++  if (p.IsReadMode())
++  {
++    if (m_fresh && m_gba)
++    {
++      // This device was created by SerialInterfaceManager::DoState for this
++      // load, after CoreTiming restored the saved sync event: drop the
++      // duplicate from the constructor (or a removal by the old device's
++      // destructor) and keep exactly one chain.
++      auto& si = m_system.GetSerialInterface();
++      si.RemoveEvent(m_device_number);
++      si.ScheduleEvent(m_device_number, m_system.GetSystemTimers().GetTicksPerSecond() / 1000);
++    }
++    m_diag_have_prev = false;
++    m_diag_padok_armed = false;
++    Log(m_system.GetCoreTiming().GetTicks(),
++        fmt::format("state-load mode={} fresh={}", ModeName(m_mode), m_fresh ? 1 : 0), true);
++  }
++  m_fresh = false;
++}
++
++std::string CSIDevice_XDMultiPort::Snapshot(u64 now) const
++{
++  const auto& memory = m_system.GetMemory();
++  const auto& si = m_system.GetSerialInterface();
++  const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
++  const u64 ms = std::max<u64>(tps / 1000, 1);
++  const u32 sisr = si.GetStatusRegisterForDiag();
++
++  std::string out;
++  if (memory.Read_U32(0x80000000) == XD_DISC_ID_GXXE)
++  {
++    out = fmt::format(
++        "vs={:08x} ctx={:08x},{:08x},{:08x},{:08x} ch={} c28={} c24={:08x} cmode={} s30={:02x} "
++        "s48={:02x} fmt={:08x} bflag={} ef={} mask={:02x}",
++        memory.Read_U32(XD_VSROW), memory.Read_U32(XD_CTX), memory.Read_U32(XD_CTX + 4),
++        memory.Read_U32(XD_CTX + 8), memory.Read_U32(XD_CTX + 12), memory.Read_U8(XD_CTX_CH),
++        memory.Read_U32(XD_CTX_28), memory.Read_U32(XD_CTX_24), memory.Read_U32(XD_CTX_MODE),
++        memory.Read_U8(XD_CTX_30), memory.Read_U8(XD_CTX_48), memory.Read_U32(XD_FORMAT),
++        memory.Read_U32(XD_BFLAG), memory.Read_U8(XD_ERRFLAG), memory.Read_U8(XD_PORT_MASK));
++    out += fmt::format(" type0={:08x} tt0={:08x} poll={:08x} padEn={:08x} padRst={:08x} "
++                       "padWait={:08x} rstCh={:08x}",
++                       memory.Read_U32(XD_SI_TYPE0), memory.Read_U32(XD_SI_TT0),
++                       memory.Read_U32(XD_SI_POLL), memory.Read_U32(XD_PAD_EN),
++                       memory.Read_U32(XD_PAD_RST), memory.Read_U32(XD_PAD_WAIT),
++                       memory.Read_U32(XD_RST_CH));
++    out += fmt::format(" tbl={:08x},{:08x},{:08x},{:08x} deb={:08x},{:08x},{:08x},{:08x}",
++                       memory.Read_U32(XD_TYPE_TABLE), memory.Read_U32(XD_TYPE_TABLE + 4),
++                       memory.Read_U32(XD_TYPE_TABLE + 8), memory.Read_U32(XD_TYPE_TABLE + 12),
++                       memory.Read_U32(XD_TYPE_DEBOUNCE), memory.Read_U32(XD_TYPE_DEBOUNCE + 4),
++                       memory.Read_U32(XD_TYPE_DEBOUNCE + 8),
++                       memory.Read_U32(XD_TYPE_DEBOUNCE + 12));
++    for (u32 p = 0; p < 4; ++p)
++      out += fmt::format(" lA{}={:08x}", p, memory.Read_U32(XD_LINK_A + 4 * p));
++    for (u32 p = 0; p < 4; ++p)
++      out += fmt::format(" lB{}={:08x}", p, memory.Read_U32(XD_LINK_B + 4 * p));
++    for (u32 i = 0; i < 4; ++i)
++    {
++      const u32 rec = XD_PORT_RECS + XD_PORT_REC_STRIDE * i;
++      out += fmt::format(" rec{}={{{},{:08x},{:08x},{}}}", i, memory.Read_U32(rec),
++                         memory.Read_U32(rec + 4), memory.Read_U32(rec + 0xC),
++                         static_cast<s8>(memory.Read_U8(rec + 0x3E)));
++    }
++  }
++  else
++  {
++    out = "not-xd";
++  }
++  out += fmt::format(" en0={} en1={} en2={} en3={} sisr={:08x}",
++                     si.IsChannelPollEnabled(0) ? 1 : 0, si.IsChannelPollEnabled(1) ? 1 : 0,
++                     si.IsChannelPollEnabled(2) ? 1 : 0, si.IsChannelPollEnabled(3) ? 1 : 0,
++                     sisr & 0x38383838u);
++  const u64 quiet_base = std::max(m_last_data_tick, m_mode_tick);
++  out += fmt::format(" pend={} silent={} quiet_ms={} pfs={} linkdiag(racy)={}",
++                     m_gba_pending ? 1 : 0, now < m_silent_until ? 1 : 0,
++                     Since(now, quiet_base) / ms, m_probe_fail_streak,
++                     (m_gba && m_gba->IsLinkUpForDiag()) ? 1 : 0);
++  return out;
++}
++
++void CSIDevice_XDMultiPort::LogDiagnostics(const XdRam& ram, bool en0, u64 now)
++{
++  const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
++  const u64 ms = std::max<u64>(tps / 1000, 1);
++
++  if (m_diag_have_prev && en0 != m_diag_prev_en0 && m_diag_en0_lines < 256)
++  {
++    ++m_diag_en0_lines;
++    Log(now, fmt::format("en0 {} mode={}", en0 ? 1 : 0, ModeName(m_mode)));
++  }
++
++  if (m_mode == Mode::Gba && ram.is_xd && m_diag_have_prev && m_diag_ctx_lines < 64 &&
++      (ram.ctx != m_ctx_prev || ram.ctx28 != m_diag_prev_ctx28 ||
++       ram.errflag != m_errflag_prev))
++  {
++    ++m_diag_ctx_lines;
++    Log(now, fmt::format("ctx {:08x},{:08x},{:08x},{:08x} ch={} c28={} cmode={} ef={} bflag={}",
++                         ram.ctx[0], ram.ctx[1], ram.ctx[2], ram.ctx[3], ram.ctxch, ram.ctx28,
++                         ram.ctxmode, ram.errflag, ram.bflag));
++  }
++
++  // pad-ok watch after a switch back to the pad: XD released socket 1 once its
++  // port-1 record reads +0xC == 0 and +4 == 0.
++  if (m_mode == Mode::Pad && m_diag_padok_armed && ram.is_xd)
++  {
++    const auto& memory = m_system.GetMemory();
++    bool released = false;
++    for (u32 i = 0; i < 4; ++i)
++    {
++      const u32 rec = XD_PORT_RECS + XD_PORT_REC_STRIDE * i;
++      if (memory.Read_U32(rec) == 1)
++      {
++        released = memory.Read_U32(rec + 0xC) == 0 && memory.Read_U32(rec + 4) == 0;
++        break;
++      }
++    }
++    if (released)
++    {
++      m_diag_padok_armed = false;
++      Log(now,
++          fmt::format("pad-ok ms={} {}", Since(now, m_diag_padok_start) / ms, Snapshot(now)),
++          true);
++    }
++    else if (!m_diag_padwait_logged && Since(now, m_diag_padok_start) >= 5 * tps)
++    {
++      m_diag_padwait_logged = true;
++      Log(now, fmt::format("pad-wait {}", Snapshot(now)), true);
++    }
++  }
++  else if (m_mode != Mode::Pad)
++  {
++    m_diag_padok_armed = false;
++  }
++
++  const bool sum_window =
++      m_mode != Mode::Pad || (m_diag_pad_since != 0 && Since(now, m_diag_pad_since) < 10 * tps);
++  if (sum_window && (m_diag_last_sum == 0 || Since(now, m_diag_last_sum) >= 2 * tps))
++  {
++    const u64 elapsed = m_diag_last_sum == 0 ? 0 : Since(now, m_diag_last_sum);
++    const u64 per_s = elapsed == 0 ? 0 : m_diag_pad_rejects * tps / elapsed;
++    Log(now, fmt::format("sum mode={} armed={} want={} rej={} rej_per_s={} silent_rej={} {}",
++                         ModeName(m_mode), m_armed ? 1 : 0, WantReasonName(m_want_reason),
++                         m_diag_pad_rejects, per_s, m_diag_silent_rejects, Snapshot(now)),
++        true);
++    m_diag_last_sum = now;
++    m_diag_pad_rejects = 0;
++    m_diag_silent_rejects = 0;
++  }
++
++  m_diag_prev_en0 = en0;
++  m_diag_prev_ctx28 = ram.ctx28;
++  m_diag_have_prev = true;
++}
++}  // namespace SerialInterface
++
++#endif  // HAS_LIBMGBA
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.h b/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.h
+new file mode 100644
+index 0000000..0190276
+--- /dev/null
++++ b/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.h
+@@ -0,0 +1,130 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#ifdef HAS_LIBMGBA
++
++#include <array>
++#include <memory>
++#include <string>
++
++#include "Common/CommonTypes.h"
++#include "Core/HW/SI/SI_Device.h"
++
++struct GCPadStatus;
++
++namespace SerialInterface
++{
++class CSIDevice_GCController;
++class CSIDevice_GBAEmu;
++
++// Port 1 for XD's multi battles ("GBA + GBA VS GBA + GBA"). XD drives the whole
++// mode from the controller in socket 1, then asks for a GBA in that same
++// socket. This device is a GC controller (Pad) until XD's socket-1 prompt,
++// answers NOREP+RDST for a moment so XD's PADRead unplugs the pad (Unplug),
++// then becomes an integrated GBA (Gba) until the battle or the prompt ends.
++//
++// Every control decision is a pure function of XD RAM, SIPOLL, this device's
++// synced pad sample, CoreTiming ticks and the inner GBA's RunBuffer results, so
++// the mode is identical on every netplay peer. Only channel 0 owns a GBA core;
++// on any other channel the device is an inert GC controller.
++class CSIDevice_XDMultiPort final : public ISIDevice
++{
++public:
++  CSIDevice_XDMultiPort(Core::System& system, SIDevices device, int device_number);
++  ~CSIDevice_XDMultiPort() override;
++
++  int RunBuffer(u8* buffer, int request_length) override;
++  int TransferInterval() override;
++  DataResponse GetData(u32& hi, u32& low) override;
++  void SendCommand(u32 command, u8 poll) override;
++  void DoState(PointerWrap& p) override;
++  void OnEvent(u64 userdata, s64 cycles_late) override;
++
++  enum class Mode : u8
++  {
++    Pad = 0,
++    Unplug = 1,
++    Gba = 2,
++  };
++
++private:
++  // One read of the XD words the mode machine uses (all zero off XD).
++  struct XdRam
++  {
++    bool is_xd = false;
++    std::array<u32, 4> ctx{};
++    u8 ctxch = 0;
++    u32 ctx28 = 0;
++    u32 ctxmode = 0;
++    u8 errflag = 0;
++    u32 bflag = 0;
++    std::array<u32, 4> link_a{};
++    std::array<u32, 4> link_b{};
++  };
++
++  XdRam ReadXdRam() const;
++  void EvaluateTransitions(u64 now, bool en0);
++  void EvaluatePad(const XdRam& ram, bool at_prompt, bool prompt_live, bool combo_fire, u64 now);
++  void EvaluateUnplug(const XdRam& ram, bool at_prompt, bool err_edge, bool combo_fire, bool en0,
++                      u64 now);
++  void EvaluateGba(const XdRam& ram, bool err_edge, int err_ctx, bool combo_fire, u64 now);
++  void SwitchMode(Mode to, const char* reason, const XdRam& ram, u64 now);
++  static GCPadStatus ToGba(const GCPadStatus& pad);
++
++  // Diagnostics (gba_detect log). Never read by control.
++  std::string Snapshot(u64 now) const;
++  void Log(u64 now, const std::string& detail, bool flush = false) const;
++  void LogDiagnostics(const XdRam& ram, bool en0, u64 now);
++
++  std::unique_ptr<CSIDevice_GCController> m_controller;
++  // Only on channel 0.
++  std::unique_ptr<CSIDevice_GBAEmu> m_gba;
++
++  // Serialized (DoState order).
++  Mode m_mode = Mode::Pad;
++  u64 m_mode_tick = 0;
++  bool m_armed = true;
++  u32 m_trigger_streak = 0;
++  bool m_gba_pending = false;
++  u8 m_pending_cmd = 0;
++  bool m_data_seen = false;
++  u64 m_last_data_tick = 0;
++  u32 m_probe_fail_streak = 0;
++  bool m_battle_seen = false;
++  u32 m_bflag_prev = 0;
++  u64 m_battle_end_tick = 0;
++  std::array<u32, 4> m_ctx_prev{};
++  u8 m_errflag_prev = 0;
++  bool m_want_pad = false;
++  u8 m_want_reason = 0;
++  u64 m_cond_since = 0;
++  u64 m_silent_until = 0;
++  bool m_replug6_done = false;
++  u16 m_last_buttons = 0;
++  u64 m_combo_since = 0;
++  bool m_combo_released = true;
++  u64 m_link_lost_since = 0;
++
++  // Not serialized: true until the first DoState/GetData/RunBuffer/OnEvent.
++  bool m_fresh = true;
++
++  // Diagnostics only. Not serialized, never read by control.
++  bool m_diag_have_prev = false;
++  bool m_diag_prev_en0 = false;
++  u32 m_diag_en0_lines = 0;
++  u32 m_diag_prev_ctx28 = 0;
++  u32 m_diag_ctx_lines = 0;
++  u64 m_diag_last_sum = 0;
++  u64 m_diag_pad_since = 0;
++  u32 m_diag_pad_rejects = 0;
++  u32 m_diag_silent_rejects = 0;
++  std::array<bool, 256> m_diag_reject_logged{};
++  bool m_diag_padok_armed = false;
++  bool m_diag_padwait_logged = false;
++  u64 m_diag_padok_start = 0;
++};
++}  // namespace SerialInterface
++
++#endif  // HAS_LIBMGBA
+diff --git a/Source/Core/Core/NetPlayProto.h b/Source/Core/Core/NetPlayProto.h
+index 6670a35..71ad981 100644
+--- a/Source/Core/Core/NetPlayProto.h
++++ b/Source/Core/Core/NetPlayProto.h
+@@ -145,6 +145,10 @@ struct NetSettings
+   bool xd_deterministic_clock = false;
+   u32 xd_clock_salt = 0;
+   u32 xd_rng_seed = 0;
++  // XD multi battles: channel 0 is the port-1 controller that becomes a GBA
++  // (SIDEVICE_GC_GBA_XDMULTI). Not serialized yet; always false until the
++  // multi-battle lobby sends it.
++  bool xd_multi_p1 = false;
+ 
+   Sram sram;
+ 
+diff --git a/Source/Core/DolphinLib.props b/Source/Core/DolphinLib.props
+index f356781..76a54b8 100644
+--- a/Source/Core/DolphinLib.props
++++ b/Source/Core/DolphinLib.props
+@@ -340,6 +340,7 @@
+     <ClInclude Include="Core\HW\SI\SI_DeviceGCSteeringWheel.h" />
+     <ClInclude Include="Core\HW\SI\SI_DeviceKeyboard.h" />
+     <ClInclude Include="Core\HW\SI\SI_DeviceNull.h" />
++    <ClInclude Include="Core\HW\SI\SI_DeviceXDMultiPort.h" />
+     <ClInclude Include="Core\HW\SI\SI.h" />
+     <ClInclude Include="Core\HW\Sram.h" />
+     <ClInclude Include="Core\HW\StreamADPCM.h" />
+@@ -1068,6 +1069,7 @@
+     <ClCompile Include="Core\HW\SI\SI_DeviceGCSteeringWheel.cpp" />
+     <ClCompile Include="Core\HW\SI\SI_DeviceKeyboard.cpp" />
+     <ClCompile Include="Core\HW\SI\SI_DeviceNull.cpp" />
++    <ClCompile Include="Core\HW\SI\SI_DeviceXDMultiPort.cpp" />
+     <ClCompile Include="Core\HW\SI\SI.cpp" />
+     <ClCompile Include="Core\HW\Sram.cpp" />
+     <ClCompile Include="Core\HW\StreamADPCM.cpp" />
+diff --git a/Source/Core/DolphinQt/Config/GamecubeControllersWidget.cpp b/Source/Core/DolphinQt/Config/GamecubeControllersWidget.cpp
+index 2a93221..60a0591 100644
+--- a/Source/Core/DolphinQt/Config/GamecubeControllersWidget.cpp
++++ b/Source/Core/DolphinQt/Config/GamecubeControllersWidget.cpp
+@@ -16,11 +16,13 @@
+ #include "Core/ConfigManager.h"
+ #include "Core/Core.h"
+ #include "Core/HW/SI/SI_Device.h"
++#include "Core/Movie.h"
+ #include "Core/NetPlayProto.h"
+ #include "Core/System.h"
+ 
+ #include "DolphinQt/Config/Mapping/GCPadWiiUConfigDialog.h"
+ #include "DolphinQt/Config/Mapping/MappingWindow.h"
++#include "DolphinQt/QtUtils/ModalMessageBox.h"
+ #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
+ #include "DolphinQt/QtUtils/SignalBlocking.h"
+ #include "DolphinQt/Settings.h"
+@@ -40,8 +42,18 @@ static constexpr std::array s_gc_types = {
+     SIDeviceName{SerialInterface::SIDEVICE_GC_GBA, _trans("GBA (TCP)")},
+     SIDeviceName{SerialInterface::SIDEVICE_GC_KEYBOARD, _trans("Keyboard Controller")},
+     SIDeviceName{SerialInterface::SIDEVICE_AM_BASEBOARD, _trans("Triforce Baseboard")},
++#ifdef HAS_LIBMGBA
++    // Port 1 only; must stay the last entry.
++    SIDeviceName{SerialInterface::SIDEVICE_GC_GBA_XDMULTI, _trans("XD Multi (Controller + GBA)")},
++#endif
+ };
+ 
++// XD Multi is offered on Port 1 only.
++static bool IsGCTypeOffered(size_t port, SerialInterface::SIDevices sidevice)
++{
++  return port == 0 || sidevice != SerialInterface::SIDEVICE_GC_GBA_XDMULTI;
++}
++
+ static std::optional<int> ToGCMenuIndex(const SerialInterface::SIDevices sidevice)
+ {
+   for (size_t i = 0; i < s_gc_types.size(); ++i)
+@@ -57,6 +69,15 @@ static SerialInterface::SIDevices FromGCMenuIndex(const int menudevice)
+   return s_gc_types[menudevice].first;
+ }
+ 
++// A movie records XD Multi as a plain pad, so it cannot be chosen while one is
++// recording or playing.
++static bool IsXDMultiBlockedByMovie(const QComboBox* box)
++{
++  const int index = box->currentIndex();
++  return index >= 0 && FromGCMenuIndex(index) == SerialInterface::SIDEVICE_GC_GBA_XDMULTI &&
++         Core::System::GetInstance().GetMovie().IsMovieActive();
++}
++
+ GamecubeControllersWidget::GamecubeControllersWidget(QWidget* parent) : QWidget(parent)
+ {
+   CreateLayout();
+@@ -84,7 +105,8 @@ void GamecubeControllersWidget::CreateLayout()
+ 
+     for (const auto& item : s_gc_types)
+     {
+-      gc_box->addItem(tr(item.second));
++      if (IsGCTypeOffered(i, item.first))
++        gc_box->addItem(tr(item.second));
+     }
+ 
+     int controller_row = m_gc_layout->rowCount();
+@@ -106,6 +128,13 @@ void GamecubeControllersWidget::ConnectWidgets()
+   for (size_t i = 0; i < m_gc_controller_boxes.size(); ++i)
+   {
+     connect(m_gc_controller_boxes[i], &QComboBox::currentIndexChanged, this, [this, i] {
++      if (IsXDMultiBlockedByMovie(m_gc_controller_boxes[i]))
++      {
++        LoadSettings(Core::GetState(Core::System::GetInstance()));
++        ModalMessageBox::information(this, tr("XD Multi"),
++                                     tr("Stop the movie before choosing XD Multi."));
++        return;
++      }
+       OnGCTypeChanged(i);
+       SaveSettings();
+     });
+@@ -115,6 +144,8 @@ void GamecubeControllersWidget::ConnectWidgets()
+ 
+ void GamecubeControllersWidget::OnGCTypeChanged(size_t index)
+ {
++  if (m_gc_controller_boxes[index]->currentIndex() < 0)
++    return;
+   const SerialInterface::SIDevices si_device =
+       FromGCMenuIndex(m_gc_controller_boxes[index]->currentIndex());
+   m_gc_buttons[index]->setEnabled(si_device != SerialInterface::SIDEVICE_NONE &&
+@@ -125,12 +156,16 @@ void GamecubeControllersWidget::OnGCPadConfigure(size_t index)
+ {
+   MappingWindow::Type type;
+ 
++  if (m_gc_controller_boxes[index]->currentIndex() < 0)
++    return;
++
+   switch (FromGCMenuIndex(m_gc_controller_boxes[index]->currentIndex()))
+   {
+   case SerialInterface::SIDEVICE_NONE:
+   case SerialInterface::SIDEVICE_GC_GBA:
+     return;
+   case SerialInterface::SIDEVICE_GC_CONTROLLER:
++  case SerialInterface::SIDEVICE_GC_GBA_XDMULTI:
+     type = MappingWindow::Type::MAPPING_GCPAD;
+     break;
+   case SerialInterface::SIDEVICE_WIIU_ADAPTER:
+@@ -172,8 +207,10 @@ void GamecubeControllersWidget::LoadSettings(Core::State state)
+   const bool running = state != Core::State::Uninitialized;
+   for (size_t i = 0; i < m_gc_groups.size(); i++)
+   {
+-    const SerialInterface::SIDevices si_device =
++    SerialInterface::SIDevices si_device =
+         Config::Get(Config::GetInfoForSIDevice(static_cast<int>(i)));
++    if (!IsGCTypeOffered(i, si_device))
++      si_device = SerialInterface::SIDEVICE_GC_CONTROLLER;
+     const std::optional<int> gc_index = ToGCMenuIndex(si_device);
+     if (gc_index)
+     {
+@@ -191,6 +228,8 @@ void GamecubeControllersWidget::SaveSettings()
+ 
+     for (size_t i = 0; i < m_gc_groups.size(); ++i)
+     {
++      if (m_gc_controller_boxes[i]->currentIndex() < 0)
++        continue;
+       const SerialInterface::SIDevices si_device =
+           FromGCMenuIndex(m_gc_controller_boxes[i]->currentIndex());
+       Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(static_cast<int>(i)), si_device);
+diff --git a/Source/Core/DolphinQt/MainWindow.cpp b/Source/Core/DolphinQt/MainWindow.cpp
+index e6b5398..626d98a 100644
+--- a/Source/Core/DolphinQt/MainWindow.cpp
++++ b/Source/Core/DolphinQt/MainWindow.cpp
+@@ -2091,6 +2091,15 @@ void MainWindow::OnStartRecording()
+     return;
+   }
+ 
++  // XD Multi switches port 1 between a pad and a GBA from game state; a movie
++  // would replay it as a plain pad. Netplay recording starts elsewhere and uses
++  // its own device mapping.
++  if (Config::Get(Config::GetInfoForSIDevice(0)) == SerialInterface::SIDEVICE_GC_GBA_XDMULTI)
++  {
++    Core::DisplayMessage("Movie recording is unavailable with XD Multi on port 1", 4000);
++    return;
++  }
++
+   if (movie.IsReadOnly())
+   {
+     // The user just chose to record a movie, so that should take precedence
+@@ -2106,10 +2115,16 @@ void MainWindow::OnStartRecording()
+     const SerialInterface::SIDevices si_device = Config::Get(Config::GetInfoForSIDevice(i));
+     if (si_device == SerialInterface::SIDEVICE_GC_GBA_EMULATED)
+       controllers[i] = Movie::ControllerType::GBA;
+-    else if (SerialInterface::SIDevice_IsGCController(si_device))
++    else if (SerialInterface::SIDevice_IsGCController(si_device) ||
++             si_device == SerialInterface::SIDEVICE_GC_GBA_XDMULTI)
++    {
++      // XD Multi off port 1 is a plain pad.
+       controllers[i] = Movie::ControllerType::GC;
++    }
+     else
++    {
+       controllers[i] = Movie::ControllerType::None;
++    }
+     wiimotes[i] = Config::Get(Config::GetInfoForWiimoteSource(i)) != WiimoteSource::None;
+   }
+ 
+diff --git a/Source/Core/DolphinQt/XDNetplay/PbrLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/PbrLauncherDialog.cpp
+index 9a9e693..3fb16d1 100644
+--- a/Source/Core/DolphinQt/XDNetplay/PbrLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/PbrLauncherDialog.cpp
+@@ -182,6 +182,12 @@ void EnsurePbrConfig()
+       Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(channel), SerialInterface::SIDEVICE_NONE);
+     }
+   }
++  // The XD Multi port owns an Emerald core too; PBR gets a plain pad.
++  if (Config::Get(Config::GetInfoForSIDevice(0)) == SerialInterface::SIDEVICE_GC_GBA_XDMULTI)
++  {
++    Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(0),
++                             SerialInterface::SIDEVICE_GC_CONTROLLER);
++  }
+   Config::Save();
+ }
+ }  // namespace
+-- 
+2.39.5 (Apple Git-154)
+

@@ -1,0 +1,688 @@
+From 9a54472d5e0c09699b0c5fbaea5f00763fac6823 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 13:58:41 -0700
+Subject: [PATCH 155/157] XD Netplay v1.7.4: Realgam, Realgam Classic, Pyrite
+ and Phenac formats
+
+Four new formats, all Orre shaped like Orre Colosseum: bring 6, pick 4,
+double battle, the same pinned rules record (Lv100 preset slot 3 or Lv50
+slot 2, entries 4, entry mode 0 so the game's pick flow runs) with every
+in-game clause on, and the same app-side Species Clause, Item Clause and
+Soul Dew ban.
+
+Realgam (id 10, "[Realgam] ", Lv 100): a team may bring up to two of
+Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi and
+Deoxys, counted over all six. Refusal: "3 Restricted or Mythical Pokemon,
+the limit is 2".
+
+Realgam Classic (id 11, "[Realgam-C] ", Lv 100): the same, limit one.
+
+Pyrite (id 12, "[Pyrite] ", Lv 50, cap 50): every Pokemon must have an
+evolution whose National dex number is in its own generation block (1-151,
+152-251, 252-386). Middle stages qualify. Refusal: "banned species:
+Scyther (no evolution in its own generation)".
+
+Phenac (id 13, "[Phenac] ", Lv 50, cap 50): Pyrite's rule and no
+pre-evolution from the same or an earlier generation, plus Metapod,
+Kakuna, Silcoon and Cascoon. Pikachu, Clefairy, Jigglypuff and Marill are
+refused their listed baby and egg moves.
+
+gen3data.json has no evolution data, so FormatRules carries the 184 Gen 1-3
+evolution edges as a constant table and computes both species rules from
+it once, on first use. Each format has an allow-list array for species
+admitted by name; Pyrite's is empty for now.
+
+Every picker lists them after Hoenn Limited, before Multi and Free, from
+the shared-core list (Android included, through the existing JNI list).
+The launcher tooltip and the Android format hints describe them.
+---
+ .../features/xdnetplay/FormatBridge.kt        |   7 +-
+ .../features/xdnetplay/ui/XDLauncherScreen.kt |   8 +
+ .../app/src/main/res/values/strings.xml       |   4 +
+ .../jni/NetPlay/NetPlayIndexBridge.cpp        |   2 +-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  |   9 +
+ .../UICommon/XDNetplay/BattleCustomizer.cpp   |   8 +-
+ .../UICommon/XDNetplay/BattleCustomizer.h     |   5 +-
+ .../Core/UICommon/XDNetplay/FormatRules.cpp   | 297 +++++++++++++++++-
+ Source/Core/UICommon/XDNetplay/FormatRules.h  |  38 ++-
+ 9 files changed, 352 insertions(+), 26 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/FormatBridge.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/FormatBridge.kt
+index 71fb40a..4c5ff0d 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/FormatBridge.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/FormatBridge.kt
+@@ -40,13 +40,18 @@ object FormatBridge {
+     const val FORMAT_DOUBLES_OU = 8
+     /** Reserved, not built yet: only listed while the MultiEnabled flag is on. */
+     const val FORMAT_MULTI = 9
++    const val FORMAT_REALGAM = 10
++    const val FORMAT_REALGAM_CLASSIC = 11
++    const val FORMAT_PYRITE = 12
++    const val FORMAT_PHENAC = 13
+ 
+     /** True only for the exact OU value: an unknown key value behaves as Free. */
+     fun isOu(formatKeyValue: Int): Boolean = formatKeyValue == FORMAT_OU
+ 
+     /** The ordered list every picker shows (FormatRules::SelectableFormats with
+      *  the MultiEnabled flag): Orre Colosseum, OU, Doubles OU, the Orre and
+-     *  Hoenn families, Multi only when enabled, then Free. */
++     *  Hoenn families, Realgam, Realgam Classic, Pyrite, Phenac, Multi only
++     *  when enabled, then Free. */
+     fun selectableFormats(): IntArray = nativeSelectableFormats()
+ 
+     /** Every known format id, Multi included whatever the flag says. For
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+index 825c3c4..9487d77 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+@@ -335,6 +335,14 @@ private fun BattleStyleCard(
+                             stringResource(R.string.xd_format_hint_ou)
+                         FormatBridge.FORMAT_DOUBLES_OU ->
+                             stringResource(R.string.xd_format_hint_doubles_ou)
++                        FormatBridge.FORMAT_REALGAM ->
++                            stringResource(R.string.xd_format_hint_realgam)
++                        FormatBridge.FORMAT_REALGAM_CLASSIC ->
++                            stringResource(R.string.xd_format_hint_realgam_classic)
++                        FormatBridge.FORMAT_PYRITE ->
++                            stringResource(R.string.xd_format_hint_pyrite)
++                        FormatBridge.FORMAT_PHENAC ->
++                            stringResource(R.string.xd_format_hint_phenac)
+                         FormatBridge.FORMAT_MULTI ->
+                             stringResource(R.string.xd_format_hint_multi)
+                         else -> stringResource(R.string.xd_format_hint_free)
+diff --git a/Source/Android/app/src/main/res/values/strings.xml b/Source/Android/app/src/main/res/values/strings.xml
+index ec464d2..a7335c2 100644
+--- a/Source/Android/app/src/main/res/values/strings.xml
++++ b/Source/Android/app/src/main/res/values/strings.xml
+@@ -1147,6 +1147,10 @@ It can efficiently compress both junk data and encrypted Wii data.
+     <string name="xd_format_hint_orre">Applies to rooms you host (listed with an [Orre] tag): no Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys; no duplicate species; no duplicate held items; Soul Dew banned. Sleep, Freeze, and Self-KO clauses are enforced by the game itself.</string>
+     <string name="xd_format_hint_doubles_ou">Applies to rooms you host (listed with a [DOU] tag): Smogon ADV Doubles OU, Lv 100 doubles, all six battle. No Mewtwo, Mew, Lugia, Ho-Oh, Latias, Latios, Kyogre, Groudon, Rayquaza, Deoxys, or Ninjask; no Double Team, Minimize, Fissure, Guillotine, Horn Drill, Sheer Cold, Self-Destruct, or Explosion; no duplicate species. Items are unrestricted.</string>
+     <string name="xd_format_hint_multi">Not built yet. Plays like Free.</string>
++    <string name="xd_format_hint_realgam">Applies to rooms you host (listed with a [Realgam] tag): Orre Colosseum rules, but a team may bring up to two of Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, and Deoxys. No duplicate species; no duplicate held items; Soul Dew banned.</string>
++    <string name="xd_format_hint_realgam_classic">Applies to rooms you host (listed with a [Realgam-C] tag): Orre Colosseum rules, but a team may bring one of Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys. No duplicate species; no duplicate held items; Soul Dew banned.</string>
++    <string name="xd_format_hint_pyrite">Applies to rooms you host (listed with a [Pyrite] tag): LEVEL 50 doubles. Only Pokémon that can evolve within their own generation (Ivysaur yes; Scyther, Onix, and Golbat no). No duplicate species; no duplicate held items; Soul Dew banned.</string>
++    <string name="xd_format_hint_phenac">Applies to rooms you host (listed with a [Phenac] tag): LEVEL 50 doubles. The Pyrite rule, but only the first stage in that generation (Pikachu and Marill count), plus Metapod, Kakuna, Silcoon, and Cascoon. Pikachu, Clefairy, Jigglypuff, and Marill lose some pre-evolution and egg moves. No duplicate species or held items; Soul Dew banned.</string>
+     <!-- Host-side battle timer, folded into the format rules pin. -->
+     <string name="xd_timer_label">Battle timer</string>
+     <string name="xd_timer_turn_label">Seconds per turn</string>
+diff --git a/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp b/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
+index dc2bbef..ca78d22 100644
+--- a/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
++++ b/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
+@@ -604,7 +604,7 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeValidatePar
+   std::vector<jint> levels(species.size());
+   if (count > 0 && jlevels != nullptr && env->GetArrayLength(jlevels) >= count)
+     env->GetIntArrayRegion(jlevels, 0, count, levels.data());
+-  // Moves: four per mon, 0 = empty slot, for the Doubles OU move bans.
++  // Moves: four per mon, 0 = empty slot, for the Doubles OU and Phenac move bans.
+   std::vector<jint> moves(species.size() * 4);
+   if (count > 0 && jmoves != nullptr && env->GetArrayLength(jmoves) >= count * 4)
+     env->GetIntArrayRegion(jmoves, 0, count * 4, moves.data());
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 2eb6785..e0c2605 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -503,6 +503,15 @@ void XDLauncherDialog::CreateMainLayout()
+          "  apply. Lv 100.\n"
+          "Limited: Lv 50, and every legendary banned, the birds, beasts, Regis\n"
+          "  and Latis included.\n"
++         "Realgam: Orre Colosseum, but a team may bring up to two of those ten.\n"
++         "  Realgam Classic: up to one.\n"
++         "Pyrite: Lv 50. Only Pokémon that can evolve within their own\n"
++         "  generation (Ivysaur yes; Scyther, Onix and Golbat no).\n"
++         "Phenac: Pyrite, but only the first stage in that generation (Pikachu\n"
++         "  and Marill count), plus Metapod, Kakuna, Silcoon and Cascoon.\n"
++         "  Pikachu, Clefairy, Jigglypuff and Marill lose some moves.\n"
++         "Realgam, Realgam Classic, Pyrite and Phenac are Orre shapes and keep\n"
++         "  Orre Colosseum's clauses and Soul Dew ban.\n"
+          "Orre shapes: bring 6, pick 4, doubles. Hoenn shapes: bring 6, pick 3,\n"
+          "  singles. The game itself enforces the Sleep, Freeze, Self-KO,\n"
+          "  Species and Item clauses.\n\n"
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+index d42f0fc..a366ec2 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+@@ -976,7 +976,9 @@ std::string FormatRuleLines()
+   // The format matrix: Standard/Unlimited pin Lv100 (they differ only in the
+   // app-side legality layer), Limited pins Lv50; Orre shapes enter 4, Hoenn
+   // shapes enter 3. Doubles OU pins Lv100 doubles with all six battling (the
+-  // stock entry mode) and its own clause bytes.
++  // stock entry mode) and its own clause bytes. Realgam and Realgam Classic
++  // pin exactly what Orre Colosseum pins, Pyrite and Phenac what Orre Limited
++  // pins: their differences are all in the app-side legality layer.
+   const int format = Config::Get(Config::MAIN_XD_FORMAT);
+   const u32* words = nullptr;
+   u32 entries = 0;
+@@ -986,10 +988,14 @@ std::string FormatRuleLines()
+   {
+   case FormatRules::FORMAT_ORRE_COLOSSEUM:
+   case FormatRules::FORMAT_ORRE_UNLIMITED:
++  case FormatRules::FORMAT_REALGAM:
++  case FormatRules::FORMAT_REALGAM_CLASSIC:
+     words = RULESET_LV100_WORDS;
+     entries = 4;
+     break;
+   case FormatRules::FORMAT_ORRE_LIMITED:
++  case FormatRules::FORMAT_PYRITE:
++  case FormatRules::FORMAT_PHENAC:
+     words = RULESET_LV50_WORDS;
+     entries = 4;
+     break;
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.h b/Source/Core/UICommon/XDNetplay/BattleCustomizer.h
+index 9813e0c..704049b 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.h
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.h
+@@ -155,8 +155,9 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
+ // patch lands in: RegenerateIni appends whatever this helper returns to the
+ // assembled "$OrreLink Battle Style" block, and the helper consults the format
+ // key (Config::MAIN_XD_FORMAT, values in FormatRules.h) to decide what to
+-// emit: the six community formats pin the menu globals, the battle type
+-// (Double for Orre shapes, Single for Hoenn shapes) and the whole Custom-1
++// emit: the six community formats, Realgam, Realgam Classic, Pyrite and
++// Phenac pin the menu globals, the battle type (Double for Orre shapes, the
++// four named ones included; Single for Hoenn shapes) and the whole Custom-1
+ // ruleset slot (level preset, entries, entry mode 0); Doubles OU pins Double,
+ // Lv100, the stock entry mode (all six battle) and its own clause bytes
+ // (Species ON; Item, Sleep, Freeze and Self-KO OFF); Free/OU/Multi emit
+diff --git a/Source/Core/UICommon/XDNetplay/FormatRules.cpp b/Source/Core/UICommon/XDNetplay/FormatRules.cpp
+index e4e5636..c2cba04 100644
+--- a/Source/Core/UICommon/XDNetplay/FormatRules.cpp
++++ b/Source/Core/UICommon/XDNetplay/FormatRules.cpp
+@@ -4,6 +4,7 @@
+ #include "UICommon/XDNetplay/FormatRules.h"
+ 
+ #include <algorithm>
++#include <array>
+ #include <cctype>
+ #include <map>
+ #include <optional>
+@@ -71,6 +72,207 @@ constexpr BannedMove DOUBLES_OU_BANNED_MOVES[] = {
+     {32, "Horn Drill"},   {329, "Sheer Cold"}, {120, "Self-Destruct"}, {153, "Explosion"},
+ };
+ 
++// Phenac's per-species move bans: moves a species could only have from an
++// earlier stage that debuted later, or as an egg move (for Marill, only the
++// Azurill-only egg moves). National dex for the species, INTERNAL move ids,
++// verified against gen3data.json like the lists above: pikachu 25, clefairy
++// 35, jigglypuff 39, marill 183; bide 117, charge 268, charm 204, doubleslap
++// 3, encore 227, followme 266, present 217, reversal 179, sweetkiss 186,
++// teeterdance 298, volttackle 344, wish 273, amnesia 133, bellydrum 187,
++// icywind 196, magicalleaf 345, splash 150, faintattack 185, faketears 313,
++// perishsong 195, tickle 321, bubble 145, refresh 287, sing 47, slam 21.
++struct SpeciesMoveBan
++{
++  int nat_dex;
++  int move_id;
++  const char* display;
++};
++constexpr SpeciesMoveBan PHENAC_BANNED_MOVES[] = {
++    {25, 117, "Bide"},         {25, 268, "Charge"},       {25, 204, "Charm"},
++    {25, 3, "DoubleSlap"},     {25, 227, "Encore"},       {25, 266, "Follow Me"},
++    {25, 217, "Present"},      {25, 179, "Reversal"},     {25, 186, "Sweet Kiss"},
++    {25, 298, "Teeter Dance"}, {25, 344, "Volt Tackle"},  {25, 273, "Wish"},
++    {35, 133, "Amnesia"},      {35, 187, "Belly Drum"},   {35, 204, "Charm"},
++    {35, 196, "Icy Wind"},     {35, 345, "Magical Leaf"}, {35, 217, "Present"},
++    {35, 150, "Splash"},       {35, 186, "Sweet Kiss"},   {35, 273, "Wish"},
++    {39, 204, "Charm"},        {39, 185, "Faint Attack"}, {39, 313, "Fake Tears"},
++    {39, 196, "Icy Wind"},     {39, 195, "Perish Song"},  {39, 217, "Present"},
++    {39, 186, "Sweet Kiss"},   {39, 321, "Tickle"},       {39, 273, "Wish"},
++    {183, 145, "Bubble"},      {183, 204, "Charm"},       {183, 227, "Encore"},
++    {183, 287, "Refresh"},     {183, 47, "Sing"},         {183, 21, "Slam"},
++    {183, 150, "Splash"},      {183, 321, "Tickle"},
++};
++
++// Every Gen 1-3 evolution as (pre-evolution, evolution), by National dex
++// number, both ends within 1..386. gen3data.json carries no evolution data,
++// so this is a generated constant table: taken from the Gen 3 families'
++// evolution lists in the pokeemerald-expansion species data, filtered to
++// edges whose both ends are Gen 1-3 species, and cross-checked edge for edge
++// (184 of 184) against the Showdown dex's evos lists. A branching species has
++// one edge per target (Eevee five, Tyrogue three). Evolutions into later
++// generations (Gligar, Murkrow, ...) and pre-evolutions from later
++// generations (Munchlax, Happiny, ...) have an end outside Gen 1-3 and are
++// not listed; neither rule below needs them.
++struct EvolutionEdge
++{
++  int from;
++  int to;
++};
++constexpr EvolutionEdge EVOLUTIONS[] = {
++    {1, 2}, {2, 3}, {4, 5}, {5, 6}, {7, 8}, {8, 9}, {10, 11}, {11, 12}, {13, 14}, {14, 15},
++    {16, 17}, {17, 18}, {19, 20}, {21, 22}, {23, 24}, {25, 26}, {27, 28}, {29, 30}, {30, 31},
++    {32, 33}, {33, 34}, {35, 36}, {37, 38}, {39, 40}, {41, 42}, {42, 169}, {43, 44}, {44, 45},
++    {44, 182}, {46, 47}, {48, 49}, {50, 51}, {52, 53}, {54, 55}, {56, 57}, {58, 59}, {60, 61},
++    {61, 62}, {61, 186}, {63, 64}, {64, 65}, {66, 67}, {67, 68}, {69, 70}, {70, 71}, {72, 73},
++    {74, 75}, {75, 76}, {77, 78}, {79, 80}, {79, 199}, {81, 82}, {84, 85}, {86, 87}, {88, 89},
++    {90, 91}, {92, 93}, {93, 94}, {95, 208}, {96, 97}, {98, 99}, {100, 101}, {102, 103}, {104, 105},
++    {109, 110}, {111, 112}, {113, 242}, {116, 117}, {117, 230}, {118, 119}, {120, 121}, {123, 212},
++    {129, 130}, {133, 134}, {133, 135}, {133, 136}, {133, 196}, {133, 197}, {137, 233}, {138, 139},
++    {140, 141}, {147, 148}, {148, 149}, {152, 153}, {153, 154}, {155, 156}, {156, 157}, {158, 159},
++    {159, 160}, {161, 162}, {163, 164}, {165, 166}, {167, 168}, {170, 171}, {172, 25}, {173, 35},
++    {174, 39}, {175, 176}, {177, 178}, {179, 180}, {180, 181}, {183, 184}, {187, 188}, {188, 189},
++    {191, 192}, {194, 195}, {204, 205}, {209, 210}, {216, 217}, {218, 219}, {220, 221}, {223, 224},
++    {228, 229}, {231, 232}, {236, 106}, {236, 107}, {236, 237}, {238, 124}, {239, 125}, {240, 126},
++    {246, 247}, {247, 248}, {252, 253}, {253, 254}, {255, 256}, {256, 257}, {258, 259}, {259, 260},
++    {261, 262}, {263, 264}, {265, 266}, {265, 268}, {266, 267}, {268, 269}, {270, 271}, {271, 272},
++    {273, 274}, {274, 275}, {276, 277}, {278, 279}, {280, 281}, {281, 282}, {283, 284}, {285, 286},
++    {287, 288}, {288, 289}, {290, 291}, {290, 292}, {293, 294}, {294, 295}, {296, 297}, {298, 183},
++    {300, 301}, {304, 305}, {305, 306}, {307, 308}, {309, 310}, {316, 317}, {318, 319}, {320, 321},
++    {322, 323}, {325, 326}, {328, 329}, {329, 330}, {331, 332}, {333, 334}, {339, 340}, {341, 342},
++    {343, 344}, {345, 346}, {347, 348}, {349, 350}, {353, 354}, {355, 356}, {360, 202}, {361, 362},
++    {363, 364}, {364, 365}, {366, 367}, {366, 368}, {371, 372}, {372, 373}, {374, 375}, {375, 376},
++};
++
++constexpr int MAX_NAT_DEX = 386;
++
++// A National dex number's debut generation: 1 (1-151), 2 (152-251), 3
++// (252-386), or 0 outside Gen 1-3.
++constexpr int DebutGeneration(int nat_dex)
++{
++  if (nat_dex >= 1 && nat_dex <= 151)
++    return 1;
++  if (nat_dex >= 152 && nat_dex <= 251)
++    return 2;
++  if (nat_dex >= 252 && nat_dex <= MAX_NAT_DEX)
++    return 3;
++  return 0;
++}
++
++// Species a format admits by name on top of its computed rule, by National
++// dex. Pyrite: none yet; the planned "unviable in higher tiers" exceptions go
++// here once that list exists (they do NOT carry over to Phenac, which is
++// built on the plain rule). Phenac: Metapod, Kakuna, Silcoon and Cascoon.
++constexpr std::array<int, 0> PYRITE_EXTRA_SPECIES{};
++constexpr std::array<int, 4> PHENAC_EXTRA_SPECIES{11, 14, 266, 268};
++
++// The two computed species rules, indexed by National dex (0 unused), built
++// once from EVOLUTIONS on first use.
++//   evolves_in_debut_gen: at least one evolution that already existed in the
++//     species' own debut generation, so it could evolve in those games
++//     (Ivysaur and Pichu yes; Scyther, Onix, Golbat and Seadra no: their
++//     evolutions came in a later generation).
++//   unevolved_in_debut_gen: no pre-evolution, at any depth, from the same or
++//     an earlier generation (Pikachu yes: Pichu came later; Ivysaur no).
++struct SpeciesRuleTables
++{
++  std::array<bool, MAX_NAT_DEX + 1> evolves_in_debut_gen{};
++  std::array<bool, MAX_NAT_DEX + 1> unevolved_in_debut_gen{};
++};
++
++const SpeciesRuleTables& GetSpeciesRuleTables()
++{
++  static const SpeciesRuleTables tables = [] {
++    SpeciesRuleTables t;
++    for (const EvolutionEdge& edge : EVOLUTIONS)
++    {
++      if (DebutGeneration(edge.from) != 0 && DebutGeneration(edge.to) != 0 &&
++          DebutGeneration(edge.to) <= DebutGeneration(edge.from))
++      {
++        t.evolves_in_debut_gen[edge.from] = true;
++      }
++    }
++    for (int nat_dex = 1; nat_dex <= MAX_NAT_DEX; nat_dex++)
++    {
++      const int gen = DebutGeneration(nat_dex);
++      bool unevolved = true;
++      // Walk up the pre-evolutions. Every Gen 1-3 species has at most one, so
++      // this is a simple chain; the step cap only guards against a bad table.
++      int current = nat_dex;
++      for (int step = 0; step < 4 && unevolved; step++)
++      {
++        const auto it = std::ranges::find(EVOLUTIONS, current, &EvolutionEdge::to);
++        if (it == std::end(EVOLUTIONS))
++          break;
++        if (DebutGeneration(it->from) <= gen)
++          unevolved = false;
++        current = it->from;
++      }
++      t.unevolved_in_debut_gen[nat_dex] = unevolved;
++    }
++    return t;
++  }();
++  return tables;
++}
++
++template <size_t N>
++bool Contains(const std::array<int, N>& list, int nat_dex)
++{
++  return std::ranges::find(list, nat_dex) != list.end();
++}
++
++bool EvolvesInDebutGeneration(int nat_dex)
++{
++  return nat_dex >= 1 && nat_dex <= MAX_NAT_DEX &&
++         GetSpeciesRuleTables().evolves_in_debut_gen[nat_dex];
++}
++
++bool UnevolvedInDebutGeneration(int nat_dex)
++{
++  return nat_dex >= 1 && nat_dex <= MAX_NAT_DEX &&
++         GetSpeciesRuleTables().unevolved_in_debut_gen[nat_dex];
++}
++
++// Which allow-list rule a format applies to every species.
++enum class SpeciesRule
++{
++  Any,
++  Pyrite,  // evolves within its debut generation
++  Phenac,  // Pyrite's rule and unevolved in its debut generation
++};
++
++// Why a species fails its format's allow-list rule, or nullptr when it passes.
++const char* SpeciesRuleFailure(SpeciesRule rule, int nat_dex)
++{
++  constexpr const char* NO_EVOLUTION = "no evolution in its own generation";
++  switch (rule)
++  {
++  case SpeciesRule::Pyrite:
++    if (Contains(PYRITE_EXTRA_SPECIES, nat_dex) || EvolvesInDebutGeneration(nat_dex))
++      return nullptr;
++    return NO_EVOLUTION;
++  case SpeciesRule::Phenac:
++    if (Contains(PHENAC_EXTRA_SPECIES, nat_dex))
++      return nullptr;
++    if (!EvolvesInDebutGeneration(nat_dex))
++      return NO_EVOLUTION;
++    if (!UnevolvedInDebutGeneration(nat_dex))
++      return "already evolved";
++    return nullptr;
++  default:
++    return nullptr;
++  }
++}
++
++const SpeciesMoveBan* FindPhenacBannedMove(int nat_dex, int move_id)
++{
++  for (const SpeciesMoveBan& banned : PHENAC_BANNED_MOVES)
++  {
++    if (banned.nat_dex == nat_dex && banned.move_id == move_id)
++      return &banned;
++  }
++  return nullptr;
++}
++
+ template <size_t N>
+ const BannedSpecies* FindIn(const BannedSpecies (&list)[N], int nat_dex)
+ {
+@@ -98,7 +300,9 @@ const BannedMove* FindDoublesOuBannedMove(int move_id)
+ }
+ 
+ // What one format enforces. Species Clause applies to every format with team
+-// rules; the Item Clause to all of them except Doubles OU.
++// rules; the Item Clause to all of them except Doubles OU. A new format is a
++// new combination of these fields; an allow-list exception is a new entry in
++// the *_EXTRA_SPECIES arrays above, not a new field.
+ struct RulesProfile
+ {
+   bool ban_restricted = false;   // BANNED_SPECIES (Restricted + Mythicals)
+@@ -109,6 +313,11 @@ struct RulesProfile
+   int max_level = 0;  // 0 = no level rule; Limited = 50 (the in-game Lv50
+                       // ruleset refuses over-level mons at team entry, so the
+                       // gates say it in words first)
++  // How many BANNED_SPECIES members the party may hold in total, counted over
++  // every mon it brings; -1 = no count (Realgam 2, Realgam Classic 1).
++  int restricted_limit = -1;
++  SpeciesRule species_rule = SpeciesRule::Any;
++  bool phenac_move_bans = false;  // PHENAC_BANNED_MOVES
+ };
+ 
+ RulesProfile ProfileFor(int format_key_value)
+@@ -126,6 +335,17 @@ RulesProfile ProfileFor(int format_key_value)
+     return {.ban_restricted = true, .ban_legendaries = true, .ban_soul_dew = true, .max_level = 50};
+   case FORMAT_DOUBLES_OU:
+     return {.ban_doubles_ou = true, .item_clause = false};
++  case FORMAT_REALGAM:
++    return {.ban_soul_dew = true, .restricted_limit = 2};
++  case FORMAT_REALGAM_CLASSIC:
++    return {.ban_soul_dew = true, .restricted_limit = 1};
++  case FORMAT_PYRITE:
++    return {.ban_soul_dew = true, .max_level = 50, .species_rule = SpeciesRule::Pyrite};
++  case FORMAT_PHENAC:
++    return {.ban_soul_dew = true,
++            .max_level = 50,
++            .species_rule = SpeciesRule::Phenac,
++            .phenac_move_bans = true};
+   default:
+     return {};
+   }
+@@ -141,6 +361,20 @@ const BannedSpecies* FindBannedSpecies(int nat_dex)
+   return FindIn(BANNED_SPECIES, nat_dex);
+ }
+ 
++// The display name of a move on one of the fixed move-ban tables, or nullptr.
++// Built mons only carry move ids, and only banned moves are ever named.
++const char* FixedBannedMoveName(int move_id)
++{
++  if (const BannedMove* banned = FindDoublesOuBannedMove(move_id))
++    return banned->display;
++  for (const SpeciesMoveBan& banned : PHENAC_BANNED_MOVES)
++  {
++    if (banned.move_id == move_id)
++      return banned.display;
++  }
++  return nullptr;
++}
++
+ // The canonical spelling of any species on one of the ban lists ("Ho-Oh"
+ // rather than a de-punctuated "hooh"), or nullptr.
+ const char* CanonicalBannedName(int nat_dex)
+@@ -190,8 +424,9 @@ std::string Capitalize(std::string name)
+ }
+ 
+ // The shared rule core. Check order is fixed so refusals are deterministic:
+-// banned species, banned item, level, Species Clause, Item Clause -- first
+-// violation wins, and within a check the earliest party slot wins.
++// banned species (the ban lists, then the allow-list rule), the Restricted
++// count, banned item, banned moves, level, Species Clause, Item Clause --
++// first violation wins, and within a check the earliest party slot wins.
+ Verdict ValidateEntries(const RulesProfile& profile, const std::vector<Entry>& entries)
+ {
+   for (const Entry& entry : entries)
+@@ -202,6 +437,22 @@ Verdict ValidateEntries(const RulesProfile& profile, const std::vector<Entry>& e
+       return {false, fmt::format("banned species: {}", entry.species_display)};
+     if (profile.ban_doubles_ou && FindIn(DOUBLES_OU_BANNED_SPECIES, entry.nat_dex) != nullptr)
+       return {false, fmt::format("banned species: {}", entry.species_display)};
++    // An allow-list admits only species it knows, so an unmapped species
++    // (nat_dex 0) fails here too.
++    if (const char* why = SpeciesRuleFailure(profile.species_rule, entry.nat_dex))
++      return {false, fmt::format("banned species: {} ({})", entry.species_display, why)};
++  }
++
++  if (profile.restricted_limit >= 0)
++  {
++    const auto count = std::ranges::count_if(entries, [](const Entry& entry) {
++      return FindBannedSpecies(entry.nat_dex) != nullptr;
++    });
++    if (count > profile.restricted_limit)
++    {
++      return {false, fmt::format("{} Restricted or Mythical Pokemon, the limit is {}", count,
++                                 profile.restricted_limit)};
++    }
+   }
+ 
+   if (profile.ban_soul_dew)
+@@ -213,13 +464,16 @@ Verdict ValidateEntries(const RulesProfile& profile, const std::vector<Entry>& e
+     }
+   }
+ 
+-  if (profile.ban_doubles_ou)
++  if (profile.ban_doubles_ou || profile.phenac_move_bans)
+   {
+     for (const Entry& entry : entries)
+     {
+       for (const auto& [move_id, move_display] : entry.moves)
+       {
+-        if (FindDoublesOuBannedMove(move_id) != nullptr)
++        const bool banned =
++            (profile.ban_doubles_ou && FindDoublesOuBannedMove(move_id) != nullptr) ||
++            (profile.phenac_move_bans && FindPhenacBannedMove(entry.nat_dex, move_id) != nullptr);
++        if (banned)
+         {
+           return {false,
+                   fmt::format("banned move: {} ({})", move_display, entry.species_display)};
+@@ -292,10 +546,12 @@ bool IsOu(int format_key_value)
+ 
+ std::vector<int> SelectableFormats(bool include_multi)
+ {
+-  std::vector<int> formats = {FORMAT_ORRE_COLOSSEUM, FORMAT_OU,
+-                              FORMAT_DOUBLES_OU,     FORMAT_ORRE_UNLIMITED,
+-                              FORMAT_ORRE_LIMITED,   FORMAT_HOENN_STADIUM,
+-                              FORMAT_HOENN_UNLIMITED, FORMAT_HOENN_LIMITED};
++  std::vector<int> formats = {FORMAT_ORRE_COLOSSEUM,  FORMAT_OU,
++                              FORMAT_DOUBLES_OU,      FORMAT_ORRE_UNLIMITED,
++                              FORMAT_ORRE_LIMITED,    FORMAT_HOENN_STADIUM,
++                              FORMAT_HOENN_UNLIMITED, FORMAT_HOENN_LIMITED,
++                              FORMAT_REALGAM,         FORMAT_REALGAM_CLASSIC,
++                              FORMAT_PYRITE,          FORMAT_PHENAC};
+   if (include_multi)
+     formats.push_back(FORMAT_MULTI);
+   formats.push_back(FORMAT_FREE);
+@@ -309,7 +565,7 @@ std::vector<int> KnownFormats()
+ 
+ bool IsKnownFormat(int format_key_value)
+ {
+-  return format_key_value >= FORMAT_FREE && format_key_value <= FORMAT_MULTI;
++  return format_key_value >= FORMAT_FREE && format_key_value <= FORMAT_PHENAC;
+ }
+ 
+ int FormatFixedLevel(int format_key_value)
+@@ -329,6 +585,10 @@ bool HasTeamRules(int format_key_value)
+   case FORMAT_HOENN_UNLIMITED:
+   case FORMAT_HOENN_LIMITED:
+   case FORMAT_DOUBLES_OU:
++  case FORMAT_REALGAM:
++  case FORMAT_REALGAM_CLASSIC:
++  case FORMAT_PYRITE:
++  case FORMAT_PHENAC:
+     return true;
+   default:
+     return false;
+@@ -347,6 +607,10 @@ const char* FormatDisplayName(int format_key_value)
+   case FORMAT_HOENN_UNLIMITED: return "Hoenn Unlimited";
+   case FORMAT_HOENN_LIMITED: return "Hoenn Limited";
+   case FORMAT_DOUBLES_OU: return "Doubles OU";
++  case FORMAT_REALGAM: return "Realgam";
++  case FORMAT_REALGAM_CLASSIC: return "Realgam Classic";
++  case FORMAT_PYRITE: return "Pyrite";
++  case FORMAT_PHENAC: return "Phenac";
+   case FORMAT_MULTI: return "Multi";
+   default: return "Free";
+   }
+@@ -364,6 +628,10 @@ const char* FormatSessionTag(int format_key_value)
+   case FORMAT_HOENN_UNLIMITED: return "[Hoenn-U] ";
+   case FORMAT_HOENN_LIMITED: return "[Hoenn-L] ";
+   case FORMAT_DOUBLES_OU: return "[DOU] ";
++  case FORMAT_REALGAM: return "[Realgam] ";
++  case FORMAT_REALGAM_CLASSIC: return "[Realgam-C] ";
++  case FORMAT_PYRITE: return "[Pyrite] ";
++  case FORMAT_PHENAC: return "[Phenac] ";
+   case FORMAT_MULTI: return "[Multi] ";
+   default: return "";
+   }
+@@ -475,12 +743,13 @@ Verdict ValidateParty(int format_key_value, std::span<const Gen3Mon> party, cons
+                                  fmt::format("item #{}", entry.item_id);
+       }
+     }
+-    // Only the banned moves are ever named, so the fixed table's spelling is
+-    // all a built mon needs; 0 is an empty move slot.
++    // Only the banned moves are ever named, so the fixed tables' spelling is
++    // all a built mon needs; 0 is an empty move slot. Which moves are banned
++    // for this format and species is ValidateEntries' call.
+     for (const u32 move : mon.moves)
+     {
+-      if (const BannedMove* banned = FindDoublesOuBannedMove(static_cast<int>(move)))
+-        entry.moves.emplace_back(banned->id, banned->display);
++      if (const char* name = FixedBannedMoveName(static_cast<int>(move)))
++        entry.moves.emplace_back(static_cast<int>(move), name);
+     }
+     entries.push_back(std::move(entry));
+   }
+diff --git a/Source/Core/UICommon/XDNetplay/FormatRules.h b/Source/Core/UICommon/XDNetplay/FormatRules.h
+index f3c5c95..498ce55 100644
+--- a/Source/Core/UICommon/XDNetplay/FormatRules.h
++++ b/Source/Core/UICommon/XDNetplay/FormatRules.h
+@@ -42,6 +42,21 @@
+ //     9 = Multi          reserved, not built yet: hidden from every list
+ //                        unless MAIN_XD_MULTI_ENABLED is on, and until then it
+ //                        behaves as Free in every gate.
++//    10 = Realgam        Orre Colosseum, except up to TWO of the Restricted/
++//                        Mythical ten may be brought (counted over the whole
++//                        party, all six). Lv 100.
++//    11 = Realgam Classic
++//                        the same with a limit of ONE.
++//    12 = Pyrite         Lv 50 (cap 50 like Orre Limited). Every Pokemon must
++//                        evolve within its debut generation (see
++//                        EVOLUTIONS and SpeciesRuleTables in the .cpp).
++//    13 = Phenac         Pyrite's rule AND unevolved in its debut generation,
++//                        plus Metapod, Kakuna, Silcoon and Cascoon; bans some
++//                        prior-evolution and egg moves on Pikachu, Clefairy,
++//                        Jigglypuff and Marill.
++//                        All four are Orre shaped (bring 6, pick 4, doubles),
++//                        with Orre Colosseum's in-game clauses, its Species and
++//                        Item Clause checks here and its Soul Dew ban.
+ //
+ // What "Orre Colosseum" enforces HERE (the party-legality layer):
+ //   * Species ban list: Gen 1-3 species EXCEPT the restricted legendaries and
+@@ -95,18 +110,24 @@ constexpr int FORMAT_DOUBLES_OU = 8;
+ // Reserved for the multi battle format, which is not built yet. Hidden unless
+ // MAIN_XD_MULTI_ENABLED is on; behaves as Free everywhere until designed.
+ constexpr int FORMAT_MULTI = 9;
++// Orre-shaped formats with their own species rules (see the table above).
++constexpr int FORMAT_REALGAM = 10;
++constexpr int FORMAT_REALGAM_CLASSIC = 11;
++constexpr int FORMAT_PYRITE = 12;
++constexpr int FORMAT_PHENAC = 13;
+ 
+ // The one ordered format list every picker shows (both launchers, both room
+ // pickers): Orre Colosseum, OU, Doubles OU, Orre Unlimited, Orre Limited,
+-// Hoenn Stadium, Hoenn Unlimited, Hoenn Limited, then Multi (only when
+-// include_multi, i.e. MAIN_XD_MULTI_ENABLED), then Free.
++// Hoenn Stadium, Hoenn Unlimited, Hoenn Limited, Realgam, Realgam Classic,
++// Pyrite, Phenac, then Multi (only when include_multi, i.e.
++// MAIN_XD_MULTI_ENABLED), then Free.
+ std::vector<int> SelectableFormats(bool include_multi);
+ 
+ // Every known format id, Multi included, whatever the flag says. For
+ // recognizing names built from any format (auto-published session names).
+ std::vector<int> KnownFormats();
+ 
+-// True for the ids above (0..9). Anything else behaves as Free.
++// True for the ids above (0..13). Anything else behaves as Free.
+ bool IsKnownFormat(int format_key_value);
+ 
+ // True only for the exact Orre Colosseum value: an unknown/garbage key value
+@@ -117,9 +138,9 @@ bool IsOrreColosseum(int format_key_value);
+ bool IsOu(int format_key_value);
+ 
+ // The fixed battle level a format pins, or 0 for none. Standard/Unlimited
+-// (Orre Colosseum, Orre Unlimited, Hoenn Stadium, Hoenn Unlimited) and
+-// Doubles OU pin 100;
+-// the two Limited formats pin 50; Free/OU and unknown values pin nothing (0).
++// (Orre Colosseum, Orre Unlimited, Hoenn Stadium, Hoenn Unlimited), Doubles
++// OU, Realgam and Realgam Classic pin 100; the two Limited formats, Pyrite and
++// Phenac pin 50; Free/OU and unknown values pin nothing (0).
+ // Used to decide whether a "raise team to the format level" convenience is
+ // offered -- it is ONLY offered for the level-100 formats, and only ever
+ // raises (never lowers, which would break legality).
+@@ -127,7 +148,8 @@ int FormatFixedLevel(int format_key_value);
+ 
+ // True for every format that carries a party-legality layer (the six
+ // community formats -- Unlimited included, since Species and Item Clause
+-// still apply there -- and Doubles OU). False for Free, OU, Multi and every
++// still apply there -- Doubles OU, Realgam, Realgam Classic, Pyrite and
++// Phenac). False for Free, OU, Multi and every
+ // unknown value: those
+ // validate nothing, so the callers' "one int compare then nothing" contract
+ // holds.
+@@ -150,6 +172,8 @@ const char* FormatDisplayName(int format_key_value);
+ //     "duplicate species: Snorlax"
+ //     "duplicate item: Leftovers (x2)"
+ //     "banned move: Explosion (Metagross)"
++//     "3 Restricted or Mythical Pokemon, the limit is 2"
++//     "banned species: Scyther (no evolution in its own generation)"
+ struct Verdict
+ {
+   bool ok = true;
+-- 
+2.39.5 (Apple Git-154)
+
