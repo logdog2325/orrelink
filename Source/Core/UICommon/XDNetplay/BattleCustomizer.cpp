@@ -329,6 +329,16 @@ constexpr StyleOption MODELS[] = {
 // default" already plays, and the vanilla value must never be written.
 // Display names are best-effort stem translations; finalize EVERY label with a
 // listening pass through the selector before release.
+// Placeholder streams are excluded too. An id reaches its file through
+// common.rel's sound records (*0x804E8A24 + id*12, stream index at +6) and
+// stream table (*0x804E8844 + index*12, fsys group id at +0). Thirty of the
+// disc's 128 stm_*.fsys archives hold one identical 0.41 s non-looping clip
+// instead of music, so a pick that resolves to one plays a blip and then
+// nothing for the whole battle (field-confirmed on 1315 and on id 7). Removed
+// on that evidence: 1313 XD_battle1, 1314 XD_battle1b, 1315 XD_battle6, 1240
+// B_ore, 1066 life, 1131 ev_trouble, 1 02snowfreak32, 5 01Latin_st32 and 6
+// 05Keio2_azuchi32. A saved pick of a removed id fails IsValidMusicId and
+// falls back to the game default.
 // "No music": the VS BGM selector (0x8004D580) hands staBGM_tunaide[n] to a
 // null-guarded setter with no range check, and the streamed-voice starter
 // (0x801871B4) tests the stored id against ZERO before touching the GSDVD
@@ -343,9 +353,6 @@ constexpr int MUSIC_SILENT_ID = 0x10000;
 
 constexpr StyleOption MUSICS[] = {
     {MUSIC_SILENT_ID, "No music (silent battle)", Tier::TestedSafe},
-    {1313, "XD Battle 1 (wild battle)", Tier::TestedSafe},
-    {1314, "XD Battle 1b (wild variant)", Tier::TestedSafe},
-    {1315, "XD Battle 6 (trainer)", Tier::TestedSafe},
     {1316, "XD Battle 8 (Cipher)", Tier::TestedSafe},
     {1413, "XD Battle 0", Tier::TestedSafe},
     {1127, "XD Battle 01", Tier::TestedSafe},
@@ -355,7 +362,6 @@ constexpr StyleOption MUSICS[] = {
     {1319, "Colosseum Round 2", Tier::TestedSafe},
     {1320, "Colosseum Round 3", Tier::TestedSafe},
     {1321, "Colosseum Round 4", Tier::TestedSafe},
-    {1240, "Orre Colosseum Battle", Tier::TestedSafe},
     {1241, "Pyrite Battle", Tier::TestedSafe},
     {1242, "Realgam Battle", Tier::TestedSafe},
     {1243, "Citadark Battle", Tier::TestedSafe},
@@ -399,7 +405,6 @@ constexpr StyleOption MUSICS[] = {
     {1371, "Chiriru Theme", Tier::Experimental},
     {1383, "Music Player 1", Tier::Experimental},
     {1384, "Music Player 2", Tier::Experimental},
-    {1066, "Life Theme", Tier::Experimental},
     {1067, "Darkside 4", Tier::Experimental},
     {1074, "Darkside", Tier::Experimental},
     {1071, "Stand Theme", Tier::Experimental},
@@ -407,7 +412,6 @@ constexpr StyleOption MUSICS[] = {
     // Looping event (ev_*) streams; stems only, names pending the listening
     // pass like everything above.
     {1130, "Event Theme 1130", Tier::Experimental},
-    {1131, "Event Theme 1131", Tier::Experimental},
     {1297, "Event Theme 1297", Tier::Experimental},
     {1361, "Event Theme 1361", Tier::Experimental},
     {1363, "Event Theme 1363", Tier::Experimental},
@@ -428,11 +432,8 @@ constexpr StyleOption MUSICS[] = {
     // all. Excluded by omission, exactly like the jingles. The re-check found
     // no other excluded-class entries in the experimental tier: everything
     // above is a looping stm_* / ev_* stream per the same classification.
-    {1, "Snowfreak (unused)", Tier::Experimental},
     {2, "Shinpi (unused)", Tier::Experimental},
     {3, "Tretre (unused)", Tier::Experimental},
-    {5, "Latin (unused)", Tier::Experimental},
-    {6, "Keio Azuchi (unused)", Tier::Experimental},
 };
 
 // Battle locations (battlefield-table indices). tested-safe = the retail VS
