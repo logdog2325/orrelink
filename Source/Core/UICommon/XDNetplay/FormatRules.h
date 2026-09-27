@@ -42,6 +42,21 @@
 //     9 = Multi          reserved, not built yet: hidden from every list
 //                        unless MAIN_XD_MULTI_ENABLED is on, and until then it
 //                        behaves as Free in every gate.
+//    10 = Realgam        Orre Colosseum, except up to TWO of the Restricted/
+//                        Mythical ten may be brought (counted over the whole
+//                        party, all six). Lv 100.
+//    11 = Realgam Classic
+//                        the same with a limit of ONE.
+//    12 = Pyrite         Lv 50 (cap 50 like Orre Limited). Every Pokemon must
+//                        evolve within its debut generation (see
+//                        EVOLUTIONS and SpeciesRuleTables in the .cpp).
+//    13 = Phenac         Pyrite's rule AND unevolved in its debut generation,
+//                        plus Metapod, Kakuna, Silcoon and Cascoon; bans some
+//                        prior-evolution and egg moves on Pikachu, Clefairy,
+//                        Jigglypuff and Marill.
+//                        All four are Orre shaped (bring 6, pick 4, doubles),
+//                        with Orre Colosseum's in-game clauses, its Species and
+//                        Item Clause checks here and its Soul Dew ban.
 //
 // What "Orre Colosseum" enforces HERE (the party-legality layer):
 //   * Species ban list: Gen 1-3 species EXCEPT the restricted legendaries and
@@ -95,18 +110,24 @@ constexpr int FORMAT_DOUBLES_OU = 8;
 // Reserved for the multi battle format, which is not built yet. Hidden unless
 // MAIN_XD_MULTI_ENABLED is on; behaves as Free everywhere until designed.
 constexpr int FORMAT_MULTI = 9;
+// Orre-shaped formats with their own species rules (see the table above).
+constexpr int FORMAT_REALGAM = 10;
+constexpr int FORMAT_REALGAM_CLASSIC = 11;
+constexpr int FORMAT_PYRITE = 12;
+constexpr int FORMAT_PHENAC = 13;
 
 // The one ordered format list every picker shows (both launchers, both room
 // pickers): Orre Colosseum, OU, Doubles OU, Orre Unlimited, Orre Limited,
-// Hoenn Stadium, Hoenn Unlimited, Hoenn Limited, then Multi (only when
-// include_multi, i.e. MAIN_XD_MULTI_ENABLED), then Free.
+// Hoenn Stadium, Hoenn Unlimited, Hoenn Limited, Realgam, Realgam Classic,
+// Pyrite, Phenac, then Multi (only when include_multi, i.e.
+// MAIN_XD_MULTI_ENABLED), then Free.
 std::vector<int> SelectableFormats(bool include_multi);
 
 // Every known format id, Multi included, whatever the flag says. For
 // recognizing names built from any format (auto-published session names).
 std::vector<int> KnownFormats();
 
-// True for the ids above (0..9). Anything else behaves as Free.
+// True for the ids above (0..13). Anything else behaves as Free.
 bool IsKnownFormat(int format_key_value);
 
 // True only for the exact Orre Colosseum value: an unknown/garbage key value
@@ -117,9 +138,9 @@ bool IsOrreColosseum(int format_key_value);
 bool IsOu(int format_key_value);
 
 // The fixed battle level a format pins, or 0 for none. Standard/Unlimited
-// (Orre Colosseum, Orre Unlimited, Hoenn Stadium, Hoenn Unlimited) and
-// Doubles OU pin 100;
-// the two Limited formats pin 50; Free/OU and unknown values pin nothing (0).
+// (Orre Colosseum, Orre Unlimited, Hoenn Stadium, Hoenn Unlimited), Doubles
+// OU, Realgam and Realgam Classic pin 100; the two Limited formats, Pyrite and
+// Phenac pin 50; Free/OU and unknown values pin nothing (0).
 // Used to decide whether a "raise team to the format level" convenience is
 // offered -- it is ONLY offered for the level-100 formats, and only ever
 // raises (never lowers, which would break legality).
@@ -127,7 +148,8 @@ int FormatFixedLevel(int format_key_value);
 
 // True for every format that carries a party-legality layer (the six
 // community formats -- Unlimited included, since Species and Item Clause
-// still apply there -- and Doubles OU). False for Free, OU, Multi and every
+// still apply there -- Doubles OU, Realgam, Realgam Classic, Pyrite and
+// Phenac). False for Free, OU, Multi and every
 // unknown value: those
 // validate nothing, so the callers' "one int compare then nothing" contract
 // holds.
@@ -150,6 +172,8 @@ const char* FormatDisplayName(int format_key_value);
 //     "duplicate species: Snorlax"
 //     "duplicate item: Leftovers (x2)"
 //     "banned move: Explosion (Metagross)"
+//     "3 Restricted or Mythical Pokemon, the limit is 2"
+//     "banned species: Scyther (no evolution in its own generation)"
 struct Verdict
 {
   bool ok = true;

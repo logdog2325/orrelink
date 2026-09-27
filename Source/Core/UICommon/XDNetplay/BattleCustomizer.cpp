@@ -976,7 +976,9 @@ std::string FormatRuleLines()
   // The format matrix: Standard/Unlimited pin Lv100 (they differ only in the
   // app-side legality layer), Limited pins Lv50; Orre shapes enter 4, Hoenn
   // shapes enter 3. Doubles OU pins Lv100 doubles with all six battling (the
-  // stock entry mode) and its own clause bytes.
+  // stock entry mode) and its own clause bytes. Realgam and Realgam Classic
+  // pin exactly what Orre Colosseum pins, Pyrite and Phenac what Orre Limited
+  // pins: their differences are all in the app-side legality layer.
   const int format = Config::Get(Config::MAIN_XD_FORMAT);
   const u32* words = nullptr;
   u32 entries = 0;
@@ -986,10 +988,14 @@ std::string FormatRuleLines()
   {
   case FormatRules::FORMAT_ORRE_COLOSSEUM:
   case FormatRules::FORMAT_ORRE_UNLIMITED:
+  case FormatRules::FORMAT_REALGAM:
+  case FormatRules::FORMAT_REALGAM_CLASSIC:
     words = RULESET_LV100_WORDS;
     entries = 4;
     break;
   case FormatRules::FORMAT_ORRE_LIMITED:
+  case FormatRules::FORMAT_PYRITE:
+  case FormatRules::FORMAT_PHENAC:
     words = RULESET_LV50_WORDS;
     entries = 4;
     break;
