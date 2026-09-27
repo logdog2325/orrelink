@@ -337,6 +337,14 @@ void NetPlayDialog::CreateChatLayout()
   m_style_button->setAutoDefault(false);
   m_style_button->hide();
 
+  // XD Netplay, joiner side: sit out as a spectator. The server seats the next
+  // player in line as the opponent, and the Role column shows who that is.
+  // UpdateGUI shows it to joiners in an XD room.
+  m_watch_box = new QCheckBox(tr("Watch only"));
+  m_watch_box->setToolTip(tr("Watch without playing. The next player in line becomes the "
+                             "opponent.\nA change made during a battle applies to the next one."));
+  m_watch_box->hide();
+
   // XD Netplay, host side: the joiner sets its in-game name in the Submit Team
   // sheet; the host sets its own here (written into the GBA port 2 save the
   // room syncs). Shown only while hosting.
@@ -354,11 +362,11 @@ void NetPlayDialog::CreateChatLayout()
   layout->addWidget(m_chat_type_edit, 1, 0);
   layout->addWidget(m_chat_send_button, 1, 1);
   // One row for both buttons. A hidden widget takes no room in a box layout,
-  // so a joiner (no Music & Location button) still gets a full-width Submit
-  // Team button.
+  // so a joiner (no Music & Location button) gets [Submit Team...][Watch only].
   auto* team_row = new QHBoxLayout;
   team_row->addWidget(m_submit_team_button, 1);
   team_row->addWidget(m_style_button, 1);
+  team_row->addWidget(m_watch_box);
   layout->addLayout(team_row, 2, 0, 1, -1);
   layout->addWidget(m_host_name_edit, 3, 0);
   layout->addWidget(m_host_name_button, 3, 1);
@@ -430,6 +438,10 @@ void NetPlayDialog::ConnectWidgets()
   connect(m_chat_type_edit, &QLineEdit::returnPressed, this, &NetPlayDialog::OnChat);
   connect(m_submit_team_button, &QPushButton::clicked, this, &NetPlayDialog::OnSubmitTeam);
   connect(m_style_button, &QPushButton::clicked, this, &NetPlayDialog::OnStyleSettings);
+  connect(m_watch_box, &QCheckBox::toggled, this, [](bool checked) {
+    if (const auto client = Settings::Instance().GetNetPlayClient())
+      client->SendXdWatch(checked);
+  });
   connect(m_host_name_button, &QPushButton::clicked, this, &NetPlayDialog::OnSetHostName);
   connect(m_host_name_edit, &QLineEdit::returnPressed, this, &NetPlayDialog::OnSetHostName);
   connect(m_chat_type_edit, &QLineEdit::textChanged, this,
@@ -596,16 +608,45 @@ void NetPlayDialog::OnStart()
   }
 
   // When hosting Pokemon XD, force the fixed two-player GBA layout (host pad +
-  // host GBA + guest GBA) and the session settings the link needs before the
-  // start request. Non-XD sessions are completely untouched.
+  // host GBA + opponent's GBA) and the session settings the link needs before
+  // the start request. Non-XD sessions are completely untouched.
   if (const auto server = Settings::Instance().GetNetPlayServer();
       server && XDNetplay::IsXdGameId(game->GetGameID()))
   {
-    XDNetplay::ApplyStartForcing(server.get());
+    // Picks the opponent and keeps TeamData and new joins out until
+    // RequestStartGame has returned, so the saves it reads are the ones the
+    // pad map was built for.
+    NetPlay::NetPlayServer::XdStartFreeze freeze(*server);
+    const NetPlay::XdStartClaim& claim = freeze.Claim();
+    if (claim.starting)
+    {
+      DisplayMessage(tr("A battle is starting. Try again after it ends."), "red");
+      return;
+    }
+    if (claim.opponent == 0)
+    {
+      DisplayMessage(tr("Can't start: no opponent yet."), "red");
+      return;
+    }
+    if (claim.slot_busy)
+    {
+      DisplayMessage(tr("Can't start: the last battle is still closing."), "red");
+      return;
+    }
+    XDNetplay::ApplyStartForcing(server.get(), claim.opponent);
+    if (server->RequestStartGame())
+      SetOptionsEnabled(false);
+    return;
   }
 
   if (Settings::Instance().GetNetPlayServer()->RequestStartGame())
     SetOptionsEnabled(false);
+}
+
+QString NetPlayDialog::JoinerSubmitTeamToolTip()
+{
+  return tr("Send your own Showdown team to the host, so you play your own Pokémon.\n"
+            "Applies to the next battle the host starts.");
 }
 
 void NetPlayDialog::reject()
@@ -666,11 +707,16 @@ void NetPlayDialog::show(std::string nickname, bool use_traversal)
   m_submit_team_button->setHidden(false);
   m_submit_team_button->setEnabled(true);
   m_submit_team_button->setToolTip(
-      is_hosting ?
-          tr("Set your own team from a Showdown paste. Written to your GBA port 2 save for the "
-             "next battle you start.") :
-          tr("Send your own Showdown team to the host, so you play your own Pokémon.\n"
-             "Applies to the next battle the host starts."));
+      is_hosting ? tr("Set your own team from a Showdown paste. Written to your GBA port 2 save "
+                      "for the next battle you start.") :
+                   JoinerSubmitTeamToolTip());
+  // Every connection starts out playing on the server, so the box does too.
+  // UpdateGUI shows it to a joiner once the room's game is known to be XD.
+  {
+    const QSignalBlocker blocker(m_watch_box);
+    m_watch_box->setChecked(false);
+  }
+  m_watch_box->hide();
   m_style_button->setHidden(!is_hosting);
   m_style_button->setEnabled(true);
   m_host_name_edit->setHidden(!is_hosting);
@@ -765,9 +811,13 @@ void NetPlayDialog::UpdateGUI()
                                 m_players_list->currentItem()->data(Qt::UserRole).toInt() :
                                 -1;
 
+  // XD rooms show each player's part in the next battle where the port mapping
+  // was; the mapping stays in the cell tooltip.
+  const bool is_xd = XDNetplay::IsXdGameId(m_current_game_identifier.game_id);
+
   m_players_list->clear();
-  m_players_list->setHorizontalHeaderLabels(
-      {tr("Player"), tr("Game Status"), tr("Ping"), tr("Mapping"), tr("Revision")});
+  m_players_list->setHorizontalHeaderLabels({tr("Player"), tr("Game Status"), tr("Ping"),
+                                             is_xd ? tr("Role") : tr("Mapping"), tr("Revision")});
   m_players_list->setRowCount(m_player_count);
 
   static const std::map<NetPlay::SyncIdentifierComparison, std::pair<QString, QString>>
@@ -801,10 +851,28 @@ void NetPlayDialog::UpdateGUI()
     status_item->setToolTip(status_info.second);
     auto* ping_item = new QTableWidgetItem(QStringLiteral("%1 ms").arg(p->ping));
     ping_item->setToolTip(ping_item->text());
-    auto* mapping_item =
-        new QTableWidgetItem(QString::fromStdString(NetPlay::GetPlayerMappingString(
-            p->pid, client->GetPadMapping(), client->GetGBAConfig(), client->GetWiimoteMapping())));
-    mapping_item->setToolTip(mapping_item->text());
+    const QString mapping = QString::fromStdString(NetPlay::GetPlayerMappingString(
+        p->pid, client->GetPadMapping(), client->GetGBAConfig(), client->GetWiimoteMapping()));
+    QString role;
+    switch (client->GetXdRole(p->pid))
+    {
+    case NetPlay::XdRole::Host:
+      role = tr("Host");
+      break;
+    case NetPlay::XdRole::Opponent:
+      role = tr("Opponent");
+      break;
+    case NetPlay::XdRole::Waiting:
+      role = tr("Waiting");
+      break;
+    case NetPlay::XdRole::Watching:
+      role = tr("Watching");
+      break;
+    case NetPlay::XdRole::Unknown:
+      break;
+    }
+    auto* mapping_item = new QTableWidgetItem(is_xd ? role : mapping);
+    mapping_item->setToolTip(mapping);
     auto* revision_item = new QTableWidgetItem(QString::fromStdString(p->revision));
     revision_item->setToolTip(revision_item->text());
 
@@ -831,7 +899,22 @@ void NetPlayDialog::UpdateGUI()
   }
 
   if (!server)
+  {
+    // Only the opponent can submit a team; the server refuses anyone else.
+    // Unknown (no seat broadcast yet) stays allowed, as before.
+    m_watch_box->setVisible(is_xd);
+    // Watch only means nothing outside XD, but the server would still leave this player out of
+    // the index count and the lobby buffer. Unticking sends the change.
+    if (!is_xd && m_watch_box->isChecked())
+      m_watch_box->setChecked(false);
+    const NetPlay::XdRole local_role = client->GetXdRole(client->GetLocalPlayerId());
+    const bool may_submit =
+        local_role == NetPlay::XdRole::Opponent || local_role == NetPlay::XdRole::Unknown;
+    m_submit_team_button->setEnabled(may_submit);
+    m_submit_team_button->setToolTip(may_submit ? JoinerSubmitTeamToolTip() :
+                                                  tr("Only the opponent can submit a team."));
     return;
+  }
 
   const bool is_local_ip_selected = m_room_box->currentIndex() > (m_use_traversal ? 1 : 0);
   if (is_local_ip_selected)
@@ -990,6 +1073,13 @@ std::string NetPlayDialog::OnTeamSubmission(const std::string& player, const std
   return status;
 }
 
+bool NetPlayDialog::OnXdGuestSlotReset()
+{
+  // Host side, NETPLAY or GUI thread, under the server's seat lock: touches no
+  // widgets and never waits on the GUI thread.
+  return XDNetplay::ResetGuestSlot(2);
+}
+
 void NetPlayDialog::OnRoomClosed()
 {
   // Restores the host's own team AND erases every remaining copy of the
@@ -1119,14 +1209,16 @@ void NetPlayDialog::OnSubmitTeam()
   // the save's trainer identity, so everything in them lands on the host's
   // machine -- including the secret trainer ID, which nothing in a battle ever
   // shows. Saying "nicknames, OT, IDs" and stopping there would undersell it.
+  // The host syncs that save to every machine in the room at Start, watchers
+  // included, so the note names them too.
   auto* privacy_note = new QLabel(
       tr("Your save's party is sent exactly as it is, under the save's own trainer "
-         "identity — the in-game name field above is ignored. The host's machine "
-         "receives everything in those party bytes: exact moves, held items, stats, "
-         "EVs, IVs, natures, nicknames, met information, ribbons, and your OT name "
-         "and BOTH trainer IDs, including the secret one. Your opponent would see "
-         "most of this by battling you — but not the secret ID, so only send your "
-         "save to hosts you trust."),
+         "identity. The in-game name field above is ignored. Everyone in the room, "
+         "watchers included, receives everything in those party bytes: exact moves, "
+         "held items, stats, EVs, IVs, natures, nicknames, met information, ribbons, "
+         "and your OT name and BOTH trainer IDs, including the secret one. A battle "
+         "shows most of this, but never the secret ID, so only send your save to rooms "
+         "you trust."),
       &dialog);
   privacy_note->setWordWrap(true);
   dialog_layout->addWidget(privacy_note);
@@ -1752,6 +1844,8 @@ void NetPlayDialog::OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifi
     m_current_game_identifier = sync_identifier;
     m_current_game_name = netplay_name;
     UpdateDiscordPresence();
+    // The Role column and the Watch only box depend on whether the game is XD.
+    UpdateGUI();
   });
   DisplayMessage(tr("Game changed to \"%1\"").arg(qname), "magenta");
 }
@@ -1798,6 +1892,9 @@ void NetPlayDialog::SetOptionsEnabled(bool enabled)
     m_submit_team_button->setEnabled(enabled);
   }
 
+  // A joiner's Watch only box greys while its game runs; a change then would
+  // only apply to the next battle anyway.
+  m_watch_box->setEnabled(enabled);
   m_record_input_action->setEnabled(enabled);
 }
 

@@ -552,17 +552,36 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeDoAllPlayer
   return JNI_TRUE;
 }
 
-JNIEXPORT void JNICALL
+JNIEXPORT jobjectArray JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(JNIEnv* env,
                                                                                jobject obj)
 {
+  // Returns two strings: "1" or "0" (did the start request go out), then a
+  // one-line reason when it did not ("" otherwise).
+  const auto reply = [env](bool ok, const std::string& line) {
+    const std::array<std::string, 2> result{ok ? "1" : "0", line};
+    return SpanToJStringArray(env, std::span<const std::string>(result));
+  };
+
   // Waits for a Submit Team or Music & Location write that is still going, and
   // keeps new ones out until RequestStartGame has raised its start flag.
   std::lock_guard lk(s_host_write_mutex);
 
   auto* server = GetServerPointer(env, obj);
   if (!server)
-    return;
+    return reply(false, HOST_WRITE_NO_ROOM);
+
+  // Picks the opponent and keeps a joiner's TeamData and new joins out until
+  // RequestStartGame has returned. Lock order: s_host_write_mutex, then the
+  // server's seat mutex.
+  NetPlay::NetPlayServer::XdStartFreeze freeze(*server);
+  const NetPlay::XdStartClaim& claim = freeze.Claim();
+  if (claim.starting)
+    return reply(false, HOST_WRITE_BUSY);
+  if (claim.opponent == 0)
+    return reply(false, "Can't start: no opponent yet.");
+  if (claim.slot_busy)
+    return reply(false, "Can't start: the last battle is still closing.");
 
   // Assign the XD GBA-vs-GBA ports before starting. Dolphin's netplay config
   // loader rebuilds every SI channel and every GBA ROM path at boot purely from
@@ -575,23 +594,23 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
   // (NetPlayDialog.cpp:340-341) for our fixed two-player layout:
   //   port 1 (idx0) = host GC controller -> pad_map[0] = host pid, gba off
   //   port 2 (idx1) = host GBA           -> pad_map[1] = host pid, gba on
-  //   port 3 (idx2) = guest GBA          -> pad_map[2] = guest pid, gba on
+  //   port 3 (idx2) = opponent's GBA     -> pad_map[2] = opponent pid, gba on
   //   port 4 (idx3) = unused             -> pad_map[3] = 0
   // A slot becomes a GBA iff gba_config[i].enabled && pad_map[i] > 0
   // (NetPlayConfigLoader.cpp:144-147); a mapped-but-not-GBA slot owned by the
   // local player becomes its GC controller, and one owned by a remote player a
   // remote controller. The host is always pid 1 (its loopback client connects
-  // first, Client::IsHost() == pid==1) and XD is a strict two-player game, so
-  // the guest is pid 2. This runs on every start, which also re-applies the
-  // mapping after a disconnect/reconnect (which wipes it, NetPlayServer.cpp:
-  // 581-590, and refills the slot as a plain controller, not a GBA).
+  // first, Client::IsHost() == pid==1). The opponent is whoever the server
+  // seated (GetXdOpponentLocked), not a fixed pid: pids are reused, and
+  // watchers stay unmapped, as plain spectators. This runs on every start,
+  // which also re-applies the mapping after a disconnect/reconnect (which
+  // wipes it, and refills the slot as a plain controller, not a GBA).
   constexpr NetPlay::PlayerId HOST_PID = 1;
-  constexpr NetPlay::PlayerId GUEST_PID = 2;
 
   NetPlay::PadMappingArray pad_map{};
   pad_map[0] = HOST_PID;
   pad_map[1] = HOST_PID;
-  pad_map[2] = GUEST_PID;
+  pad_map[2] = claim.opponent;
   pad_map[3] = 0;
 
   NetPlay::GBAConfigArray gba_config{};
@@ -629,7 +648,16 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
   XDNetplay::BattleCustomizer::PrepareForStart();
   XDNetplay::BattleCustomizer::BeginLiveStyleForStart();
 
-  server->RequestStartGame();
+  return reply(server->RequestStartGame(), "");
+}
+
+JNIEXPORT void JNICALL
+Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetWatchOnly(
+    JNIEnv* env, jobject obj, jboolean watching)
+{
+  // XD Netplay, joiner: only watch (or play again). Applies from the next Start.
+  if (auto* client = GetClientPointer(env, obj))
+    client->SendXdWatch(watching == JNI_TRUE);
 }
 
 JNIEXPORT jint JNICALL Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeGetPort(
