@@ -17,13 +17,16 @@
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
 #include "Common/TraversalClient.h"
+#include "Core/AchievementManager.h"
 #include "Core/Boot/Boot.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/NetplaySettings.h"
+#include "Core/Core.h"
 #include "Core/NetPlayClient.h"
 #include "Core/NetPlayProto.h"
 #include "Core/NetPlayCommon.h"
 #include "Core/NetPlayServer.h"
+#include "Core/System.h"
 #ifdef HAS_LIBMGBA
 #include "Core/HW/GBACore.h"
 #endif
@@ -657,6 +660,14 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
     return reply(false, "Can't start: no opponent yet.");
   if (claim.slot_busy)
     return reply(false, "Can't start: the last battle is still closing.");
+  // The previous game's GBA cores write their saves back as they shut down, which can land after
+  // this Start has read and sent them: wait until emulation is fully down (mirrors desktop).
+  if (!Core::IsUninitialized(Core::System::GetInstance()))
+    return reply(false, "Can't start: the last battle is still closing.");
+  // Hardcore mode filters this machine's Action Replay codes, not the synced copy the other
+  // player runs, so the two would play different rules.
+  if (AchievementManager::GetInstance().IsHardcoreModeActive())
+    return reply(false, "Can't start: RetroAchievements hardcore mode is on.");
 
   // The room's format is what every player was shown; keep the key on it
   // before PrepareForStart reads it (mirrors the desktop OnStart).

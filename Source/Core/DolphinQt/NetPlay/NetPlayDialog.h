@@ -57,6 +57,7 @@ public:
 
   void Update() override;
   void AppendChat(const std::string& msg) override;
+  void AppendChatQuiet(const std::string& msg) override;
   std::string OnTeamSubmission(const std::string& player, const std::string& text) override;
   bool OnXdGuestSlotReset() override;
   void OnRoomClosed() override;

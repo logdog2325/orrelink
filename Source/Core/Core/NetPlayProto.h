@@ -26,6 +26,10 @@ namespace PowerPC
 {
 enum class CPUCore;
 }
+namespace HLE_XD
+{
+struct XdDigest;
+}
 
 namespace NetPlay
 {
@@ -226,9 +230,21 @@ enum class MessageID : u8
   XdWatch = 0xA9,    // XD Netplay: client -> server. bool: this player only watches.
   XdSeats = 0xAA,    // XD Netplay: server -> clients. Who plays GBA 2, who watches. Display only.
   XdFormat = 0xAB,   // XD Netplay: server -> clients. u8: the room's battle format (FormatRules id).
+  // XD Netplay room notice, both ways. Client -> server: u8 XdNoticeKind, u8 arg. Server ->
+  // clients: u8 XdNoticeKind, PlayerId who, u8 arg. Each client writes the line itself, into the
+  // room chat only, never on screen.
+  XdNotice = 0xAC,
 
   TimeBase = 0xB0,
   DesyncDetected = 0xB1,
+  // XD Netplay state check (v1.7.5). Client -> server: u8 kind, u32 tag, u32 value, then u32
+  // seed, crcA, crcB, crcC for the log (0 for kind 0). Kind 0: the hash of the pad entries
+  // consumed, tag = pop count of the marker pad. Kind 1-4: the XD state hash read at a GC->GBA
+  // WRITE of SI port kind-1, tag = that port's WRITE count. Server -> clients on a mismatch that
+  // is announced: u8 kind, u32 tag, u8 scope (0 players, 1 one spectator), PlayerId spectator,
+  // u8 component bits (1 inputs, 2 XD state).
+  StateDigest = 0xB2,
+  StateMismatch = 0xB3,
 
   ComputeGameDigest = 0xC0,
   GameDigestProgress = 0xC1,
@@ -242,9 +258,24 @@ enum class MessageID : u8
   Ping = 0xE0,
   Pong = 0xE1,
   PlayerPingData = 0xE2,
+  // XD Netplay, client -> server once a second from a player, over the pads other machines own:
+  // u16 longest pad wait in ms, u16 pops that waited over 1 ms, u16 pops, u16 the smallest queue
+  // depth seen before a pop (0xFFFF: no such pop). The automatic buffer lowers only while every
+  // player keeps slack, and adds a cushion when one keeps waiting.
+  PadHealth = 0xE3,
 
   SyncSaveData = 0xF1,
   SyncCodes = 0xF2,
+};
+
+// XD Netplay room notices (MessageID::XdNotice).
+enum class XdNoticeKind : u8
+{
+  LeftWindow = 0,   // a player's game window lost input focus, or their game is paused
+  BackInWindow = 1,
+  GbaStartFailed = 2,  // arg: the SI port (0-3) whose GBA core did not start
+  // Server -> clients only: the same, from a player who only watches; the battle goes on.
+  GbaStartFailedWatcher = 3,
 };
 
 enum class ConnectionError : u8
@@ -308,5 +339,12 @@ PadDetails GetPadDetails(int pad_num);
 // True when netplay is running and the calling core is the one booted for the current game.
 // Takes crit_netplay_client: never call it from anything NetPlay_GetInput calls.
 bool IsCurrentGameCore();
+// A GBA core of the current game failed to start on this machine (SI port 0-3): tell the room and
+// stop the game. Takes crit_netplay_client, like IsCurrentGameCore.
+void ReportGbaStartFailure(int port);
+// State check, XD part: XD's battle state read at the write_count-th GC->GBA WRITE of SI port
+// `port`, a fixed point in the game's own code on every machine. CPU thread, from the GBA device;
+// takes crit_netplay_client, like IsCurrentGameCore.
+void ReportXdStateSample(int port, u32 write_count, const HLE_XD::XdDigest& digest);
 int NumLocalWiimotes();
 }  // namespace NetPlay
