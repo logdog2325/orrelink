@@ -29,6 +29,8 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -59,6 +61,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -80,6 +83,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -203,6 +207,13 @@ fun NetplayScreen(
     /** JOINER only: the "Watch only" switch. */
     watchOnly: Boolean = false,
     onWatchOnlyChanged: (Boolean) -> Unit = {},
+    /** XD Netplay: the room's format name from the server, null until known. */
+    roomFormatName: String? = null,
+    /** HOST only: the room's format id, the format list (id to name, in
+     *  shared core's order), and the change action. */
+    roomFormat: Int = 0,
+    formatOptions: List<Pair<Int, String>> = emptyList(),
+    onSetRoomFormat: (Int) -> Unit = {},
 ) {
     val scrollState = rememberScrollState()
     // XD Netplay: joiner's "Submit Team" sheet. Every field opens pre-filled
@@ -357,7 +368,7 @@ fun NetplayScreen(
                     // the fetched text. The bundle path has no draft to check
                     // here — the host's gate judges the sent party.)
                     if (orreFormatLocal && !useMySave) {
-                        val formatReason = remember(teamDraft) {
+                        val formatReason = remember(teamDraft, localFormatName) {
                             validateTeamForFormat(teamDraft)
                         }
                         if (formatReason.isNotEmpty()) {
@@ -481,6 +492,73 @@ fun NetplayScreen(
         showMusicLocation = true
     }
 
+    // XD Netplay, HOST only: change the room's battle format. The draft is
+    // re-seeded from the room's format every time the dialog opens; an id the
+    // list does not carry acts as Free everywhere, so it starts on Free.
+    var showFormat by rememberSaveable { mutableStateOf(false) }
+    var formatDraft by rememberSaveable { mutableIntStateOf(0) }
+    if (showFormat) {
+        AlertDialog(
+            title = { Text(stringResource(R.string.xd_room_format_title)) },
+            text = {
+                Column(
+                    Modifier
+                        .verticalScroll(rememberScrollState())
+                        .selectableGroup()
+                ) {
+                    Text(
+                        stringResource(R.string.xd_room_format_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    formatOptions.forEach { (id, name) ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .selectable(
+                                    selected = formatDraft == id,
+                                    onClick = { formatDraft = id },
+                                    role = Role.RadioButton
+                                )
+                                .padding(vertical = 4.dp)
+                        ) {
+                            RadioButton(selected = formatDraft == id, onClick = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(name, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onSetRoomFormat(formatDraft)
+                        showFormat = false
+                    },
+                    enabled = !gameRunning
+                ) {
+                    Text(stringResource(R.string.xd_room_apply))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFormat = false }) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+            onDismissRequest = { showFormat = false },
+        )
+    }
+    val onShowFormat = {
+        formatDraft = if (formatOptions.any { it.first == roomFormat }) roomFormat else 0
+        showFormat = true
+    }
+    // The format means nothing outside XD, so the button and the line exist
+    // only in an XD room.
+    val formatLine = roomFormatName?.takeIf { isXdGameName(game) }
+    val formatAvailable = isHosting && isXdGameName(game)
+
     DolphinScaffold(
         title = {
             Text(stringResource(R.string.netplay_title))
@@ -535,6 +613,9 @@ fun NetplayScreen(
                 hostTrainerName = hostTrainerName,
                 onShowSubmitTeam = { showSubmitTeam = true },
                 onShowMusicLocation = onShowMusicLocation,
+                onShowFormat = onShowFormat,
+                formatAvailable = formatAvailable,
+                formatLine = formatLine,
                 gameRunning = gameRunning,
                 hostResultText = hostResultText,
                 hostResultOk = hostResultOk,
@@ -573,6 +654,9 @@ fun NetplayScreen(
                 hostTrainerName = hostTrainerName,
                 onShowSubmitTeam = { showSubmitTeam = true },
                 onShowMusicLocation = onShowMusicLocation,
+                onShowFormat = onShowFormat,
+                formatAvailable = formatAvailable,
+                formatLine = formatLine,
                 gameRunning = gameRunning,
                 hostResultText = hostResultText,
                 hostResultOk = hostResultOk,
@@ -703,6 +787,9 @@ private fun PortraitContent(
     hostTrainerName: String = "",
     onShowSubmitTeam: () -> Unit = {},
     onShowMusicLocation: () -> Unit = {},
+    onShowFormat: () -> Unit = {},
+    formatAvailable: Boolean = false,
+    formatLine: String? = null,
     gameRunning: Boolean = false,
     hostResultText: String = "",
     hostResultOk: Boolean = true,
@@ -775,6 +862,9 @@ private fun PortraitContent(
             hostTrainerName = hostTrainerName,
             onShowSubmitTeam = onShowSubmitTeam,
             onShowMusicLocation = onShowMusicLocation,
+            onShowFormat = onShowFormat,
+            formatAvailable = formatAvailable,
+            formatLine = formatLine,
             gameRunning = gameRunning,
             hostResultText = hostResultText,
             hostResultOk = hostResultOk,
@@ -798,6 +888,9 @@ private fun LandscapeContent(
     hostTrainerName: String = "",
     onShowSubmitTeam: () -> Unit = {},
     onShowMusicLocation: () -> Unit = {},
+    onShowFormat: () -> Unit = {},
+    formatAvailable: Boolean = false,
+    formatLine: String? = null,
     gameRunning: Boolean = false,
     hostResultText: String = "",
     hostResultOk: Boolean = true,
@@ -882,6 +975,9 @@ private fun LandscapeContent(
                 hostTrainerName = hostTrainerName,
                 onShowSubmitTeam = onShowSubmitTeam,
                 onShowMusicLocation = onShowMusicLocation,
+                onShowFormat = onShowFormat,
+                formatAvailable = formatAvailable,
+                formatLine = formatLine,
                 gameRunning = gameRunning,
                 hostResultText = hostResultText,
                 hostResultOk = hostResultOk,
@@ -950,15 +1046,19 @@ private fun HostTrainerNameSection(
 
 /**
  * XD Netplay, host side: the host's own "Submit Team" (the joiner has the
- * floating button; the host's floating button is Start) and the in-room
- * "Music & Location" picker, plus the result line of the last such action.
- * Both buttons grey out while a game runs: the emulated GBA owns its save
- * then, and a style change only applies at the next Start anyway.
+ * floating button; the host's floating button is Start), the in-room
+ * "Music & Location" picker and, in an XD room, "Change Format" on a
+ * full-width row of its own, plus the result line of the last such action.
+ * Submit Team and Change Format grey out while a game runs: the emulated GBA
+ * owns its save then, and the format is read at Start. Music & Location
+ * stays live (a running game takes it live).
  */
 @Composable
 private fun HostBattleSetupSection(
     onShowSubmitTeam: () -> Unit,
     onShowMusicLocation: () -> Unit,
+    onShowFormat: () -> Unit,
+    formatAvailable: Boolean,
     gameRunning: Boolean,
     resultText: String,
     resultOk: Boolean,
@@ -1005,6 +1105,16 @@ private fun HostBattleSetupSection(
                     )
                 }
             }
+        }
+        // Its own full-width row in both layouts: three labels do not fit the
+        // side-by-side threshold.
+        if (formatAvailable) {
+            HostSetupButton(
+                text = stringResource(R.string.xd_room_change_format),
+                onClick = onShowFormat,
+                enabled = !gameRunning,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
         if (resultText.isNotEmpty()) {
             val isDark = isSystemInDarkTheme()
@@ -1063,6 +1173,9 @@ private fun PlayersAndSettings(
     hostTrainerName: String = "",
     onShowSubmitTeam: () -> Unit = {},
     onShowMusicLocation: () -> Unit = {},
+    onShowFormat: () -> Unit = {},
+    formatAvailable: Boolean = false,
+    formatLine: String? = null,
     gameRunning: Boolean = false,
     hostResultText: String = "",
     hostResultOk: Boolean = true,
@@ -1097,6 +1210,8 @@ private fun PlayersAndSettings(
             HostBattleSetupSection(
                 onShowSubmitTeam = onShowSubmitTeam,
                 onShowMusicLocation = onShowMusicLocation,
+                onShowFormat = onShowFormat,
+                formatAvailable = formatAvailable,
                 gameRunning = gameRunning,
                 resultText = hostResultText,
                 resultOk = hostResultOk
@@ -1112,6 +1227,15 @@ private fun PlayersAndSettings(
         }
 
         MenuSpacer()
+
+        // XD Netplay: the room's format, for everyone once the server has said it.
+        if (formatLine != null) {
+            Text(
+                stringResource(R.string.xd_room_format_line, formatLine),
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Spacer(Modifier.height(8.dp))
+        }
 
         OutlinedBox(
             label = { Text(stringResource(R.string.netplay_players_label)) },

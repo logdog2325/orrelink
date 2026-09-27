@@ -72,7 +72,7 @@ object XdMatchmaker {
      *  per format tag. FindBattles uses this to tell an auto-published name
      *  from a hand-typed one. */
     fun autoNames(nickname: String): Set<String> =
-        FormatBridge.ALL_FORMATS.map { sessionName(nickname, formatId = it) }.toSet()
+        FormatBridge.knownFormats().map { sessionName(nickname, formatId = it) }.toSet()
 
     /**
      * Picks the room "Search for Match" should join, or null to host instead.

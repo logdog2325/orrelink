@@ -180,6 +180,9 @@ public:
   // XD Netplay: pid's part in the next battle, from the last XdSeats. Display only; the pad map
   // is decided by the host at Start. Takes m_crit.players.
   XdRole GetXdRole(PlayerId pid);
+  // XD Netplay: the room's battle format (a FormatRules id) from the server's last XdFormat, or
+  // nullopt before the first one. Display only. Takes m_crit.players.
+  std::optional<int> GetXdRoomFormat();
   void RequestStopGame();
   void SendPowerButtonEvent();
   void RequestGolfControl(PlayerId pid);
@@ -470,6 +473,7 @@ private:
   void OnGameDigestError(sf::Packet& packet);
   void OnGameDigestAbort();
   void OnXdSeats(sf::Packet& packet);
+  void OnXdFormat(sf::Packet& packet);
 
   bool m_is_connected = false;
   ConnectionState m_connection_state = ConnectionState::Failure;
@@ -480,6 +484,8 @@ private:
   // XD Netplay seats from the last XdSeats, guarded by m_crit.players.
   PlayerId m_xd_opponent = 0;
   bool m_xd_seats_known = false;
+  // XD Netplay: the room's format from the last XdFormat, guarded by m_crit.players.
+  std::optional<int> m_xd_room_format;
   std::string m_host_spec;
   std::string m_player_name;
   bool m_connecting = false;

@@ -52,6 +52,7 @@ signals:
 
 protected:
   void showEvent(QShowEvent* event) override;
+  void changeEvent(QEvent* event) override;
 
 private:
   struct ChecklistRow
@@ -75,6 +76,7 @@ private:
   void ConnectWidgets();
   void RefreshChecklist();
   void RefreshTimerRow();
+  void RefreshFormatCombo();
   void RefreshSaveSlots();
   void AutoDiscoverFromGameFolder();
   void FitToScreen();
@@ -127,9 +129,12 @@ private:
   // "Game default", which genuinely emits nothing.
   //
   // m_format_combo is the one non-cosmetic pick in that group: the battle
-  // FORMAT (Free / Orre Colosseum / OU), persisted in MAIN_XD_FORMAT and enforced
-  // by FormatRules' gates -- see the tooltip built in CreateMainLayout.
+  // FORMAT (FormatRules::SelectableFormats), persisted in MAIN_XD_FORMAT and
+  // enforced by FormatRules' gates -- see the tooltip built in
+  // CreateMainLayout. Locked while this machine hosts a room: the room owns
+  // the format then (NetPlayDialog's Change Format).
   QComboBox* m_format_combo;
+  QString m_format_tip;
   // Battle timer row: a host pick folded into the format rules pin by
   // BattleCustomizer::FormatRuleLines. Greyed while the Format pins no record
   // (Free/OU); the fields follow the checkbox.

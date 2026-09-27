@@ -17,6 +17,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -337,6 +338,19 @@ void NetPlayDialog::CreateChatLayout()
   m_style_button->setAutoDefault(false);
   m_style_button->hide();
 
+  // XD Netplay, host side: the room's battle format, picked from a short list
+  // (OnChangeFormat). UpdateGUI shows it to the host of an XD room.
+  m_format_button = new QPushButton(tr("Change Format..."));
+  m_format_button->setToolTip(tr("Change the room's battle format. Applies at the next Start."));
+  m_format_button->setDefault(false);
+  m_format_button->setAutoDefault(false);
+  m_format_button->hide();
+
+  // XD Netplay: the room's format, for everyone in an XD room once the server
+  // has said it (late joiners too). UpdateGUI fills and shows it.
+  m_format_label = new QLabel;
+  m_format_label->hide();
+
   // XD Netplay, joiner side: sit out as a spectator. The server seats the next
   // player in line as the opponent, and the Role column shows who that is.
   // UpdateGUI shows it to joiners in an XD room.
@@ -366,7 +380,9 @@ void NetPlayDialog::CreateChatLayout()
   auto* team_row = new QHBoxLayout;
   team_row->addWidget(m_submit_team_button, 1);
   team_row->addWidget(m_style_button, 1);
+  team_row->addWidget(m_format_button, 1);
   team_row->addWidget(m_watch_box);
+  team_row->addWidget(m_format_label);
   layout->addLayout(team_row, 2, 0, 1, -1);
   layout->addWidget(m_host_name_edit, 3, 0);
   layout->addWidget(m_host_name_button, 3, 1);
@@ -438,6 +454,7 @@ void NetPlayDialog::ConnectWidgets()
   connect(m_chat_type_edit, &QLineEdit::returnPressed, this, &NetPlayDialog::OnChat);
   connect(m_submit_team_button, &QPushButton::clicked, this, &NetPlayDialog::OnSubmitTeam);
   connect(m_style_button, &QPushButton::clicked, this, &NetPlayDialog::OnStyleSettings);
+  connect(m_format_button, &QPushButton::clicked, this, &NetPlayDialog::OnChangeFormat);
   connect(m_watch_box, &QCheckBox::toggled, this, [](bool checked) {
     if (const auto client = Settings::Instance().GetNetPlayClient())
       client->SendXdWatch(checked);
@@ -633,6 +650,25 @@ void NetPlayDialog::OnStart()
       DisplayMessage(tr("Can't start: the last battle is still closing."), "red");
       return;
     }
+    // The room's format is what every player was shown. The non-modal
+    // launcher can write the key while a room is open, so put it back before
+    // PrepareForStart reads it.
+    const int room_format = server->GetXdRoomFormat();
+    if (Config::Get(Config::MAIN_XD_FORMAT) != room_format)
+      Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, room_format);
+    // The format's legality gate. The freeze keeps TeamData out, so the slot
+    // judged here is the one the start sends. Free/OU: one int compare.
+    std::string guest_note;
+    const std::string refusal = XDNetplay::StartFormatRefusal(
+        room_format, XDNetplay::CheckRoomTeams(room_format, /*judge_slot=*/true),
+        claim.slot_is_guest, claim.slot_owner_name, &guest_note);
+    if (!refusal.empty())
+    {
+      if (!guest_note.empty())
+        server->SendXdNote(claim.opponent, guest_note);
+      DisplayMessage(QString::fromStdString(refusal), "red");
+      return;
+    }
     XDNetplay::ApplyStartForcing(server.get(), claim.opponent);
     if (server->RequestStartGame())
       SetOptionsEnabled(false);
@@ -719,6 +755,10 @@ void NetPlayDialog::show(std::string nickname, bool use_traversal)
   m_watch_box->hide();
   m_style_button->setHidden(!is_hosting);
   m_style_button->setEnabled(true);
+  // UpdateGUI shows these once the room's game is known to be XD.
+  m_format_button->hide();
+  m_format_button->setEnabled(true);
+  m_format_label->hide();
   m_host_name_edit->setHidden(!is_hosting);
   m_host_name_button->setHidden(!is_hosting);
   if (is_hosting)
@@ -897,6 +937,20 @@ void NetPlayDialog::UpdateGUI()
     UpdateDiscordPresence();
     m_old_player_count = m_player_count;
   }
+
+  // The room's format, for everyone in an XD room once known. The host reads
+  // the server's copy, which changes at once; its own client's copy follows a
+  // loopback round trip later.
+  const std::optional<int> room_format =
+      server ? std::optional<int>(server->GetXdRoomFormat()) : client->GetXdRoomFormat();
+  m_format_label->setVisible(is_xd && room_format.has_value());
+  if (room_format)
+  {
+    m_format_label->setText(
+        tr("Format: %1")
+            .arg(QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(*room_format))));
+  }
+  m_format_button->setVisible(server && is_xd);
 
   if (!server)
   {
@@ -1227,19 +1281,20 @@ void NetPlayDialog::OnSubmitTeam()
   team_edit->setPlaceholderText(tr("Showdown export or pokepast.es link"));
   dialog_layout->addWidget(team_edit, 1);
 
-  // Paste-time FORMAT feedback (FormatRules.h): with the LOCAL Format pick on
-  // Orre Colosseum, a live note under the paste box says when the team about
-  // to be sent breaks that ruleset -- the same wording the Team Editor uses --
-  // so a violation is learned here, not from the host's refusal arriving in
-  // room chat. NEVER blocking: Send stays enabled whatever the note says,
-  // because only the HOST's format governs a room and this host may well be
-  // running Free. Nothing here can check what the host runs; the note is
-  // keyed off the local pick as agreed feedback, not enforcement. A
-  // pokepast.es link parses to no sets, so it draws no note (checking it
-  // would mean fetching it -- the send path resolves links later anyway).
-  // With the local pick on Free none of this exists: no label in the layout,
-  // no parse, no validation call, ever.
-  if (const int local_format = Config::Get(Config::MAIN_XD_FORMAT);
+  // Paste-time FORMAT feedback (FormatRules.h): under the ROOM's format (the
+  // host's, from the server's XdFormat; the local pick until that arrives), a
+  // live note under the paste box says when the team about to be sent breaks
+  // that ruleset -- the same wording the Team Editor uses -- so a violation is
+  // learned here, not from the host's refusal arriving in room chat. NEVER
+  // blocking: Send stays enabled whatever the note says; the host's gate is
+  // the judge. A pokepast.es link parses to no sets, so it draws no note
+  // (checking it would mean fetching it -- the send path resolves links later
+  // anyway). With a format without team rules none of this exists: no label
+  // in the layout, no parse, no validation call, ever.
+  std::optional<int> sheet_room_format;
+  if (const auto room_client = Settings::Instance().GetNetPlayClient())
+    sheet_room_format = room_client->GetXdRoomFormat();
+  if (const int local_format = sheet_room_format.value_or(Config::Get(Config::MAIN_XD_FORMAT));
       XDNetplay::FormatRules::HasTeamRules(local_format))
   {
     // Game data loads once per dialog open; on failure (broken install) the
@@ -1571,9 +1626,9 @@ void NetPlayDialog::OnSubmitHostTeam()
   dialog_layout->addWidget(team_edit, 1);
 
   // The same live "not <format> legal" note as the joiner's sheet. Here the
-  // format is the room's own, and SubmitHostTeam refuses what the note flags.
-  // A pokepast.es link parses to no sets and draws no note. With the format on
-  // Free none of this exists.
+  // format is the room's own (the key the host's format change writes), and
+  // SubmitHostTeam refuses what the note flags. A pokepast.es link parses to
+  // no sets and draws no note. With the format on Free none of this exists.
   if (const int format = Config::Get(Config::MAIN_XD_FORMAT);
       XDNetplay::FormatRules::HasTeamRules(format))
   {
@@ -1835,6 +1890,91 @@ void NetPlayDialog::OnStyleSettings()
                  "green");
 }
 
+void NetPlayDialog::ShowHostNote(const std::string& line)
+{
+  DisplayMessage(QString::fromStdString(line), "red");
+}
+
+void NetPlayDialog::OnChangeFormat()
+{
+  // Host only. The format decides the rules pin in the Battle Style block and
+  // the team checks, all read at Start, so it follows the host-write rule:
+  // never while a battle starts or runs.
+  if (!HostWriteAllowed())
+    return;
+
+  const std::vector<int> formats =
+      XDNetplay::FormatRules::SelectableFormats(Config::Get(Config::MAIN_XD_MULTI_ENABLED));
+  int current = XDNetplay::FormatRules::FORMAT_FREE;
+  if (const auto server = Settings::Instance().GetNetPlayServer())
+    current = server->GetXdRoomFormat();
+  // An id the list does not carry acts as Free everywhere, so it shows as Free.
+  if (std::ranges::find(formats, current) == formats.end())
+    current = XDNetplay::FormatRules::FORMAT_FREE;
+
+  QDialog dialog(this);
+  dialog.setWindowTitle(tr("Format"));
+  auto* dialog_layout = new QVBoxLayout(&dialog);
+  auto* list = new QListWidget(&dialog);
+  for (const int format : formats)
+  {
+    auto* item =
+        new QListWidgetItem(QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(format)));
+    item->setData(Qt::UserRole, format);
+    list->addItem(item);
+    if (format == current)
+      list->setCurrentItem(item);
+  }
+  dialog_layout->addWidget(list);
+  dialog_layout->addWidget(new QLabel(tr("Applies at the next Start, for both players."), &dialog));
+
+  auto* buttons =
+      new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+  buttons->button(QDialogButtonBox::Ok)->setText(tr("Apply"));
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  connect(list, &QListWidget::itemDoubleClicked, &dialog, &QDialog::accept);
+  dialog_layout->addWidget(buttons);
+
+  if (dialog.exec() != QDialog::Accepted || list->currentItem() == nullptr)
+    return;
+  const int format = list->currentItem()->data(Qt::UserRole).toInt();
+
+  // The room can have closed while the list was open.
+  if (!HostWriteAllowed())
+    return;
+  const auto server = Settings::Instance().GetNetPlayServer();
+  if (std::ranges::find(formats, format) == formats.end() || format == server->GetXdRoomFormat())
+    return;
+
+  // Outside every netplay lock: Config::Set runs its callbacks right here. From
+  // this write on, a guest's submission is checked against the new format.
+  Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, format);
+  XDNetplay::RoomTeamCheck check;
+  const NetPlay::XdFormatChange change = server->SetXdFormat(
+      format,
+      [&check, format](const NetPlay::XdSlotView& slot) {
+        // A departed player's team is reset before any Start reads it: not judged.
+        check = XDNetplay::CheckRoomTeams(format, slot.state != NetPlay::XdSlotState::Orphan);
+      },
+      std::string("Format: ") + XDNetplay::FormatRules::FormatDisplayName(format) + ".");
+  if (change.busy)
+  {
+    Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, server->GetXdRoomFormat());
+    DisplayMessage(tr("A battle is starting. Try again after it ends."), "red");
+    return;
+  }
+
+  const XDNetplay::FormatChangeNotes notes = XDNetplay::DescribeFormatChange(
+      format, check, change.slot.state == NetPlay::XdSlotState::Guest, change.slot.owner_name);
+  if (!notes.guest_note.empty())
+    server->SendXdNote(change.slot.owner_pid, notes.guest_note);
+  for (const std::string& line : notes.host_lines)
+    DisplayMessage(QString::fromStdString(line), "red");
+  Config::Save();
+  UpdateGUI();
+}
+
 void NetPlayDialog::OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,
                                     const std::string& netplay_name)
 {
@@ -1890,6 +2030,8 @@ void NetPlayDialog::SetOptionsEnabled(bool enabled)
     // OnStyleSettings); it refuses by itself while a start is in flight. A joiner's Submit Team
     // button is left alone here, as before.
     m_submit_team_button->setEnabled(enabled);
+    // The format is read at Start, so it only changes between games.
+    m_format_button->setEnabled(enabled);
   }
 
   // A joiner's Watch only box greys while its game runs; a change then would

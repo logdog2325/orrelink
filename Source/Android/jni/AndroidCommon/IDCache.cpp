@@ -43,6 +43,7 @@ static jmethodID s_netplay_on_host_input_authority_changed;
 static jmethodID s_netplay_on_pad_buffer_changed;
 static jmethodID s_netplay_on_chat_message_received;
 static jmethodID s_netplay_update;
+static jmethodID s_netplay_on_room_format;
 static jmethodID s_netplay_on_show_chunked_progress_dialog;
 static jmethodID s_netplay_on_set_chunked_progress;
 static jmethodID s_netplay_on_hide_chunked_progress_dialog;
@@ -334,6 +335,11 @@ jmethodID GetNetplayOnChatMessageReceived()
 jmethodID GetNetplayUpdate()
 {
   return s_netplay_update;
+}
+
+jmethodID GetNetplayOnRoomFormat()
+{
+  return s_netplay_on_room_format;
 }
 
 jmethodID GetNetplayOnShowChunkedProgressDialog()
@@ -821,6 +827,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved)
   s_netplay_update =
       env->GetMethodID(netplay_session_class, "onUpdate",
                        "([Lorg/dolphinemu/dolphinemu/features/netplay/model/Player;)V");
+  s_netplay_on_room_format = env->GetMethodID(netplay_session_class, "onRoomFormat", "(I)V");
   s_netplay_on_show_chunked_progress_dialog = env->GetMethodID(
       netplay_session_class, "onShowChunkedProgressDialog", "(Ljava/lang/String;J[I)V");
   s_netplay_on_set_chunked_progress =

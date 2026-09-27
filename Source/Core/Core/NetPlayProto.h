@@ -221,6 +221,7 @@ enum class MessageID : u8
   LiveStyle = 0xA8,  // XD Netplay: host changes the running game's battle style
   XdWatch = 0xA9,    // XD Netplay: client -> server. bool: this player only watches.
   XdSeats = 0xAA,    // XD Netplay: server -> clients. Who plays GBA 2, who watches. Display only.
+  XdFormat = 0xAB,   // XD Netplay: server -> clients. u8: the room's battle format (FormatRules id).
 
   TimeBase = 0xB0,
   DesyncDetected = 0xB1,

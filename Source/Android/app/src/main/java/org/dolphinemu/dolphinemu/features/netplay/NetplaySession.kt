@@ -99,6 +99,14 @@ class NetplaySession(
     )
     val game = _game.asSharedFlow()
 
+    /** XD Netplay: the room's battle format (FormatBridge.FORMAT_*) from the
+     *  server, -1 until it has said. */
+    private val _roomFormat = MutableSharedFlow<Int>(
+        replay = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val roomFormat = _roomFormat.asSharedFlow().distinctUntilChanged()
+
     private val _hostInputAuthorityEnabled = MutableSharedFlow<Boolean>(
         replay = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
@@ -242,6 +250,35 @@ class NetplaySession(
             status = result.getOrNull(1).orEmpty()
         )
     }
+
+    /**
+     * Host only: change the room's battle format. Native refuses while a
+     * battle is starting or running and once the room is gone, checks the id
+     * against the format list, tells every player, and checks the teams in the
+     * room against the new format. [HostSubmitResult.status] is the result
+     * line; [FormatResult.notes] are team lines for the host only. Reads the
+     * GBA saves and writes config, so call off the main thread.
+     */
+    fun setRoomFormat(formatId: Int): FormatResult {
+        val result = nativeSetRoomFormat(formatId)
+        return FormatResult(
+            ok = result.getOrNull(0) == "1",
+            status = result.getOrNull(1).orEmpty(),
+            notes = result.drop(2)
+        )
+    }
+
+    /** Outcome of [setRoomFormat]. */
+    data class FormatResult(val ok: Boolean, val status: String, val notes: List<String>)
+
+    /**
+     * Host only, once the room is up: "" when the host's own team and spare
+     * team pass the room's format (or the room is not on XD), else one
+     * advisory line. The room opens
+     * either way; Start is where the format is enforced. Reads the GBA saves,
+     * so call off the main thread.
+     */
+    fun hostFormatNote(): String = nativeHostFormatNote()
 
     /**
      * "Use my save": submit the party from this player's OWN local save (their
@@ -397,6 +434,11 @@ class NetplaySession(
     /** Returns ["1" or "0", the one-line result]; see [setMusicAndLocation]. */
     private external fun nativeSetMusicAndLocation(musicId: Int, venueId: Int): Array<String>
 
+    /** Returns ["1" or "0", the one-line result, team notes...]; see [setRoomFormat]. */
+    private external fun nativeSetRoomFormat(formatId: Int): Array<String>
+
+    private external fun nativeHostFormatNote(): String
+
     private external fun nativeSetHostInputAuthority(enable: Boolean)
 
     private external fun nativeAdjustClientPadBufferSize(buffer: Int)
@@ -455,6 +497,11 @@ class NetplaySession(
     @Keep
     fun onUpdate(players: Array<Player>) {
         _players.tryEmit(players.toList())
+    }
+
+    @Keep
+    fun onRoomFormat(formatId: Int) {
+        _roomFormat.tryEmit(formatId)
     }
 
     @Keep
