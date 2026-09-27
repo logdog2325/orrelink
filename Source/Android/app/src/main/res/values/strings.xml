@@ -1076,6 +1076,13 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="netplay_players_name">Name</string>
     <string name="netplay_players_ping">Ping</string>
     <string name="netplay_players_mapping">Mapping</string>
+    <string name="netplay_players_role">Role</string>
+    <string name="xd_role_host">Host</string>
+    <string name="xd_role_opponent">Opponent</string>
+    <string name="xd_role_waiting">Waiting</string>
+    <string name="xd_role_watching">Watching</string>
+    <string name="xd_watch_only">Watch only</string>
+    <string name="xd_watch_only_description">Watch without playing.</string>
     <string name="netplay_network_mode_label">Input mode</string>
     <string name="netplay_network_mode_fair_input_delay">Fair Input Delay</string>
     <string name="netplay_network_mode_host_input_authority">Host Input Authority</string>
@@ -1167,7 +1174,7 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_submit_raise_100">Raise my team to Lv. 100</string>
     <string name="xd_submit_raise_100_hint">Only in Lv. 100 formats. The host applies it and never lowers a Pokémon.</string>
     <string name="xd_submit_use_save_hint">Submit your save\'s party as-is, under your save\'s own trainer name and ID. This sends the Team Editor\'s "Host (GBA 2)" team.</string>
-    <string name="xd_submit_privacy_note">Your save\'s party is sent exactly as it is, and the host\'s machine receives everything in those bytes: exact moves, held items, stats, EVs, IVs, natures, nicknames, met information, ribbons, and your OT name and BOTH trainer IDs, including the secret one. Your opponent would see most of this by battling you — but not the secret ID, so only send your save to hosts you trust.</string>
+    <string name="xd_submit_privacy_note">Your save\'s party is sent exactly as it is. Everyone in the room, watchers included, receives everything in those bytes: exact moves, held items, stats, EVs, IVs, natures, nicknames, met information, ribbons, and your OT name and BOTH trainer IDs, including the secret one. A battle shows most of this, but never the secret ID, so only send your save to rooms you trust.</string>
     <string name="xd_submit_name_ignored">Your save\'s real trainer name is used instead.</string>
 
     <!-- XD Netplay room, HOST only: the host's own Submit Team sheet (writes

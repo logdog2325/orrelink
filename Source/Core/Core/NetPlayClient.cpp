@@ -585,6 +585,10 @@ void NetPlayClient::OnData(sf::Packet& packet)
     OnLiveStyle(packet);
     break;
 
+  case MessageID::XdSeats:
+    OnXdSeats(packet);
+    break;
+
   case MessageID::Ping:
     OnPing(packet);
     break;
@@ -677,13 +681,42 @@ void NetPlayClient::OnChatMessage(sf::Packet& packet)
   std::string msg;
   packet >> msg;
 
-  // don't need lock to read in this thread
-  const Player& player = m_players[pid];
+  // find, never operator[]: server lines carry pid 0, and inserting a blank Player for it put a
+  // phantom row in the players list and made DoAllPlayersHaveGame false.
+  std::string name;
+  {
+    std::lock_guard lkp(m_crit.players);
+    if (const auto it = m_players.find(pid); it != m_players.end())
+      name = it->second.name;
+  }
 
-  INFO_LOG_FMT(NETPLAY, "Player {} ({}) wrote: {}", player.name, player.pid, msg);
+  INFO_LOG_FMT(NETPLAY, "Player {} ({}) wrote: {}", name, pid, msg);
 
   // add to gui
-  m_dialog->AppendChat(fmt::format("{}[{}]: {}", player.name, pid, msg));
+  m_dialog->AppendChat(fmt::format("{}[{}]: {}", name, pid, msg));
+}
+
+void NetPlayClient::OnXdSeats(sf::Packet& packet)
+{
+  PlayerId opponent = 0;
+  u8 count = 0;
+  packet >> opponent;
+  packet >> count;
+  std::vector<PlayerId> watchers(count);
+  for (PlayerId& pid : watchers)
+    packet >> pid;
+
+  {
+    std::lock_guard lkp(m_crit.players);
+    // A full snapshot. Only players we know are updated, never inserted; a later join gets its
+    // flag from the broadcast that follows it.
+    for (auto& [pid, player] : m_players)
+      player.xd_watching = std::ranges::find(watchers, pid) != watchers.end();
+    m_xd_opponent = opponent;
+    m_xd_seats_known = true;
+  }
+
+  m_dialog->Update();
 }
 
 void NetPlayClient::OnChunkedDataStart(sf::Packet& packet)
@@ -2110,6 +2143,28 @@ void NetPlayClient::SendTeamSubmission(const std::string& payload)
   packet << payload;
 
   SendAsync(std::move(packet));
+}
+
+void NetPlayClient::SendXdWatch(bool watching)
+{
+  sf::Packet packet;
+  packet << MessageID::XdWatch;
+  packet << watching;
+
+  SendAsync(std::move(packet));
+}
+
+XdRole NetPlayClient::GetXdRole(PlayerId pid)
+{
+  std::lock_guard lkp(m_crit.players);
+  if (pid == 1)
+    return XdRole::Host;
+  if (!m_xd_seats_known)
+    return XdRole::Unknown;
+  if (pid == m_xd_opponent)
+    return XdRole::Opponent;
+  const auto it = m_players.find(pid);
+  return it != m_players.end() && it->second.xd_watching ? XdRole::Watching : XdRole::Waiting;
 }
 
 // called from ---CPU--- thread
@@ -3716,8 +3771,9 @@ PadDetails GetPadDetails(int pad_num)
   }
   res.is_local = netplay_client->IsLocalPlayer(pad_map[pad_num]);
   res.local_pad = res.is_local ? local_pad : netplay_client->NumLocalPads() + non_local_pad;
-  res.hide_gba = !res.is_local && netplay_client->GetNetSettings().hide_remote_gbas &&
-                 netplay_client->LocalPlayerHasControllerMapped();
+  // Also when this machine has no pad (a watcher, or a player waiting for the seat): XD rooms
+  // must not show a spectator either player's GBA screen, which carries that player's party.
+  res.hide_gba = !res.is_local && netplay_client->GetNetSettings().hide_remote_gbas;
   return res;
 }
 

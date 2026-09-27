@@ -158,7 +158,9 @@ void NetPlayUICallbacks::Update()
           env->NewObject(IDCache::GetNetplayPlayerClass(), IDCache::GetNetplayPlayerConstructor(),
                          static_cast<jint>(player->pid), ToJString(env, player->name),
                          ToJString(env, player->revision), static_cast<jint>(player->ping),
-                         static_cast<jboolean>(player->IsHost()), ToJString(env, mapping));
+                         static_cast<jboolean>(player->IsHost()), ToJString(env, mapping),
+                         static_cast<jint>(client->GetXdRole(player->pid)),
+                         static_cast<jboolean>(client->IsLocalPlayer(player->pid)));
       env->SetObjectArrayElement(player_array, i, player_obj);
       env->DeleteLocalRef(player_obj);
     }
@@ -210,6 +212,13 @@ std::string NetPlayUICallbacks::OnTeamSubmission(const std::string& player,
   if (!applied)
     return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
   return status;
+}
+
+bool NetPlayUICallbacks::OnXdGuestSlotReset()
+{
+  // Host side, NETPLAY or main thread, under the server's seat lock: no JNI
+  // call and no waiting on the main thread.
+  return XDNetplay::ResetGuestSlot(2);
 }
 
 void NetPlayUICallbacks::OnRoomClosed()

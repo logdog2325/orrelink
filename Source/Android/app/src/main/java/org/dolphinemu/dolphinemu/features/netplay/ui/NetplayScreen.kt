@@ -108,6 +108,7 @@ import org.dolphinemu.dolphinemu.features.netplay.model.TraversalState
 import org.dolphinemu.dolphinemu.features.xdnetplay.BattleStyleBridge
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.EmeraldSave
 import org.dolphinemu.dolphinemu.features.xdnetplay.gen3.Gen3Text
+import org.dolphinemu.dolphinemu.features.xdnetplay.isXdGameName
 import org.dolphinemu.dolphinemu.features.xdnetplay.ui.BattleStyleDropdown
 import org.dolphinemu.dolphinemu.model.GameFile
 import org.dolphinemu.dolphinemu.ui.theme.DolphinScaffold
@@ -197,6 +198,11 @@ fun NetplayScreen(
     /** HOST only: result line of the last in-room host action ("" = none yet). */
     hostResultText: String = "",
     hostResultOk: Boolean = true,
+    /** This device's part in the next battle (Player.ROLE_*), from the server's seat broadcast. */
+    localRole: Int = Player.ROLE_UNKNOWN,
+    /** JOINER only: the "Watch only" switch. */
+    watchOnly: Boolean = false,
+    onWatchOnlyChanged: (Boolean) -> Unit = {},
 ) {
     val scrollState = rememberScrollState()
     // XD Netplay: joiner's "Submit Team" sheet. Every field opens pre-filled
@@ -492,10 +498,13 @@ fun NetplayScreen(
                 ExtendedFloatingActionButton(onClick = onStartGame) {
                     Text(stringResource(R.string.netplay_start))
                 }
-            } else {
+            } else if (localRole == Player.ROLE_OPPONENT || localRole == Player.ROLE_UNKNOWN) {
                 // XD Netplay: a joiner hands their own team to the host, which
                 // writes it into the save it syncs at start. Sits where the
                 // host's Start button is, since only one of them ever shows.
+                // Only the opponent may submit (the server refuses anyone
+                // else), and a FAB has no disabled state, so a watcher or a
+                // player waiting for the seat does not get one.
                 ExtendedFloatingActionButton(onClick = { showSubmitTeam = true }) {
                     Text("Submit Team")
                 }
@@ -539,6 +548,8 @@ fun NetplayScreen(
                 showGamePicker = showGamePicker,
                 onShowGamePickerChanged = { showGamePicker = it },
                 players = players,
+                watchOnly = watchOnly,
+                onWatchOnlyChanged = onWatchOnlyChanged,
                 hostInputAuthorityEnabled = hostInputAuthorityEnabled,
                 networkMode = networkMode,
                 onNetworkModeChanged = onNetworkModeChanged,
@@ -575,6 +586,8 @@ fun NetplayScreen(
                 showGamePicker = showGamePicker,
                 onShowGamePickerChanged = { showGamePicker = it },
                 players = players,
+                watchOnly = watchOnly,
+                onWatchOnlyChanged = onWatchOnlyChanged,
                 hostInputAuthorityEnabled = hostInputAuthorityEnabled,
                 networkMode = networkMode,
                 onNetworkModeChanged = onNetworkModeChanged,
@@ -703,6 +716,8 @@ private fun PortraitContent(
     showGamePicker: Boolean,
     onShowGamePickerChanged: (Boolean) -> Unit,
     players: List<Player>,
+    watchOnly: Boolean = false,
+    onWatchOnlyChanged: (Boolean) -> Unit = {},
     hostInputAuthorityEnabled: Boolean,
     networkMode: NetworkMode,
     onNetworkModeChanged: (NetworkMode) -> Unit,
@@ -744,6 +759,8 @@ private fun PortraitContent(
             showGamePicker = showGamePicker,
             onShowGamePickerChanged = onShowGamePickerChanged,
             players = players,
+            watchOnly = watchOnly,
+            onWatchOnlyChanged = onWatchOnlyChanged,
             hostInputAuthorityEnabled = hostInputAuthorityEnabled,
             networkMode = networkMode,
             onNetworkModeChanged = onNetworkModeChanged,
@@ -768,9 +785,9 @@ private fun PortraitContent(
                 .padding(horizontal = DolphinTheme.scaffoldPadding),
         )
 
-        if (isHosting) {
-            Spacer(modifier = Modifier.height(DolphinTheme.fabClearancePadding))
-        }
+        // The host's Start and the joiner's Submit Team FAB both sit over
+        // the bottom of this column.
+        Spacer(modifier = Modifier.height(DolphinTheme.fabClearancePadding))
     }
 }
 
@@ -794,6 +811,8 @@ private fun LandscapeContent(
     showGamePicker: Boolean,
     onShowGamePickerChanged: (Boolean) -> Unit,
     players: List<Player>,
+    watchOnly: Boolean = false,
+    onWatchOnlyChanged: (Boolean) -> Unit = {},
     hostInputAuthorityEnabled: Boolean,
     networkMode: NetworkMode,
     onNetworkModeChanged: (NetworkMode) -> Unit,
@@ -847,6 +866,8 @@ private fun LandscapeContent(
                 showGamePicker = showGamePicker,
                 onShowGamePickerChanged = onShowGamePickerChanged,
                 players = players,
+                watchOnly = watchOnly,
+                onWatchOnlyChanged = onWatchOnlyChanged,
                 hostInputAuthorityEnabled = hostInputAuthorityEnabled,
                 networkMode = networkMode,
                 onNetworkModeChanged = onNetworkModeChanged,
@@ -870,9 +891,9 @@ private fun LandscapeContent(
                 modifier = Modifier
             )
 
-            if (isHosting) {
-                Spacer(modifier = Modifier.height(DolphinTheme.fabClearancePadding))
-            }
+            // The host's Start and the joiner's Submit Team FAB both sit over
+            // the bottom of this column.
+            Spacer(modifier = Modifier.height(DolphinTheme.fabClearancePadding))
         }
     }
 }
@@ -1026,6 +1047,8 @@ private fun PlayersAndSettings(
     showGamePicker: Boolean,
     onShowGamePickerChanged: (Boolean) -> Unit,
     players: List<Player>,
+    watchOnly: Boolean = false,
+    onWatchOnlyChanged: (Boolean) -> Unit = {},
     hostInputAuthorityEnabled: Boolean,
     networkMode: NetworkMode,
     onNetworkModeChanged: (NetworkMode) -> Unit,
@@ -1093,21 +1116,61 @@ private fun PlayersAndSettings(
         OutlinedBox(
             label = { Text(stringResource(R.string.netplay_players_label)) },
         ) {
+            // XD Netplay: each player's part in the next battle, from the
+            // server's seat broadcast, where the port mapping was.
+            val roleHost = stringResource(R.string.xd_role_host)
+            val roleOpponent = stringResource(R.string.xd_role_opponent)
+            val roleWaiting = stringResource(R.string.xd_role_waiting)
+            val roleWatching = stringResource(R.string.xd_role_watching)
+            val roleLabel = { role: Int ->
+                when (role) {
+                    Player.ROLE_HOST -> roleHost
+                    Player.ROLE_OPPONENT -> roleOpponent
+                    Player.ROLE_WAITING -> roleWaiting
+                    Player.ROLE_WATCHING -> roleWatching
+                    else -> ""
+                }
+            }
             PlayersTable(
                 rows = buildList {
                     add(
                         listOf(
                             stringResource(R.string.netplay_players_name),
                             stringResource(R.string.netplay_players_ping),
-                            stringResource(R.string.netplay_players_mapping),
+                            stringResource(R.string.netplay_players_role),
                         )
                     )
-                    addAll(players.map { listOf(it.name, it.ping.toString(), it.mapping) })
+                    addAll(players.map { listOf(it.name, it.ping.toString(), roleLabel(it.role)) })
                     repeat(4 - players.size) { add(listOf("", "", "")) }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
             )
+        }
+
+        if (!isHosting && isXdGameName(game)) {
+            MenuSpacer()
+
+            // XD Netplay, joiner: sit out as a spectator. The server seats the
+            // next player in line as the opponent; the Role column shows who.
+            // XD rooms only, as on desktop: elsewhere it would change nothing
+            // about who plays.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        stringResource(R.string.xd_watch_only),
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        stringResource(R.string.xd_watch_only_description),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Switch(checked = watchOnly, onCheckedChange = onWatchOnlyChanged)
+            }
         }
 
         if (isHosting) {

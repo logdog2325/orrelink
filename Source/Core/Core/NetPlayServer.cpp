@@ -47,6 +47,7 @@
 #include "Core/Config/SessionSettings.h"
 #include "Core/ConfigLoaders/GameConfigLoader.h"
 #include "Core/ConfigManager.h"
+#include "Core/Core.h"
 #include "Core/GeckoCode.h"
 #include "Core/GeckoCodeConfig.h"
 #include "Core/HW/EXI/EXI.h"
@@ -69,6 +70,7 @@
 #include "Core/NetPlayCommon.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/SyncIdentifier.h"
+#include "Core/System.h"
 
 #include "DiscIO/Enums.h"
 #include "DiscIO/RiivolutionPatcher.h"
@@ -303,7 +305,7 @@ void NetPlayServer::SetupIndex()
   session.has_password = !Config::Get(Config::NETPLAY_INDEX_PASSWORD).empty();
   session.method = m_traversal_client ? "traversal" : "direct";
   session.game_id = m_selected_game_name.empty() ? "UNKNOWN" : m_selected_game_name;
-  session.player_count = static_cast<int>(m_players.size());
+  session.player_count = PlayingCount();
   session.in_game = m_is_running;
   session.port = GetPort();
 
@@ -358,7 +360,7 @@ void NetPlayServer::ThreadFunc()
       m_ping_timer.Start();
       SendToClients(spac);
 
-      m_index.SetPlayerCount(static_cast<int>(m_players.size()));
+      m_index.SetPlayerCount(PlayingCount());
       m_index.SetGame(m_selected_game_name);
       m_index.SetInGame(m_is_running);
 
@@ -539,7 +541,10 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
   if (netplay_version != Common::GetScmRevGitStr())
     return ConnectionError::VersionMismatch;
 
-  if (m_is_running || m_start_pending)
+  // m_xd_frozen: an XD Start has claimed the seats and is writing the pad map, and a joiner
+  // assigned a pad slot now (AssignNewUserAPad) could land in it before m_start_pending rises.
+  // A join already past this check holds m_crit.game, which ClaimXdStart waits out.
+  if (m_is_running || m_start_pending || m_xd_frozen)
     return ConnectionError::GameRunning;
 
   if (m_players.size() >= 255)
@@ -555,6 +560,10 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
 
   if (StringUTF8CodePointCount(new_player.name) > MAX_NAME_LENGTH)
     return ConnectionError::NameTooLong;
+
+  // A fresh serial and the back of the line for the XD opponent seat, rejoiners included, so a
+  // reused pid never inherits a seat or a submitted team.
+  new_player.xd_serial = new_player.xd_queue = ++m_xd_counter;
 
   // Update time in milliseconds of no acknowledgment of
   // sent packets before a connection is deemed disconnected
@@ -608,6 +617,9 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
     UpdateGBAConfig();
     UpdateWiimoteMapping();
   }
+
+  // After the emplace: the joiner gets it behind its PlayerJoin and GameStatus burst.
+  SendXdSeats();
 
   // The new player has not answered a ping yet, and the handshake traffic just
   // skewed everyone else's. Let the automatic buffer take one clean sample
@@ -691,6 +703,9 @@ unsigned int NetPlayServer::OnDisconnect(const Client& player)
 
   // alert other players of disconnect
   SendToClients(spac);
+  // The seat may pass to the next player in line. The slot owner is left alone: staleness is by
+  // serial and is resolved at the next submission or Start.
+  SendXdSeats();
 
   for (size_t i = 0; i < m_pad_map.size(); ++i)
   {
@@ -889,7 +904,10 @@ void NetPlayServer::UpdateAutoPadBuffer()
   bool any_mapped = false;
   for (const auto& [pid, client] : m_players)
   {
-    if (!PlayerHasControllerMapped(pid))
+    // In the lobby a watcher can still hold a pad slot from AssignNewUserAPad, and nobody waits
+    // on it. In a game the pad map decides: a seated player who ticked Watch only during the
+    // save sync still plays this battle.
+    if (!PlayerHasControllerMapped(pid) || (client.xd_watching && !m_is_running))
       continue;
     any_mapped = true;
     max_ping = std::max(max_ping, client.ping);
@@ -1087,42 +1105,89 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     // Untrusted remote input: cap it before it reaches the parser. A real
     // six-Pokemon Showdown export is well under 2 KB.
     constexpr size_t MAX_TEAM_TEXT = 16 * 1024;
-    std::string result;
-    if (text.size() > MAX_TEAM_TEXT)
+    std::string result;   // for the room: "<name> submitted a team: <result>"
+    std::string refusal;  // for the sender only
     {
-      result = "team rejected (too large)";
-    }
-    else if (m_is_running || m_start_pending)
-    {
-      // Saves were read and synced when this battle started, and the host's
-      // save file is now owned by the live mGBA core (which rewrites it from
-      // its in-memory copy at shutdown), so a write here would be silently
-      // discarded. Reject honestly instead of claiming a queue we don't have.
-      //
-      // m_start_pending closes the launch window too: RequestStartGame has
-      // already read the save AND the enabled-codes INIs (SyncSaveData /
-      // SyncCodes) but the game is not yet marked running while the chunks
-      // upload. A submission landing there would rewrite files the host boots
-      // from AFTER the guest's copies were taken -- the two machines would
-      // hold a different party and a different cosmetic AR block, the one way
-      // this message could ever cause a desync.
-      result = "not applied - a battle is already running. Back out, then submit "
-               "before the host starts the next one.";
-    }
-    else
-    {
-      // The write completes synchronously here, before the chat ack below and
-      // therefore before any Start can read the file.
-      result = m_dialog ? m_dialog->OnTeamSubmission(player.name, text) : std::string{};
+      // Excludes a Start's claim of the seat and the saves (ClaimXdStart). Held across the write,
+      // so a Start that arrives now waits for it and then boots with it.
+      std::lock_guard lk(m_xd_seat_mutex);
+      PlayerId opponent;
+      bool stale;
+      {
+        std::lock_guard lkp(m_crit.players);
+        opponent = GetXdOpponentLocked();
+        stale = XdSlotStaleLocked(opponent);
+      }
+      if (player.pid != opponent)
+      {
+        // A watcher, someone waiting for the seat, or a sheet sent just before a seat change.
+        // Nothing is written and the room is not told.
+        refusal = "Only the opponent can submit a team.";
+      }
+      else if (text.size() > MAX_TEAM_TEXT)
+      {
+        result = "team rejected (too large)";
+      }
+      else if (m_xd_frozen || m_is_running || m_start_pending)
+      {
+        // Saves were read and synced when this battle started, and the host's
+        // save file is now owned by the live mGBA core (which rewrites it from
+        // its in-memory copy at shutdown), so a write here would be silently
+        // discarded. Reject honestly instead of claiming a queue we don't have.
+        //
+        // m_start_pending closes the launch window too: RequestStartGame has
+        // already read the save AND the enabled-codes INIs (SyncSaveData /
+        // SyncCodes) but the game is not yet marked running while the chunks
+        // upload. A submission landing there would rewrite files the host boots
+        // from AFTER the guest's copies were taken -- the two machines would
+        // hold a different party and a different cosmetic AR block, the one way
+        // this message could ever cause a desync. m_xd_frozen covers the start
+        // before m_start_pending rises.
+        result = "not applied - a battle is already running. Back out, then submit "
+                 "before the host starts the next one.";
+      }
+      else if (!Core::IsUninitialized(Core::System::GetInstance()) ||
+               (stale && !ResetXdSlotLocked(/*announce=*/false)))
+      {
+        // m_is_running drops at StopGame, before the host's GBA core has flushed its save. A
+        // write now would be overwritten by that flush.
+        result = "not applied - the last battle is still closing. Send it again.";
+      }
+      else
+      {
+        // The write completes synchronously here, before the chat ack below and
+        // therefore before any Start can read the file.
+        result = m_dialog ? m_dialog->OnTeamSubmission(player.name, text) : std::string{};
+        // Recorded even when the injection failed: after the reset above the slot holds only the
+        // host's data or this sender's, and OnTeamSubmission already stashed this sender's model.
+        m_xd_slot_owner = player.xd_serial;
+        m_xd_slot_owner_name = player.name;
+      }
     }
 
+    if (!refusal.empty())
+      SendResponseToPlayer(player, MessageID::ChatMessage, PlayerId{0}, refusal);
+    // Every client shows this line, the host's own included, so the host UI is not told directly.
     if (!result.empty())
+      SendChatMessage(fmt::format("{} submitted a team: {}", player.name, result));
+  }
+  break;
+
+  case MessageID::XdWatch:
+  {
+    bool watching = false;
+    packet >> watching;
+    if (player.IsHost() || player.xd_watching == watching)
+      break;
     {
-      const std::string line = fmt::format("{} submitted a team: {}", player.name, result);
-      SendChatMessage(line);
-      if (m_dialog)
-        m_dialog->AppendChat(line);
+      std::lock_guard lkp(m_crit.players);
+      player.xd_watching = watching;
+      // Back of the line: switching back to playing never takes the seat from anyone.
+      if (!watching)
+        player.xd_queue = ++m_xd_counter;
     }
+    // Stored now, used at the next Start or TeamData. The running game's pad map is untouched.
+    SendXdSeats();
   }
   break;
 
@@ -1998,6 +2063,10 @@ bool NetPlayServer::RequestStartGame()
 {
   INFO_LOG_FMT(NETPLAY, "Start Game requested.");
 
+  // Not an XD Start (those hold the freeze): no opponent to check for.
+  if (!m_xd_frozen)
+    m_xd_start_opponent = 0;
+
   if (!SetupNetSettings())
     return false;
 
@@ -2052,6 +2121,11 @@ bool NetPlayServer::RequestStartGame()
 
   if (start_now)
   {
+    // Held across the check and the start, so an opponent leaving now is either caught here or
+    // finds the game running and disables it.
+    std::lock_guard lkg(m_crit.game);
+    if (XdStartOpponentLeft())
+      return false;
     return StartGame();
   }
 
@@ -2714,6 +2788,12 @@ void NetPlayServer::CheckSyncAndStartGame()
   if (m_saves_synced && m_codes_synced)
   {
     INFO_LOG_FMT(NETPLAY, "Synchronized, starting game.");
+    // A leave after m_start_pending rose was already aborted in OnDisconnect.
+    if (XdStartOpponentLeft())
+    {
+      AbortGameStart();
+      return;
+    }
     StartGame();
   }
   else
@@ -2766,6 +2846,132 @@ bool NetPlayServer::PlayerHasControllerMapped(const PlayerId pid) const
 
   return std::ranges::any_of(m_pad_map, mapping_matches_player_id) ||
          std::ranges::any_of(m_wiimote_map, mapping_matches_player_id);
+}
+
+int NetPlayServer::PlayingCount()
+{
+  std::lock_guard lkp(m_crit.players);
+  return static_cast<int>(std::ranges::count_if(
+      std::views::values(m_players), [](const Client& client) { return !client.xd_watching; }));
+}
+
+// The one rule for who plays GBA 2 (SI port 3): the joiner not watching who has been in line the
+// longest. The host is never a candidate. Caller holds m_crit.players, or is the NETPLAY thread
+// (the only writer of m_players and the xd_* fields). 0 = nobody.
+PlayerId NetPlayServer::GetXdOpponentLocked() const
+{
+  const Client* best = nullptr;
+  for (const Client& client : std::views::values(m_players))
+  {
+    if (!client.IsHost() && !client.xd_watching && (!best || client.xd_queue < best->xd_queue))
+      best = &client;
+  }
+  return best ? best->pid : 0;
+}
+
+// True when the GBA 2 slot holds a team that is not the seated opponent's. A departed owner's
+// serial belongs to nobody, so their team reads as stale as soon as anyone else is seated.
+// Caller holds m_xd_seat_mutex and m_crit.players.
+bool NetPlayServer::XdSlotStaleLocked(PlayerId opponent) const
+{
+  if (m_xd_slot_owner == 0 || opponent == 0)
+    return false;
+  const auto it = m_players.find(opponent);
+  return it == m_players.end() || it->second.xd_serial != m_xd_slot_owner;
+}
+
+// Puts the GBA 2 slot back to the host's spare team and forgets the guest's model pick. False,
+// with nothing changed, while emulation is not fully down. Caller holds m_xd_seat_mutex and no
+// m_crit lock.
+bool NetPlayServer::ResetXdSlotLocked(bool announce)
+{
+  if (!m_dialog || !m_dialog->OnXdGuestSlotReset())
+    return false;
+  if (announce)
+    SendChatMessage(fmt::format("{}'s submitted team was cleared.", m_xd_slot_owner_name));
+  m_xd_slot_owner = 0;
+  m_xd_slot_owner_name.clear();
+  return true;
+}
+
+// Display only: every room UI turns this into Host / Opponent / Waiting / Watching. The pad map is
+// still decided once, by the host, at Start.
+void NetPlayServer::SendXdSeats()
+{
+  sf::Packet spac;
+  spac << MessageID::XdSeats;
+
+  std::lock_guard lkp(m_crit.players);
+  std::vector<PlayerId> watchers;
+  for (const Client& client : std::views::values(m_players))
+  {
+    if (client.xd_watching)
+      watchers.push_back(client.pid);
+  }
+  spac << GetXdOpponentLocked();
+  spac << static_cast<u8>(watchers.size());
+  for (const PlayerId pid : watchers)
+    spac << pid;
+
+  SendToClients(spac);
+}
+
+// called from ---GUI--- thread
+XdStartClaim NetPlayServer::ClaimXdStart()
+{
+  // Waits out a TeamData write in progress (milliseconds).
+  std::lock_guard lk(m_xd_seat_mutex);
+
+  XdStartClaim claim;
+  // A start still syncing saves, or a battle running: a second Start must not re-read the seat,
+  // reset the slot or rewrite the pad map under the saves that one already sent.
+  if (IsStartingOrRunning())
+  {
+    claim.starting = true;
+    return claim;
+  }
+
+  // TeamData and joins are refused from here until ReleaseXdStart.
+  m_xd_frozen = true;
+  // OnConnect reads the flag under m_crit.game. Taking it once here lets a join that read the
+  // flag before it rose finish (pad slot and all) before the seat and the pad map are claimed.
+  {
+    std::lock_guard lkg(m_crit.game);
+  }
+
+  bool stale;
+  {
+    std::lock_guard lkp(m_crit.players);
+    claim.opponent = GetXdOpponentLocked();
+    stale = XdSlotStaleLocked(claim.opponent);
+  }
+  // The announce goes out async, so it reaches everyone before StartGame and before any core runs.
+  if (claim.opponent != 0 && stale && !ResetXdSlotLocked(/*announce=*/true))
+    claim.slot_busy = true;
+  // Leaves are not frozen: the start checks this pid is still here before it begins.
+  m_xd_start_opponent = claim.opponent;
+  return claim;
+}
+
+// The opponent an XD Start was claimed for has left since the claim, which OnDisconnect cannot
+// abort before m_start_pending is up. Caller holds m_crit.game or is the NETPLAY thread, so this
+// is atomic with OnDisconnect (which runs under m_crit.game) up to the start.
+bool NetPlayServer::XdStartOpponentLeft()
+{
+  const PlayerId opponent = m_xd_start_opponent;
+  if (opponent == 0 || m_players.contains(opponent))
+    return false;
+  m_dialog->AppendChat("Can't start: the opponent left.");
+  return true;
+}
+
+// called from ---GUI--- thread, after RequestStartGame has returned. A start that went through
+// already raised m_start_pending or m_is_running, which keep refusing; a failed one reopens the
+// room.
+void NetPlayServer::ReleaseXdStart()
+{
+  std::lock_guard lk(m_xd_seat_mutex);
+  m_xd_frozen = false;
 }
 
 void NetPlayServer::AssignNewUserAPad(const Client& player)

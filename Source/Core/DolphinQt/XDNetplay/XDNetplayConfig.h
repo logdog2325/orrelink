@@ -5,9 +5,12 @@
 
 #include <string>
 
+#include "Common/CommonTypes.h"
+
 namespace NetPlay
 {
 class NetPlayServer;
+using PlayerId = u8;  // as in Core/NetPlayProto.h
 }
 
 // Non-UI helpers shared by the XD Netplay launcher. They force the small set
@@ -68,9 +71,10 @@ bool LooksLikeXdSession(const std::string& published_game_name);
 bool EnsureGbaConfig();
 
 // Mirror of the Android nativeStartGame forcing: fixed two-player pad map
-// (host pad + host GBA + guest GBA), GBA slots 2/3 enabled, save sync, remote
-// GBA hiding, cheats and code sync on. Does NOT call RequestStartGame.
-void ApplyStartForcing(NetPlay::NetPlayServer* server);
+// (host pad + host GBA + opponent's GBA), GBA slots 2/3 enabled, save sync,
+// remote GBA hiding, cheats and code sync on. opponent is the pid from
+// NetPlayServer::ClaimXdStart. Does NOT call RequestStartGame.
+void ApplyStartForcing(NetPlay::NetPlayServer* server, NetPlay::PlayerId opponent);
 
 // Resolve the GBA BIOS path (config, else the GBA user directory) and verify
 // it is the official dump. Optionally reports the resolved path. A negative
