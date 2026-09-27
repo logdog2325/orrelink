@@ -1043,7 +1043,12 @@ DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
   }
   SerialInterface::CSIDevice_GCController::HandleMoviePadStatus(m_system.GetMovie(),
                                                                 m_device_number, &pad_status);
+  ApplyPadStatus(pad_status);
+  return DataResponse::NoData;
+}
 
+void CSIDevice_GBAEmu::ApplyPadStatus(const GCPadStatus& pad_status)
+{
   m_keys = GbaKeysFromPad(pad_status);
   if (m_keys != m_diag_prev_keys)
   {
@@ -1066,8 +1071,45 @@ DataResponse CSIDevice_GBAEmu::GetData(u32& hi, u32& low)
       GBADetectLog::LogEvent(m_device_number, m_timestamp_sent, "x-reset", {});
   }
   m_diag_prev_xreset = x_now;
+}
 
-  return DataResponse::NoData;
+bool CSIDevice_GBAEmu::IsLinkUpForDiag() const
+{
+  // Diagnostics only, racy, never control.
+  return m_core->IsLinkEnabled();
+}
+
+void CSIDevice_GBAEmu::ReleaseLinkLatches(const char* reason)
+{
+  // Safe from a synced path only because these latches never feed an SI
+  // return value; they reach emulation only through resets.
+  const u64 now = m_system.GetCoreTiming().GetTicks();
+  GBADetectLog::LogEvent(m_device_number, now, "rematch-release",
+                         fmt::format("reason={} was_locked={} was_est={}", reason,
+                                     m_battle_locked, m_link_established));
+  m_link_established = false;
+  m_battle_locked = false;
+  m_data_cmd_count = 0;
+  m_probe_link_down_streak = 0;
+  if (GBALinkDiag* diag = DiagSlot(m_device_number))
+  {
+    diag->established.store(false, std::memory_order_relaxed);
+    diag->locked.store(false, std::memory_order_relaxed);
+  }
+}
+
+void CSIDevice_GBAEmu::RequestSyncedReset(u64 tick, const char* reason)
+{
+  // Deterministic on every peer: the caller's decision is, and RequestReset is
+  // tick-anchored. This is also the netplay path (no Pad::SetGBAReset).
+  m_core->RequestReset(tick);
+  if (GBALinkDiag* diag = DiagSlot(m_device_number))
+    diag->reset_count.fetch_add(1, std::memory_order_relaxed);
+  m_last_auto_reset = tick;
+  m_window_since_reset = false;
+  m_data_cmd_count = 0;
+  GBADetectLog::LogEvent(m_device_number, tick, "auto-reset",
+                         fmt::format("reason={} src=xdmulti", reason));
 }
 
 void CSIDevice_GBAEmu::SendCommand(u32 command, u8 poll)

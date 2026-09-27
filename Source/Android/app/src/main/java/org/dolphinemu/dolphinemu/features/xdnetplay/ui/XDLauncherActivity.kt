@@ -736,6 +736,10 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         if (IntSetting.MAIN_SI_DEVICE_2.int != 13) {
             IntSetting.MAIN_SI_DEVICE_2.setInt(NativeConfig.LAYER_BASE, 13); changed = true
         }
+        // The 1v1 link wants a plain pad on port 1, not XD Multi (14).
+        if (IntSetting.MAIN_SI_DEVICE_0.int == 14) {
+            IntSetting.MAIN_SI_DEVICE_0.setInt(NativeConfig.LAYER_BASE, 6); changed = true
+        }
         // Cheats are DERIVED state for XD sessions: shared core's
         // PrepareForStart turns MAIN_ENABLE_CHEATS on exactly when the session
         // needs the AR engine (a Battle Style/rules block, or Format = OU, the

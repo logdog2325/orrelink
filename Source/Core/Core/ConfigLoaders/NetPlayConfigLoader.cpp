@@ -152,7 +152,9 @@ public:
 
       if (m_settings.gba_config[i].enabled && player_id > 0)
       {
-        layer->Set(config_info, SerialInterface::SIDEVICE_GC_GBA_EMULATED);
+        layer->Set(config_info, (i == 0 && m_settings.xd_multi_p1) ?
+                                    SerialInterface::SIDEVICE_GC_GBA_XDMULTI :
+                                    SerialInterface::SIDEVICE_GC_GBA_EMULATED);
       }
       else if (player_id == m_settings.local_player_id)
       {

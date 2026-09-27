@@ -535,6 +535,12 @@ void SerialInterfaceManager::UpdateDevices()
     case DataResponse::Success:
       m_status_reg.hex |= GetRDSTBit(i);
       break;
+    case DataResponse::ErrorNoResponseReady:
+      m_status_reg.hex |= GetRDSTBit(i);
+      SetNoResponse(i);
+      errlatch = 1;
+      m_channel[i].in_hi.ERRSTAT = 1;
+      break;
     case DataResponse::ErrorNoResponse:
       SetNoResponse(i);
       [[fallthrough]];
@@ -559,6 +565,23 @@ SIDevices SerialInterfaceManager::GetDeviceType(int channel) const
     return SIDEVICE_NONE;
 
   return m_channel[channel].device->GetDeviceType();
+}
+
+bool SerialInterfaceManager::IsChannelPollEnabled(int channel) const
+{
+  switch (channel)
+  {
+  case 0:
+    return m_poll.EN0 != 0;
+  case 1:
+    return m_poll.EN1 != 0;
+  case 2:
+    return m_poll.EN2 != 0;
+  case 3:
+    return m_poll.EN3 != 0;
+  default:
+    return false;
+  }
 }
 
 u32 SerialInterfaceManager::GetPollXLines()
