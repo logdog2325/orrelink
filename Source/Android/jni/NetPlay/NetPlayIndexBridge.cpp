@@ -604,7 +604,7 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeValidatePar
   std::vector<jint> levels(species.size());
   if (count > 0 && jlevels != nullptr && env->GetArrayLength(jlevels) >= count)
     env->GetIntArrayRegion(jlevels, 0, count, levels.data());
-  // Moves: four per mon, 0 = empty slot, for the Doubles OU move bans.
+  // Moves: four per mon, 0 = empty slot, for the Doubles OU and Phenac move bans.
   std::vector<jint> moves(species.size() * 4);
   if (count > 0 && jmoves != nullptr && env->GetArrayLength(jmoves) >= count * 4)
     env->GetIntArrayRegion(jmoves, 0, count * 4, moves.data());
