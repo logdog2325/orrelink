@@ -101,6 +101,9 @@ enum SIDevices : int
   SIDEVICE_AM_BASEBOARD,
   SIDEVICE_WIIU_ADAPTER,
   SIDEVICE_GC_GBA_EMULATED,
+  // Port 1 only: a GC controller that becomes an integrated GBA for XD multi
+  // battles. Must stay 14; the Android settings hardcode the ints.
+  SIDEVICE_GC_GBA_XDMULTI,
   // Not a valid device. Used for checking whether enum values are valid.
   SIDEVICE_COUNT,
 };
@@ -110,6 +113,8 @@ enum class DataResponse
   NoData,
   Success,
   ErrorNoResponse,
+  // NOREP+ERRSTAT+ERRLATCH+RDST; only CSIDevice_XDMultiPort returns it
+  ErrorNoResponseReady,
 };
 
 class ISIDevice

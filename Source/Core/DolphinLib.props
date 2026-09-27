@@ -340,6 +340,7 @@
     <ClInclude Include="Core\HW\SI\SI_DeviceGCSteeringWheel.h" />
     <ClInclude Include="Core\HW\SI\SI_DeviceKeyboard.h" />
     <ClInclude Include="Core\HW\SI\SI_DeviceNull.h" />
+    <ClInclude Include="Core\HW\SI\SI_DeviceXDMultiPort.h" />
     <ClInclude Include="Core\HW\SI\SI.h" />
     <ClInclude Include="Core\HW\Sram.h" />
     <ClInclude Include="Core\HW\StreamADPCM.h" />
@@ -1068,6 +1069,7 @@
     <ClCompile Include="Core\HW\SI\SI_DeviceGCSteeringWheel.cpp" />
     <ClCompile Include="Core\HW\SI\SI_DeviceKeyboard.cpp" />
     <ClCompile Include="Core\HW\SI\SI_DeviceNull.cpp" />
+    <ClCompile Include="Core\HW\SI\SI_DeviceXDMultiPort.cpp" />
     <ClCompile Include="Core\HW\SI\SI.cpp" />
     <ClCompile Include="Core\HW\Sram.cpp" />
     <ClCompile Include="Core\HW\StreamADPCM.cpp" />
