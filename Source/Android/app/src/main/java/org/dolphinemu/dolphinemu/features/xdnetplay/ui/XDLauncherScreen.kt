@@ -335,6 +335,14 @@ private fun BattleStyleCard(
                             stringResource(R.string.xd_format_hint_ou)
                         FormatBridge.FORMAT_DOUBLES_OU ->
                             stringResource(R.string.xd_format_hint_doubles_ou)
+                        FormatBridge.FORMAT_REALGAM ->
+                            stringResource(R.string.xd_format_hint_realgam)
+                        FormatBridge.FORMAT_REALGAM_CLASSIC ->
+                            stringResource(R.string.xd_format_hint_realgam_classic)
+                        FormatBridge.FORMAT_PYRITE ->
+                            stringResource(R.string.xd_format_hint_pyrite)
+                        FormatBridge.FORMAT_PHENAC ->
+                            stringResource(R.string.xd_format_hint_phenac)
                         FormatBridge.FORMAT_MULTI ->
                             stringResource(R.string.xd_format_hint_multi)
                         else -> stringResource(R.string.xd_format_hint_free)
