@@ -147,7 +147,7 @@ bool EnsureGbaConfig()
   return true;
 }
 
-void ApplyStartForcing(NetPlay::NetPlayServer* server)
+void ApplyStartForcing(NetPlay::NetPlayServer* server, NetPlay::PlayerId opponent)
 {
   if (!server)
     return;
@@ -157,17 +157,17 @@ void ApplyStartForcing(NetPlay::NetPlayServer* server)
   // the Android build's fixed two-player layout:
   //   port 1 (idx0) = host GC controller
   //   port 2 (idx1) = host GBA
-  //   port 3 (idx2) = guest GBA
+  //   port 3 (idx2) = opponent's GBA
   //   port 4 (idx3) = unused
-  // The host is always pid 1 (its loopback client connects first) and XD is a
-  // strict two-player game, so the guest is pid 2.
+  // The host is always pid 1 (its loopback client connects first). The
+  // opponent is whoever the server seated (GetXdOpponentLocked), not a fixed
+  // pid: pids are reused, and watchers stay unmapped, as plain spectators.
   constexpr NetPlay::PlayerId HOST_PID = 1;
-  constexpr NetPlay::PlayerId GUEST_PID = 2;
 
   NetPlay::PadMappingArray pad_map{};
   pad_map[0] = HOST_PID;
   pad_map[1] = HOST_PID;
-  pad_map[2] = GUEST_PID;
+  pad_map[2] = opponent;
   pad_map[3] = 0;
 
   NetPlay::GBAConfigArray gba_config{};

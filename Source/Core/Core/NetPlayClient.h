@@ -45,6 +45,17 @@ struct SerializedWiimoteState;
 
 namespace NetPlay
 {
+// XD Netplay: a player's part in the next battle, from the server's XdSeats broadcast. Unknown
+// until the first broadcast arrives.
+enum class XdRole : u8
+{
+  Unknown = 0,
+  Host = 1,
+  Opponent = 2,
+  Waiting = 3,
+  Watching = 4,
+};
+
 class NetPlayUI
 {
 public:
@@ -63,6 +74,13 @@ public:
   // room chat. Called on the NETPLAY thread; must finish before the ack, so
   // the file is on disk before any Start can read it.
   virtual std::string OnTeamSubmission(const std::string& player, const std::string& text) = 0;
+  // XD Netplay, host side: the GBA 2 slot holds the team of a player who no longer holds the seat.
+  // Put the host's spare team back and forget that player's model pick
+  // (UICommon/XDNetplay/TeamInjector.h, ResetGuestSlot). Called on the NETPLAY thread (TeamData)
+  // or the host UI thread (Start) with the server's seat mutex held, so it must not touch widgets
+  // or wait on a UI thread. Returns false and changes nothing while emulation is not
+  // Uninitialized.
+  virtual bool OnXdGuestSlotReset() = 0;
   // XD Netplay: this machine's session is over. Puts the host's own team back
   // if a guest's submission overwrote it, and erases every remaining file that
   // holds the opponent's party -- including, on a joiner, netplay's own
@@ -123,6 +141,8 @@ public:
   std::string revision;
   u32 ping = 0;
   SyncIdentifierComparison game_status = SyncIdentifierComparison::Unknown;
+  // XD Netplay: this player ticked Watch only (from XdSeats).
+  bool xd_watching = false;
 
   bool IsHost() const { return pid == 1; }
 };
@@ -154,6 +174,12 @@ public:
   // The payload is built by XDNetplay::BuildTeamSubmissionPayload and Core
   // treats it as opaque text. See UICommon/XDNetplay/TeamInjector.h.
   void SendTeamSubmission(const std::string& payload);
+  // XD Netplay: this player only watches (true) or wants to play (false). Takes effect at the
+  // next Start; the server answers with XdSeats.
+  void SendXdWatch(bool watching);
+  // XD Netplay: pid's part in the next battle, from the last XdSeats. Display only; the pad map
+  // is decided by the host at Start. Takes m_crit.players.
+  XdRole GetXdRole(PlayerId pid);
   void RequestStopGame();
   void SendPowerButtonEvent();
   void RequestGolfControl(PlayerId pid);
@@ -425,6 +451,7 @@ private:
   void OnGameDigestResult(sf::Packet& packet);
   void OnGameDigestError(sf::Packet& packet);
   void OnGameDigestAbort();
+  void OnXdSeats(sf::Packet& packet);
 
   bool m_is_connected = false;
   ConnectionState m_connection_state = ConnectionState::Failure;
@@ -432,6 +459,9 @@ private:
   PlayerId m_pid = 0;
   NetSettings m_net_settings{};
   std::map<PlayerId, Player> m_players;
+  // XD Netplay seats from the last XdSeats, guarded by m_crit.players.
+  PlayerId m_xd_opponent = 0;
+  bool m_xd_seats_known = false;
   std::string m_host_spec;
   std::string m_player_name;
   bool m_connecting = false;
