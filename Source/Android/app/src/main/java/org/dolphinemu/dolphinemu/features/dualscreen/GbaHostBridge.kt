@@ -102,8 +102,12 @@ object GbaHostBridge {
         refreshVisibleDevice()
     }
 
+    /**
+     * A GBA this player may be shown. isLocal is true for every core outside a netplay game, so
+     * solo is unchanged; in netplay a watcher owns none, and the bottom display stays off.
+     */
     fun hasActiveCore(): Boolean =
-        infos.any { it?.isGba == true || it?.hasRom == true }
+        infos.any { it != null && (it.isGba || it.hasRom) && it.isLocal }
 
     private fun getVisibleInfo(): CoreInfo? =
         if (visibleDeviceNumber in infos.indices) infos[visibleDeviceNumber] else null
@@ -128,7 +132,7 @@ object GbaHostBridge {
     }
 
     /** True while a netplay session exists, lobby included. */
-    private fun isNetplayActive(): Boolean = NetplayManager.activeSession != null
+    fun isNetplayActive(): Boolean = NetplayManager.activeSession != null
 
     /**
      * Advance the bottom screen to the next GBA this player owns, wrapping.
@@ -169,19 +173,18 @@ object GbaHostBridge {
             manualDevice = NO_DEVICE
         }
 
-        // In netplay, prefer the GBA WE own (isLocal) so each player sees their
-        // own bottom screen -- host port 2, joiner port 3. The fallbacks are
-        // load-bearing: in solo every core is local (native passes isLocal=true
-        // outside netplay) so the first clause is identical to the old
-        // first-with-ROM pick, and a mistimed/edge case degrades to showing *a*
-        // GBA rather than a black screen. Never select a non-local GBA outright.
+        // In netplay, show only the GBA WE own (isLocal) -- host port 2,
+        // opponent port 3. In solo every core is local (native passes
+        // isLocal=true outside netplay), so this is the old first-with-ROM
+        // pick. A watcher or a player waiting for the seat owns no GBA and
+        // gets none: falling back to any GBA with a ROM showed them the
+        // host's.
         val nextDevice = when {
             frameConsumerCount == 0 -> NO_DEVICE
             manualDevice != NO_DEVICE -> manualDevice
             infos[GB_PLAYER_DEVICE]?.hasRom == true -> GB_PLAYER_DEVICE
             else -> LINK_DEVICE_RANGE.firstOrNull { infos[it]?.hasRom == true && infos[it]?.isLocal == true }
-                ?: LINK_DEVICE_RANGE.firstOrNull { infos[it]?.hasRom == true }
-                ?: LINK_DEVICE_RANGE.firstOrNull { infos[it]?.isGba == true }
+                ?: LINK_DEVICE_RANGE.firstOrNull { infos[it]?.isGba == true && infos[it]?.isLocal == true }
                 ?: NO_DEVICE
         }
 
