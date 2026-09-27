@@ -50,6 +50,7 @@
 #include "Core/Config/SessionSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
+#include "Core/CoreTiming.h"
 #include "Core/GeckoCode.h"
 #include "Core/HW/EXI/EXI.h"
 #include "Core/HW/EXI/EXI_DeviceIPL.h"
@@ -1188,6 +1189,8 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     }
   }
   m_live_marker_pad.store(marker, std::memory_order_relaxed);
+  m_spec_polls_per_sec.store(m_selected_game.game_id == "GXXE01" ? 120 : 60,
+                             std::memory_order_relaxed);
   {
     std::lock_guard lk(m_live_mutex);
     m_live_request.reset();
@@ -2488,6 +2491,18 @@ bool NetPlayClient::PadOwnerHasLeftRoom(const int pad_nb)
   return m_players.find(owner) == m_players.end();
 }
 
+// called from ---CPU--- thread
+//
+// This machine's own round trip to the host, in ms, as the host last measured it (the 1 Hz
+// PlayerPingData it sends about every player, us included); 0 until the first one lands. Same
+// locking note as DescribePadOwner(): m_crit.players only, taken after the crit_netplay_client
+// our caller already holds, and never NetPlay::GetPadDetails() or any other NetPlay:: function.
+u32 NetPlayClient::LocalPingToHost()
+{
+  std::lock_guard lkp(m_crit.players);
+  return m_local_player ? m_local_player->ping : 0;
+}
+
 // called from ---CPU--- thread (safe from any thread)
 
 void NetPlayClient::DeclareSessionLost(const SessionEndKind kind, const std::string& reason)
@@ -2712,6 +2727,36 @@ bool NetPlayClient::WaitOnRemote(Common::Event& wait_event, const int pad_nb,
   return true;
 }
 
+namespace
+{
+// Spectator playout reserve, in ms; SpecEntries() converts at the game's pad poll rate (XD polls
+// each pad about 120 times a second, so 100 ms is 12 entries there). A spectator gets every pad
+// through the host's relay, a second hop the buffer (sized from the players' pings) does not
+// cover, so it plays that far behind the match.
+constexpr u32 SPEC_MARGIN_MS = 100;
+constexpr u32 SPEC_STEP_MS = 100;
+constexpr u32 SPEC_MIN_MS = 200;
+constexpr u32 SPEC_MAX_MS = 1000;
+// An underflow raises the reserve only when delivery stopped for at least SPEC_GAP_LATE_MS and
+// less than SPEC_MAX_MS. Shorter, and entries never stopped coming: the players are just running
+// slower than we are, and a deeper reserve would only drain more slowly. Longer, and the players
+// stopped (a backgrounded phone): no reserve up to the cap covers that, and both cases would
+// otherwise ratchet the reserve to the cap for the rest of the game.
+constexpr u32 SPEC_GAP_LATE_MS = 100;
+
+u32 SpecEntries(u32 ms, u32 polls_per_sec)
+{
+  return (ms * polls_per_sec + 999) / 1000;
+}
+
+u32 SpectatorReserveForPing(u32 ping_ms, u32 polls_per_sec)
+{
+  return std::clamp(SpecEntries(ping_ms + SPEC_MARGIN_MS, polls_per_sec),
+                    SpecEntries(SPEC_MIN_MS, polls_per_sec),
+                    SpecEntries(SPEC_MAX_MS, polls_per_sec));
+}
+}  // namespace
+
 // called from ---CPU--- thread
 bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatus* pad_status)
 {
@@ -2834,6 +2879,144 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
   // other clients to send it to us
   const auto lat_t0 = std::chrono::steady_clock::now();
   RemoteWaitState pad_wait;
+
+  // Spectator playout reserve. A client that owns no pad and no Wii remote gets every player's
+  // entries relayed by the host, one hop later than the players get each other's, so with a queue
+  // that only the buffer keeps ahead it ran dry every few seconds and the view stuttered. Instead
+  // each pad's queue fills to m_spec_reserve entries before it pops and then drains as usual; an
+  // empty queue after that refills, one short pause instead of repeated stutter, and raises the
+  // reserve a step if the gap in delivery behind it was the relay's (see SPEC_GAP_LATE_MS). Only
+  // WHEN a pop happens changes: the entries and their order are exactly the players', so nothing
+  // here can desync anybody. Players never enter this block, and neither does host input
+  // authority, whose own speed-up logic above would fight a reserve.
+  //
+  // New game: IsCurrentGameCore() has passed, so m_game_boot_sequence is this game's, and seeing
+  // it change is the first pop of the game on this thread. The pad and Wii remote maps are final
+  // for the game by now (they arrive ahead of StartGame on the same channel).
+  //
+  // spec_first_depth: this pad's queue depth when it first held an entry in this call, which is
+  // what the padpop line reports for a spectator (after the fill the queue always reads >= the
+  // reserve, which would hide a lost opening fill).
+  size_t spec_first_depth = 0;
+  if (const u64 game_seq = m_game_boot_sequence.load(std::memory_order_acquire);
+      game_seq != m_spec_game_seq)
+  {
+    m_spec_game_seq = game_seq;
+    const PlayerId me = m_local_player ? m_local_player->pid : 0;
+    m_spec_active = me != 0 && !m_host_input_authority &&
+                    std::ranges::none_of(m_net_settings.pad_map,
+                                         [me](PlayerId p) { return p == me; }) &&
+                    std::ranges::none_of(m_net_settings.wiimote_map,
+                                         [me](PlayerId p) { return p == me; });
+    m_spec_rate = m_spec_polls_per_sec.load(std::memory_order_relaxed);
+    m_spec_reserve = 0;
+    m_spec_filling.fill(true);
+    m_spec_after_pop.fill(0);
+    m_spec_last_growth.fill(lat_t0);
+  }
+  // The network mode is locked while a game runs; re-checking it costs nothing and keeps host
+  // input authority exactly upstream even if that ever changes.
+  if (m_spec_active && !m_host_input_authority)
+  {
+    size_t seen = m_pad_buffer[pad_nb].Size();
+    spec_first_depth = seen;
+    if (seen > m_spec_after_pop[pad_nb])
+      m_spec_last_growth[pad_nb] = lat_t0;
+
+    bool underflow = false;
+    if (m_spec_reserve == 0)
+    {
+      const u32 ping = LocalPingToHost();
+      m_spec_reserve = SpectatorReserveForPing(ping, m_spec_rate);
+#ifdef HAS_LIBMGBA
+      // flush false: never flush under crit_netplay_client; the summary line does it.
+      GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "specbuf",
+                             fmt::format("reserve={} reason=start pad={} in={} ping={}ms rate={} "
+                                         "target={} wall={}",
+                                         m_spec_reserve, pad_nb, seen, ping, m_spec_rate,
+                                         m_target_buffer_size, WallClockHHMMSS()),
+                             false);
+#endif
+    }
+    else if (!m_spec_filling[pad_nb] && seen == 0)
+    {
+      // Underflow: refill. Whether to deepen the reserve waits until delivery resumes and the
+      // length of the gap is known.
+      m_spec_filling[pad_nb] = true;
+      underflow = true;
+    }
+
+    // The same bounded wait, stop check and watchdog as the plain wait below. WaitOnRemote()'s
+    // clock measures how long this pad has been starved: here that is how long its queue has
+    // gone without a new entry, so the clock restarts whenever it grows. A queue that is filling
+    // steadily is not a stall and must not say "Waiting for ..."; one that stops growing is, and
+    // rule 3 still ends the wait if its owner has left the room.
+    bool blocked = false;
+    u64 gap_ms = 0;
+    while (m_spec_filling[pad_nb] && seen < m_spec_reserve)
+    {
+      blocked = true;
+      if (!m_is_running.IsSet())
+      {
+        return false;
+      }
+
+      if (!WaitOnRemote(m_gc_pad_event, pad_nb, pad_wait))
+        return false;
+
+      if (const size_t now = m_pad_buffer[pad_nb].Size(); now > seen)
+      {
+        const auto grew_at = std::chrono::steady_clock::now();
+        if (seen == 0)
+        {
+          // Delivery resumed: the gap is from the last entry that arrived before the queue ran dry.
+          gap_ms = static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        grew_at - m_spec_last_growth[pad_nb])
+                                        .count());
+          spec_first_depth = now;
+        }
+        m_spec_last_growth[pad_nb] = grew_at;
+        seen = now;
+        pad_wait = RemoteWaitState{};
+      }
+    }
+    m_spec_filling[pad_nb] = false;
+
+    // The fill held this thread while no emulated time passed. Left alone, Throttle would treat
+    // that as lag and run up to MaxFallback (100 ms by default, all of it with Correct Time Drift)
+    // of emulated time unthrottled, playing straight through part of the reserve just built.
+    // Re-anchor it here, as unpausing does. Wall-clock pacing only; no effect on emulated state.
+    if (blocked)
+      Core::System::GetInstance().GetCoreTiming().ResetThrottleToNow();
+
+    if (underflow)
+    {
+      const char* reason = "late";
+      const u32 cap = SpecEntries(SPEC_MAX_MS, m_spec_rate);
+      if (gap_ms < SPEC_GAP_LATE_MS)
+        reason = "slow";
+      else if (gap_ms >= SPEC_MAX_MS)
+        reason = "stall";
+      else
+        m_spec_reserve = std::min(m_spec_reserve + SpecEntries(SPEC_STEP_MS, m_spec_rate), cap);
+#ifdef HAS_LIBMGBA
+      GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "specbuf",
+                             fmt::format("reserve={} reason={} pad={} gap={}ms ping={}ms target={} "
+                                         "wall={}",
+                                         m_spec_reserve, reason, pad_nb, gap_ms, LocalPingToHost(),
+                                         m_target_buffer_size, WallClockHHMMSS()),
+                             false);
+#else
+      (void)reason;
+#endif
+    }
+
+    // Our pop below is the only thing that shrinks this queue, so any depth above this at the next
+    // call means an entry arrived in between.
+    const size_t depth_now = m_pad_buffer[pad_nb].Size();
+    m_spec_after_pop[pad_nb] = depth_now > 0 ? depth_now - 1 : 0;
+  }
+
   while (m_pad_buffer[pad_nb].Size() == 0)
   {
     if (!m_is_running.IsSet())
@@ -2909,7 +3092,8 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
   // owned pad (PollLocalPad has just topped it up) and a pad whose owner's opening fill arrived
   // intact read buffer size + 1. A small depth on a pad this machine does not own means that fill
   // was lost and this machine will run a whole fill ahead of the owner, the fault behind the
-  // 2026-09-22 desync.
+  // 2026-09-22 desync. A spectator reports the depth when its queue first held an entry, before
+  // the playout reserve filled it.
   if (pad_nb >= 0 && static_cast<size_t>(pad_nb) < m_first_pop_logged.size() &&
       !m_first_pop_logged[pad_nb])
   {
@@ -2923,7 +3107,9 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
                                0;
     GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "padpop",
                            fmt::format("pad={} depth={} target={} owner={} local={} stale={}",
-                                       pad_nb, m_pad_buffer[pad_nb].Size(),
+                                       pad_nb,
+                                       spec_first_depth ? spec_first_depth :
+                                                          m_pad_buffer[pad_nb].Size(),
                                        m_target_buffer_size, owner,
                                        (m_local_player && owner == m_local_player->pid) ? 1 : 0,
                                        m_stale_core_polls.load(std::memory_order_relaxed)),

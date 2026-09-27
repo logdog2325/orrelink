@@ -513,6 +513,11 @@ void CoreTimingManager::UpdateSpeedLimit(s64 cycle, double new_speed)
   m_throttle_adj_clock_per_sec = new_clock_per_sec;
 }
 
+void CoreTimingManager::ResetThrottleToNow()
+{
+  ResetThrottle(GetTicks());
+}
+
 void CoreTimingManager::ResetThrottle(s64 cycle)
 {
   m_throttle_reference_cycle = cycle;
