@@ -61,6 +61,8 @@ constexpr u32 HLE_TRAMPOLINE_ADDRESS = INSTALLER_END_ADDRESS - 4;
 constexpr u32 MAGIC_GAMEID = 0xD01F1BAD;
 
 size_t CountEnabledCodes();
+// A copy of the codes that will run (OrreLink: the boot log's 'gecko active' line).
+std::vector<GeckoCode> GetActiveCodesSnapshot();
 void SetActiveCodes(std::span<const GeckoCode> gcodes, const std::string& game_id, u16 revision);
 void SetSyncedCodesAsActive();
 void UpdateSyncedCodes(std::span<const GeckoCode> gcodes);

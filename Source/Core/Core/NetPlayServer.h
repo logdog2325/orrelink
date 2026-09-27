@@ -5,6 +5,7 @@
 
 #include <SFML/Network/Packet.hpp>
 
+#include <array>
 #include <atomic>
 #include <functional>
 #include <map>
@@ -186,6 +187,17 @@ public:
 
   bool is_connected = false;
 
+  // One machine's XD Netplay state check report for one tag (MessageID::StateDigest).
+  struct StateReport
+  {
+    u32 inputs = 0;
+    u32 xd = 0;
+    u32 seed = 0;
+    u32 crc_a = 0;
+    u32 crc_b = 0;
+    u32 crc_c = 0;
+  };
+
 private:
   class Client
   {
@@ -285,6 +297,23 @@ private:
   // ---NETPLAY--- thread only, once per second off the ping tick.
   void UpdateAutoPadBuffer();
 
+  // XD Netplay state check and room notices (v1.7.5). ---NETPLAY--- thread only.
+  void OnStateDigest(PlayerId pid, u8 kind, u32 tag, const StateReport& report);
+  void CheckSpectatorReport(PlayerId pid, u8 kind, u32 tag, const StateReport& report,
+                            const StateReport& agreed);
+  void SendStateMismatch(u8 kind, u32 tag, u8 scope, PlayerId spectator, u8 comps);
+  // The automatic buffer's view of the players' PadHealth reports since the last 1 Hz tick.
+  struct PadHealthTick
+  {
+    bool all_reported = true;  // every player in the game reported since the last tick
+    bool low = false;          // a player had fewer than AUTOBUF_KEEP_DEPTH entries of slack
+    bool starving = false;     // a player waited on most pops with an empty queue
+    std::string detail;
+  };
+  PadHealthTick TakePadHealthTick();
+  void OnXdNoticeFrom(const Client& player, u8 kind, u8 arg);
+  void SendXdNoticeToAll(XdNoticeKind kind, PlayerId who, u8 arg);
+
   // pulled from OnConnect()
   void AssignNewUserAPad(const Client& player);
   // pulled from OnConnect()
@@ -324,6 +353,40 @@ private:
   unsigned int m_auto_buffer_lower_streak = 0;
   u64 m_auto_buffer_quiet_until_ms = 0;
   u64 m_auto_buffer_last_change_ms = 0;
+  // PadHealth (v1.7.5): what each player reported since the last tick. A lower goes through only
+  // while every player keeps slack; a player that keeps waiting gets a cushion (why=cushion).
+  struct PadHealthState
+  {
+    bool reported = false;
+    bool low = false;
+    bool starving = false;
+    std::string detail;
+  };
+  std::map<PlayerId, PadHealthState> m_pad_health;
+  u32 m_auto_buffer_cushion_streak = 0;
+  bool m_auto_buffer_veto_logged = false;
+
+  // XD Netplay state check (OnStateDigest), all ---NETPLAY--- thread, indexed by report kind
+  // (0 inputs, 1-4 XD state at GBA port kind-1). m_sd_game is the game the rest belongs to.
+  // m_sd_pending: reports per tag still waiting for a player's. m_sd_agreed: the players' common
+  // report per tag, kept a while for spectators, who report later. m_sd_xd_streak: consecutive
+  // judged XD tags that differed; one alone is logged, two in a row are announced.
+  static constexpr size_t STATE_KINDS = 5;
+  u32 m_sd_game = 0;
+  std::array<std::map<u32, std::map<PlayerId, StateReport>>, STATE_KINDS> m_sd_pending;
+  std::array<std::map<u32, StateReport>, STATE_KINDS> m_sd_agreed;
+  std::array<u32, STATE_KINDS> m_sd_judged{};  // the newest tag the players were compared for
+  std::array<u32, STATE_KINDS> m_sd_xd_streak{};
+  bool m_sd_players_warned = false;
+  u32 m_sd_detail_lines = 0;
+  u32 m_sd_transient_lines = 0;
+  bool m_sd_incomplete_logged = false;
+  std::unordered_set<PlayerId> m_sd_spectators_warned;
+  std::map<PlayerId, std::array<u32, STATE_KINDS>> m_sd_spec_streak;
+  // XD Netplay notices: players away from the game window (pid -> game), and when each last
+  // left, for the rate limit.
+  std::map<PlayerId, u32> m_xd_away;
+  std::map<PlayerId, u64> m_xd_last_left_ms;
 
   std::map<PlayerId, Client> m_players;
 
