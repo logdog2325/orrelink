@@ -1243,6 +1243,15 @@ void XDLauncherDialog::OnBootSolo()
                                  tr("A game is running. Boot solo after it ends."));
     return;
   }
+  // Nor while a room is open: between games, and while a Start is still sending the saves and
+  // codes, no game runs, yet the rewrite below would change what this machine boots.
+  if (XDNetplay::BattleCustomizer::IsNetplaySessionActive() ||
+      Settings::Instance().GetNetPlayClient() || Settings::Instance().GetNetPlayServer())
+  {
+    ModalMessageBox::information(this, tr("OrreLink"),
+                                 tr("A netplay room is open. Close it to boot solo."));
+    return;
+  }
 
   const auto game = FindXdGame();
   if (!game)
