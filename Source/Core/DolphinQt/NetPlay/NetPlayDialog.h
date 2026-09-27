@@ -55,6 +55,7 @@ public:
   void Update() override;
   void AppendChat(const std::string& msg) override;
   std::string OnTeamSubmission(const std::string& player, const std::string& text) override;
+  bool OnXdGuestSlotReset() override;
   void OnRoomClosed() override;
 
   void OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,
@@ -118,6 +119,7 @@ private:
   void OnStyleSettings();
   void OnSetHostName();
   void OnStart();
+  static QString JoinerSubmitTeamToolTip();
   void DisplayMessage(const QString& msg, const std::string& color,
                       int duration = OSD::Duration::NORMAL);
   void ResetExternalIP();
@@ -135,6 +137,7 @@ private:
   QPushButton* m_chat_send_button;
   QPushButton* m_submit_team_button;
   QPushButton* m_style_button;
+  QCheckBox* m_watch_box;
   QLineEdit* m_host_name_edit;
   QPushButton* m_host_name_button;
 

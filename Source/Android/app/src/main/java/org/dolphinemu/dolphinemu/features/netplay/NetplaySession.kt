@@ -284,7 +284,21 @@ class NetplaySession(
 
     fun doAllPlayersHaveGame(): Boolean = nativeDoAllPlayersHaveGame()
 
-    fun startGame() = nativeStartGame()
+    /**
+     * Host only: start the battle. Native picks the opponent (the joiner not watching who has been
+     * in line longest) and refuses with a one-line reason when nobody is seated or the last battle
+     * is still closing; [HostSubmitResult.status] is "" when the request went out.
+     */
+    fun startGame(): HostSubmitResult {
+        val result = nativeStartGame()
+        return HostSubmitResult(
+            ok = result.getOrNull(0) == "1",
+            status = result.getOrNull(1).orEmpty()
+        )
+    }
+
+    /** Joiner: only watch the next battles (true), or play again (false). */
+    fun setWatchOnly(watching: Boolean) = nativeSetWatchOnly(watching)
 
     fun getPort(): Int = nativeGetPort()
 
@@ -403,7 +417,10 @@ class NetplaySession(
 
     private external fun nativeDoAllPlayersHaveGame(): Boolean
 
-    private external fun nativeStartGame()
+    /** Returns ["1" or "0", reason or ""]; see [startGame]. */
+    private external fun nativeStartGame(): Array<String>
+
+    private external fun nativeSetWatchOnly(watching: Boolean)
 
     private external fun nativeGetPort(): Int
 
