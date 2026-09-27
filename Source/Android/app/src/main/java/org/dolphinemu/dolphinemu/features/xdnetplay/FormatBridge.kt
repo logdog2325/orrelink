@@ -40,13 +40,18 @@ object FormatBridge {
     const val FORMAT_DOUBLES_OU = 8
     /** Reserved, not built yet: only listed while the MultiEnabled flag is on. */
     const val FORMAT_MULTI = 9
+    const val FORMAT_REALGAM = 10
+    const val FORMAT_REALGAM_CLASSIC = 11
+    const val FORMAT_PYRITE = 12
+    const val FORMAT_PHENAC = 13
 
     /** True only for the exact OU value: an unknown key value behaves as Free. */
     fun isOu(formatKeyValue: Int): Boolean = formatKeyValue == FORMAT_OU
 
     /** The ordered list every picker shows (FormatRules::SelectableFormats with
      *  the MultiEnabled flag): Orre Colosseum, OU, Doubles OU, the Orre and
-     *  Hoenn families, Multi only when enabled, then Free. */
+     *  Hoenn families, Realgam, Realgam Classic, Pyrite, Phenac, Multi only
+     *  when enabled, then Free. */
     fun selectableFormats(): IntArray = nativeSelectableFormats()
 
     /** Every known format id, Multi included whatever the flag says. For
