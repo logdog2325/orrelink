@@ -1,0 +1,2233 @@
+From 5650bbc152110fc5318a06d1b7d8ee2c70d4d807 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 15:34:57 -0700
+Subject: [PATCH] XD Netplay v1.7.5: out-of-sync warning, GBA start check,
+ focus notice and steadier input buffer
+
+Out-of-sync warning. Each machine in an XD room reports two things to the
+host. Inputs: every 240 pops of the first mapped pad (about 2 s), a hash of
+the pad entries it consumed since its last report (every pad, in pop
+order, only the fields that travel on the wire), tagged with the pop count.
+XD state: a digest of XD's battle state read at every 256th GC->GBA WRITE
+of each GBA port, tagged with that WRITE count (the wseq of the xd lines).
+The WRITE is the game's own store, so every machine reads the same point
+in the game even when x86 and ARM split their JIT blocks differently,
+which a pad pop cannot promise. The host compares the players' reports per
+tag. An inputs difference is announced at once; an XD difference only when
+two tags of the same port in a row differ, and a single one is logged as
+'statesync xd-transient'. On the first announced mismatch of a game every
+machine logs 'statesync mismatch' with the part that differs (inputs, xd)
+and the tag, and the room chat says "Out of sync since HH:MM:SS. Restart
+the battle." The line goes to the room chat only, never on screen, and is
+repeated once in the chat when the game stops. A spectator whose report
+differs from the players' is logged everywhere and told alone ("Your view
+of the battle is out of sync since HH:MM:SS."). Warn only; nothing stops
+the game. Each game's log says 'statesync on' or 'statesync off' with the
+reason (not XD, host input authority). Nothing is read from the GBA cores.
+
+crcB in the xd lines was always 0: the context cell holds a trainer's
+active slot, not the context base. The base is now recovered from it, so
+the lines carry a real party/HP checksum.
+
+A GBA core that fails to start under netplay now stops the game for
+everyone with one room chat line; a spectator's failure stops only that
+spectator. Solo is unchanged.
+
+Timing holes: Import Save / Restore Default and Boot Solo are refused while
+a room is open, XD Start waits until the previous game has fully closed
+and is refused with RetroAchievements hardcore on, and the boot log gets
+'onframe active' and 'gecko active' fingerprint lines next to 'ar active'.
+
+Focus notice: after 5 s with the game window out of focus or the game
+paused (Pause on Focus Loss, the pause button, or Android leaving the game
+screen), the room chat says "<name> left the game window.", and "<name> is
+back in the game window." on return. Rate-limited, chat only, never on
+screen.
+
+Input buffer: players report once a second, over the pads other machines
+own, their waits and the smallest queue depth seen before a pop. The
+automatic buffer lowers only while every player keeps at least 3 entries
+of slack, and when a player waits on at least half of those pops with an
+empty queue for 3 s in a row it adds 4 entries (at most 12 over the ping
+target, never past 20). Every raise re-anchors the throttle so the new
+slack is kept. Only when entries are sent changes, never which.
+---
+ .../xdnetplay/ui/XDLauncherActivity.kt        |   6 +
+ Source/Android/jni/NetPlay/Netplay.cpp        |  11 +
+ Source/Core/Core/GeckoCode.cpp                |   6 +
+ Source/Core/Core/GeckoCode.h                  |   2 +
+ Source/Core/Core/HLE/HLE_XD.cpp               | 143 +++++
+ Source/Core/Core/HLE/HLE_XD.h                 |  27 +
+ Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp    | 121 ++---
+ Source/Core/Core/NetPlayClient.cpp            | 494 ++++++++++++++++-
+ Source/Core/Core/NetPlayClient.h              |  78 +++
+ Source/Core/Core/NetPlayProto.h               |  38 ++
+ Source/Core/Core/NetPlayServer.cpp            | 504 ++++++++++++++++--
+ Source/Core/Core/NetPlayServer.h              |  63 +++
+ Source/Core/Core/PatchEngine.cpp              |  45 ++
+ .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  |  27 +
+ Source/Core/DolphinQt/NetPlay/NetPlayDialog.h |   1 +
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  |   9 +
+ Source/Core/UICommon/XDNetplay/SaveImport.cpp |   9 +-
+ Source/Core/UICommon/XDNetplay/Version.h      |   2 +-
+ 18 files changed, 1465 insertions(+), 121 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+index b6c9ad3..efe6dcb 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+@@ -421,6 +421,12 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+     /** Boot Pokemon XD directly by game ID, bypassing the game picker (which
+      * would otherwise default to whatever ISO sorts first in the folder). */
+     private fun bootXd() {
++        // Not while a netplay room is open: the Battle Style rewrite below would change what
++        // this device boots for the room's next battle.
++        if (NetplayManager.activeSession?.isClosed == false) {
++            statusMessage = "A netplay room is open. Close it to boot solo."
++            return
++        }
+         val xd = GameFileCacheManager.getGameFileByGameId(XD_GAME_ID)
+         if (xd != null) {
+             // XD arms its GBA detection from the player's own menu navigation;
+diff --git a/Source/Android/jni/NetPlay/Netplay.cpp b/Source/Android/jni/NetPlay/Netplay.cpp
+index 1626baf..5feec76 100644
+--- a/Source/Android/jni/NetPlay/Netplay.cpp
++++ b/Source/Android/jni/NetPlay/Netplay.cpp
+@@ -17,13 +17,16 @@
+ #include "Common/Config/Config.h"
+ #include "Common/FileUtil.h"
+ #include "Common/TraversalClient.h"
++#include "Core/AchievementManager.h"
+ #include "Core/Boot/Boot.h"
+ #include "Core/Config/MainSettings.h"
+ #include "Core/Config/NetplaySettings.h"
++#include "Core/Core.h"
+ #include "Core/NetPlayClient.h"
+ #include "Core/NetPlayProto.h"
+ #include "Core/NetPlayCommon.h"
+ #include "Core/NetPlayServer.h"
++#include "Core/System.h"
+ #ifdef HAS_LIBMGBA
+ #include "Core/HW/GBACore.h"
+ #endif
+@@ -657,6 +660,14 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
+     return reply(false, "Can't start: no opponent yet.");
+   if (claim.slot_busy)
+     return reply(false, "Can't start: the last battle is still closing.");
++  // The previous game's GBA cores write their saves back as they shut down, which can land after
++  // this Start has read and sent them: wait until emulation is fully down (mirrors desktop).
++  if (!Core::IsUninitialized(Core::System::GetInstance()))
++    return reply(false, "Can't start: the last battle is still closing.");
++  // Hardcore mode filters this machine's Action Replay codes, not the synced copy the other
++  // player runs, so the two would play different rules.
++  if (AchievementManager::GetInstance().IsHardcoreModeActive())
++    return reply(false, "Can't start: RetroAchievements hardcore mode is on.");
+ 
+   // The room's format is what every player was shown; keep the key on it
+   // before PrepareForStart reads it (mirrors the desktop OnStart).
+diff --git a/Source/Core/Core/GeckoCode.cpp b/Source/Core/Core/GeckoCode.cpp
+index 79b8449..c26944d 100644
+--- a/Source/Core/Core/GeckoCode.cpp
++++ b/Source/Core/Core/GeckoCode.cpp
+@@ -58,6 +58,12 @@ size_t CountEnabledCodes()
+   return s_active_codes.size();
+ }
+ 
++std::vector<GeckoCode> GetActiveCodesSnapshot()
++{
++  std::lock_guard guard(s_active_codes_lock);
++  return s_active_codes;
++}
++
+ void SetActiveCodes(std::span<const GeckoCode> gcodes, const std::string& game_id, u16 revision)
+ {
+   std::lock_guard lk(s_active_codes_lock);
+diff --git a/Source/Core/Core/GeckoCode.h b/Source/Core/Core/GeckoCode.h
+index 716bcf9..78c0b5a 100644
+--- a/Source/Core/Core/GeckoCode.h
++++ b/Source/Core/Core/GeckoCode.h
+@@ -61,6 +61,8 @@ constexpr u32 HLE_TRAMPOLINE_ADDRESS = INSTALLER_END_ADDRESS - 4;
+ constexpr u32 MAGIC_GAMEID = 0xD01F1BAD;
+ 
+ size_t CountEnabledCodes();
++// A copy of the codes that will run (OrreLink: the boot log's 'gecko active' line).
++std::vector<GeckoCode> GetActiveCodesSnapshot();
+ void SetActiveCodes(std::span<const GeckoCode> gcodes, const std::string& game_id, u16 revision);
+ void SetSyncedCodesAsActive();
+ void UpdateSyncedCodes(std::span<const GeckoCode> gcodes);
+diff --git a/Source/Core/Core/HLE/HLE_XD.cpp b/Source/Core/Core/HLE/HLE_XD.cpp
+index d0517a0..f2b1eae 100644
+--- a/Source/Core/Core/HLE/HLE_XD.cpp
++++ b/Source/Core/Core/HLE/HLE_XD.cpp
+@@ -4,9 +4,11 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <optional>
+ 
+ #include "Common/CommonTypes.h"
+ #include "Common/Config/Config.h"
++#include "Common/Hash.h"
+ #include "Common/Logging/Log.h"
+ 
+ #include "Core/Config/SessionSettings.h"
+@@ -368,4 +370,145 @@ void OSGetTime(const Core::CPUThreadGuard& guard)
+   ppc_state.gpr[4] = static_cast<u32>(value);
+   ppc_state.npc = lr;
+ }
++
++namespace
++{
++// Pokemon XD (GXXE01 USA, main.dol sha256 c8659341...78f15) battle state that decides a link
++// battle, reverse-engineered from the binary and cross-checked adversarially. Every fixed address
++// is a .bss/.sbss/.sdata location in MEM1.
++struct XdRange
++{
++  u32 addr;
++  u32 len;
++};
++// Main PRNG (the game's own LCG): seed = seed * 0x343FD + 0x269EC3, stepped by every rand_u16
++// (407 callers) / rand_float (238) call; written once at boot from OSGetTime's low word
++// (0x800efa58). The pointer cell at +4 always reads 0x804E8610 (its only setter has no callers).
++constexpr u32 XD_RNG_SEED = 0x804E8610;
++// SDK CARD unlock LCG state (ANSI LCG, 0x804e81e0 = r13-31808), seeded from OSGetTick by CARD
++// DummyLen 0x800c0a50 / __CARDUnlock 0x800c0b14 (all 12 references) -- NOT JoyBoot: it only moves
++// on memory-card mount/unlock. Logged raw as jb= (name kept for log compatibility); under the
++// v1.5.11 clock those three reads are per-site ordinals, so it stays identical.
++constexpr u32 XD_JOYBOOT_LCG = 0x804E81E0;
++constexpr u32 XD_BATTLE_FLAGS = 0x804EB938;  // u32 bit flags, 263 refs in the engine
++// crcA: battle-engine scalars (.sbss: flags, command-ring indices, turn counters, scratch-block
++// pointer) + the .sdata battle event struct.
++constexpr XdRange XD_CRC_A[] = {{0x804EB8D0, 0xB0}, {0x804E85C0, 0x20}};
++// crcB: party state of the LIVE battle context. There are two 0x6ef0-byte context objects
++// (ctx[0]=0x804a1744, ctx[1]=0x804a8634); trainer = ctx+0x64+t*0x3744; party entry =
++// trainer+0x97c+i*0x300 (record at +4: species u16, +4 current HP u16, +0x11 level, +0x28
++// status, +0x80 moves/PP, +0x90 max HP); active slot = trainer+0x1b7c+s*0x894.
++// The cell at 0x804af528 (logged as ctx=) does NOT hold the context base: in the field it held
++// 804a3324, 804a3bb8, 804aa214 and 804aaaa8, which are ctx+0x64+0x1b7c(+0x894), a trainer's
++// active slot. Up to v1.7.4 crcB compared the cell against the two bases, never matched, and was
++// 00000000 on every line. The base is now recovered from whichever slot the cell names.
++constexpr u32 XD_CTX_PTR = 0x804AF528;
++constexpr u32 XD_CTX_A = 0x804A1744;
++constexpr u32 XD_CTX_B = 0x804A8634;
++constexpr u32 XD_TRAINER_OFF = 0x64;
++constexpr u32 XD_TRAINER_STRIDE = 0x3744;
++constexpr u32 XD_PARTY_OFF = 0x97C;
++constexpr u32 XD_PARTY_STRIDE = 0x300;
++constexpr u32 XD_SLOT_OFF = 0x1B7C;
++constexpr u32 XD_SLOT_STRIDE = 0x894;
++// crcC: GBA driver per-channel state, .sbss link state, battle mode word, and the ruleset table
++// entry the format pin writes (0x804334C0 = BattleCustomizer's ORRE_RULESET_BASE).
++constexpr XdRange XD_CRC_C[] = {
++    {0x80428338, 0x20}, {0x804EA768, 0x28}, {0x80429A00, 0x04}, {0x804334C0, 0x90}};
++constexpr u32 XD_DISC_ID_GXXE = 0x47585845;  // "GXXE" at 0x80000000
++
++// The context base the cell names: the base itself, or one of its trainers' two active slots.
++// The two objects are 0x6ef0 apart and the largest offset is 0x5bb8 (0x64 + 0x3744 + 0x1b7c +
++// 0x894), so no value is ambiguous.
++std::optional<u32> ContextBaseFromCell(u32 cell)
++{
++  for (const u32 base : {XD_CTX_A, XD_CTX_B})
++  {
++    if (cell == base)
++      return base;
++    for (u32 t = 0; t < 2; ++t)
++    {
++      for (u32 sl = 0; sl < 2; ++sl)
++      {
++        const u32 slot =
++            base + XD_TRAINER_OFF + t * XD_TRAINER_STRIDE + XD_SLOT_OFF + sl * XD_SLOT_STRIDE;
++        if (cell == slot)
++          return base;
++      }
++    }
++  }
++  return std::nullopt;
++}
++
++size_t AppendEmu(const Memory::MemoryManager& memory, u8* dst, size_t at, u32 addr, u32 len)
++{
++  memory.CopyFromEmu(dst + at, addr, len);
++  return at + len;
++}
++
++// FNV-1a over a u32, byte by byte in a fixed order (no type punning).
++u32 MixWord(u32 h, u32 v)
++{
++  for (int shift = 0; shift < 32; shift += 8)
++  {
++    h ^= (v >> shift) & 0xFF;
++    h *= 16777619u;
++  }
++  return h;
++}
++}  // namespace
++
++XdDigest ComputeXdDigest(const Memory::MemoryManager& memory)
++{
++  XdDigest d;
++  if (memory.Read_U32(0x80000000) != XD_DISC_ID_GXXE)
++    return d;
++  d.is_xd = true;
++  d.seed = memory.Read_U32(XD_RNG_SEED);
++  d.jb = memory.Read_U32(XD_JOYBOOT_LCG);
++  d.flags = memory.Read_U32(XD_BATTLE_FLAGS);
++  d.ctx = memory.Read_U32(XD_CTX_PTR);
++
++  // 2 x (6 x 0x50 + 2 x 0x40) = 1216 bytes is the largest range set.
++  std::array<u8, 2048> buf{};
++  size_t n = 0;
++  for (const XdRange& r : XD_CRC_A)
++    n = AppendEmu(memory, buf.data(), n, r.addr, r.len);
++  d.crc_a = Common::ComputeCRC32(buf.data(), n);
++
++  if (const std::optional<u32> base = ContextBaseFromCell(d.ctx))
++  {
++    n = 0;
++    for (u32 t = 0; t < 2; t++)
++    {
++      const u32 trainer = *base + XD_TRAINER_OFF + t * XD_TRAINER_STRIDE;
++      for (u32 i = 0; i < 6; i++)
++      {
++        const u32 record = trainer + XD_PARTY_OFF + i * XD_PARTY_STRIDE + 4;
++        n = AppendEmu(memory, buf.data(), n, record, 0x30);
++        n = AppendEmu(memory, buf.data(), n, record + 0x80, 0x20);
++      }
++      for (u32 sl = 0; sl < 2; sl++)
++        n = AppendEmu(memory, buf.data(), n, trainer + XD_SLOT_OFF + sl * XD_SLOT_STRIDE, 0x40);
++    }
++    d.crc_b = Common::ComputeCRC32(buf.data(), n);
++  }
++
++  n = 0;
++  for (const XdRange& r : XD_CRC_C)
++    n = AppendEmu(memory, buf.data(), n, r.addr, r.len);
++  d.crc_c = Common::ComputeCRC32(buf.data(), n);
++  return d;
++}
++
++u32 XdDigestHash(const XdDigest& digest)
++{
++  u32 h = 2166136261u;
++  for (const u32 v : {digest.is_xd ? 1u : 0u, digest.seed, digest.jb, digest.flags, digest.ctx,
++                      digest.crc_a, digest.crc_b, digest.crc_c})
++  {
++    h = MixWord(h, v);
++  }
++  return h;
++}
+ }  // namespace HLE_XD
+diff --git a/Source/Core/Core/HLE/HLE_XD.h b/Source/Core/Core/HLE/HLE_XD.h
+index a7ff1e2..3ba52cb 100644
+--- a/Source/Core/Core/HLE/HLE_XD.h
++++ b/Source/Core/Core/HLE/HLE_XD.h
+@@ -10,6 +10,11 @@ class CPUThreadGuard;
+ class System;
+ }  // namespace Core
+ 
++namespace Memory
++{
++class MemoryManager;
++}  // namespace Memory
++
+ // OrreLink: deterministic clock for Pokemon XD (GXXE01) netplay rooms that mix CPU
+ // architectures. HLE Replace hooks on OSGetTick/OSGetTime return a value that is a pure
+ // function of game state plus a host-synced salt instead of Dolphin's block-granular time
+@@ -35,4 +40,26 @@ u32 ClockModel();      // 2 = v1.5.12 field clock; logged so a reader knows what
+ 
+ void OSGetTick(const Core::CPUThreadGuard& guard);  // hooks 0x800b225c
+ void OSGetTime(const Core::CPUThreadGuard& guard);  // hooks 0x800b2244
++
++// Pokemon XD battle state, read from fixed MEM1 addresses (BAT identity mapping, no MMU) and
++// shared by the gba_detect 'xd' lines and the netplay state check. Every field is game RAM that
++// is identical on every machine running the same instruction stream: no XFB, EFB copy, audio
++// buffer or other per-machine data. is_xd is false (and the rest zero) when the disc at
++// 0x80000000 is not GXXE. CPU thread only, about 1.7 KB of reads. Read it at a point in the
++// game's own code (a GBA WRITE), not at a CoreTiming event: machines whose JITs split blocks
++// differently reach the same event after different instructions.
++struct XdDigest
++{
++  bool is_xd = false;
++  u32 seed = 0;   // main PRNG seed
++  u32 jb = 0;     // SDK CARD unlock LCG (logged as jb=)
++  u32 flags = 0;  // battle flag word
++  u32 ctx = 0;    // the battle context cell as read (0 between battles)
++  u32 crc_a = 0;  // battle-engine scalars and the battle event struct
++  u32 crc_b = 0;  // party state of the live battle context; 0 when there is none
++  u32 crc_c = 0;  // GBA driver state, link state, battle mode, format ruleset entry
++};
++XdDigest ComputeXdDigest(const Memory::MemoryManager& memory);
++// One word over every XdDigest field, for the netplay state check.
++u32 XdDigestHash(const XdDigest& digest);
+ }  // namespace HLE_XD
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+index 3750611..273d4c8 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+@@ -83,7 +83,15 @@ CSIDevice_GBAEmu::CSIDevice_GBAEmu(Core::System& system, SIDevices device, int d
+                          fmt::format("edge={} fullboot={}", m_edge_reset_enabled ? 1 : 0,
+                                      m_fullboot_presence ? 1 : 0));
+   m_core = std::make_shared<HW::GBA::Core>(system, m_device_number);
+-  m_core->Start(system.GetCoreTiming().GetTicks());
++  const u64 start_tick = system.GetCoreTiming().GetTicks();
++  const bool started = m_core->Start(start_tick);
++  // A core that fails to start (netplay's BIOS check, an unreadable ROM or save) answers nothing,
++  // so this machine's XD sees no GBA on this port while every other machine sees a live one. Under
++  // netplay that is a split from the first poll: stop the game for everyone, with the reason in
++  // the room chat. Solo keeps running as before, with the port simply empty.
++  GBADetectLog::LogEvent(m_device_number, start_tick, "gba-start", started ? "ok" : "failed");
++  if (!started && NetPlay::IsNetPlayRunning())
++    NetPlay::ReportGbaStartFailure(m_device_number);
+   m_gbahost = Host_CreateGBAHost(m_core);
+   m_core->SetHost(m_gbahost);
+   system.GetSerialInterface().ScheduleEvent(m_device_number,
+@@ -101,59 +109,13 @@ CSIDevice_GBAEmu::~CSIDevice_GBAEmu()
+ 
+ namespace
+ {
+-// Pokemon XD (GXXE01 USA, main.dol sha256 c8659341...78f15) battle state that
+-// decides a link battle, reverse-engineered from the binary and cross-checked
+-// adversarially. Every fixed address is a .bss/.sbss/.sdata location in MEM1
+-// (BAT identity mapping: read directly, no MMU). ~1.6 KB per hook.
+-struct XdRange
+-{
+-  u32 addr;
+-  u32 len;
+-};
++// The battle-state ranges and their reverse-engineering notes live with HLE_XD::ComputeXdDigest,
++// which the netplay state check shares with the 'xd' lines below.
+ constexpr u32 XD_DISC_ID_GXXE = 0x47585845;  // "GXXE" at 0x80000000; anything else: no line
+-// Main PRNG (the game's own LCG): seed = seed * 0x343FD + 0x269EC3, stepped by
+-// every rand_u16 (407 callers) / rand_float (238) call; written once at boot from
+-// OSGetTime's low word (0x800efa58). The pointer cell at +4 always reads
+-// 0x804E8610 (its only setter has no callers).
+-constexpr u32 XD_RNG_SEED = 0x804E8610;
+-// SDK CARD unlock LCG state (ANSI LCG, 0x804e81e0 = r13-31808), seeded from OSGetTick by
+-// CARD DummyLen 0x800c0a50 / __CARDUnlock 0x800c0b14 (all 12 references) -- NOT JoyBoot: it
+-// only moves on memory-card mount/unlock. Logged raw as jb= (name kept for log compatibility);
+-// under the v1.5.11 clock those three reads are per-site ordinals, so it stays identical.
+-constexpr u32 XD_JOYBOOT_LCG = 0x804E81E0;
+-constexpr u32 XD_BATTLE_FLAGS = 0x804EB938;  // u32 bit flags, 263 refs in the engine
+-// crcA: battle-engine scalars (.sbss: flags, command-ring indices, turn counters,
+-// scratch-block pointer) + the .sdata battle event struct.
+-constexpr XdRange XD_CRC_A[] = {{0x804EB8D0, 0xB0}, {0x804E85C0, 0x20}};
+-// crcB: party state of the LIVE battle context. The context is a runtime
+-// pointer (cell 0x804af528) to one of two 0x6ef0-byte objects (ctx[0]=0x804a1744,
+-// ctx[1]=0x804a8634); trainer = ctx+0x64+t*0x3744; party entry =
+-// trainer+0x97c+i*0x300 (record at +4: species u16, +4 current HP u16, +0x11
+-// level, +0x28 status, +0x80 moves/PP, +0x90 max HP); active slot =
+-// trainer+0x1b7c+s*0x894. Skipped (crcB=0) when the pointer is not one of the
+-// two objects; the pointer is logged as ctx=.
+-constexpr u32 XD_CTX_PTR = 0x804AF528;
+-constexpr u32 XD_CTX_A = 0x804A1744;
+-constexpr u32 XD_CTX_B = 0x804A8634;
+-constexpr u32 XD_TRAINER_OFF = 0x64;
+-constexpr u32 XD_TRAINER_STRIDE = 0x3744;
+-constexpr u32 XD_PARTY_OFF = 0x97C;
+-constexpr u32 XD_PARTY_STRIDE = 0x300;
+-constexpr u32 XD_SLOT_OFF = 0x1B7C;
+-constexpr u32 XD_SLOT_STRIDE = 0x894;
+-// crcC (informational, never gates a line): GBA driver per-channel state, .sbss
+-// link state, battle mode word, and the ruleset table entry the format pin
+-// writes (0x804334C0 = BattleCustomizer's ORRE_RULESET_BASE).
+-constexpr XdRange XD_CRC_C[] = {
+-    {0x80428338, 0x20}, {0x804EA768, 0x28}, {0x80429A00, 0x04}, {0x804334C0, 0x90}};
+ constexpr u32 XD_UPLOAD_WRITES = 26900;  // multiboot client upload, same as the OSD phase logic
+ constexpr u32 XD_MAX_LINES_PER_SOCKET = 80000;  // ~6 MB worst case, under the file cap
+-
+-size_t AppendEmu(const Memory::MemoryManager& memory, u8* dst, size_t at, u32 addr, u32 len)
+-{
+-  memory.CopyFromEmu(dst + at, addr, len);
+-  return at + len;
+-}
++// Netplay state check: STATE_SAMPLE_WRITES in NetPlayClient.cpp (logged in 'statesync on').
++constexpr u32 XD_STATESYNC_WRITES = 256;
+ }  // namespace
+ 
+ // One gba_detect 'xd' line: RNG seed + CRC32s of the battle state, keyed by
+@@ -189,10 +151,11 @@ void CSIDevice_GBAEmu::LogXdState(const u8* request, const char* why, bool force
+       return;
+   }
+ 
+-  const u32 seed = memory.Read_U32(XD_RNG_SEED);
+-  const u32 joyboot = memory.Read_U32(XD_JOYBOOT_LCG);
+-  const u32 flags = memory.Read_U32(XD_BATTLE_FLAGS);
+-  const u32 ctx = memory.Read_U32(XD_CTX_PTR);
++  const HLE_XD::XdDigest xd = HLE_XD::ComputeXdDigest(memory);
++  const u32 seed = xd.seed;
++  const u32 joyboot = xd.jb;
++  const u32 flags = xd.flags;
++  const u32 ctx = xd.ctx;
+   // OrreLink v1.5.12: XD's frame counters and the frame-exact logical time base
+   // (HLE_XD, no per-call term). Identical on every machine at the same wseq while the games are
+   // in step; lt=00000000 when the clock is not installed (solo, same-arch room).
+@@ -203,35 +166,11 @@ void CSIDevice_GBAEmu::LogXdState(const u8* request, const char* why, bool force
+   const u32 lt =
+       HLE_XD::IsInstalled() ? static_cast<u32>(HLE_XD::FrameExactTimeBase(m_system)) : 0;
+ 
+-  u8 buf[2048];
+-  size_t n = 0;
+-  for (const XdRange& r : XD_CRC_A)
+-    n = AppendEmu(memory, buf, n, r.addr, r.len);
+-  const u32 crc_a = Common::ComputeCRC32(buf, n);
+-
+-  u32 crc_b = 0;
+-  if (ctx == XD_CTX_A || ctx == XD_CTX_B)
+-  {
+-    n = 0;
+-    for (u32 t = 0; t < 2; t++)
+-    {
+-      const u32 trainer = ctx + XD_TRAINER_OFF + t * XD_TRAINER_STRIDE;
+-      for (u32 i = 0; i < 6; i++)
+-      {
+-        const u32 record = trainer + XD_PARTY_OFF + i * XD_PARTY_STRIDE + 4;
+-        n = AppendEmu(memory, buf, n, record, 0x30);
+-        n = AppendEmu(memory, buf, n, record + 0x80, 0x20);
+-      }
+-      for (u32 sl = 0; sl < 2; sl++)
+-        n = AppendEmu(memory, buf, n, trainer + XD_SLOT_OFF + sl * XD_SLOT_STRIDE, 0x40);
+-    }
+-    crc_b = Common::ComputeCRC32(buf, n);
+-  }
+-
+-  n = 0;
+-  for (const XdRange& r : XD_CRC_C)
+-    n = AppendEmu(memory, buf, n, r.addr, r.len);
+-  const u32 crc_c = Common::ComputeCRC32(buf, n);
++  // v1.7.5: crcB is the party state of the context the ctx cell names (it was always 0 before,
++  // see ComputeXdDigest).
++  const u32 crc_a = xd.crc_a;
++  const u32 crc_b = xd.crc_b;
++  const u32 crc_c = xd.crc_c;
+ 
+   // jb (the JoyBoot LCG) participates: it is the very word the v1.5.9 evidence
+   // points at, and both sockets' key exchanges share it.
+@@ -878,6 +817,20 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
+     if (m_link_established && m_last_cmd == EBufferCommands::CMD_WRITE_GBA)
+       LogXdState(buffer, "write", /*forced=*/false);
+ 
++    // Netplay state check, XD part: XD's battle state at every 256th WRITE of this socket. The
++    // WRITE is the game's own MMIO store, so every machine reads XD's memory after the same
++    // instruction, which a pad pop (a CoreTiming event, landing wherever each JIT ended its
++    // block) cannot promise; and the count is the wseq of the 'xd' lines, so both line up in a
++    // log. Deliberately gated on nothing else: the link latches above read the GBA thread's link
++    // flag and tick gaps, which differ per machine. Read only; the netplay client sends it.
++    if (m_last_cmd == EBufferCommands::CMD_WRITE_GBA && m_diag_wr_count != 0 &&
++        m_diag_wr_count % XD_STATESYNC_WRITES == 0 && Core::IsCPUThread() &&
++        NetPlay::IsNetPlayRunning() && m_system.GetMemory().Read_U32(0x80000000) == XD_DISC_ID_GXXE)
++    {
++      NetPlay::ReportXdStateSample(m_device_number, m_diag_wr_count,
++                                   HLE_XD::ComputeXdDigest(m_system.GetMemory()));
++    }
++
+     auto& si = m_system.GetSerialInterface();
+     si.RemoveEvent(m_device_number);
+     si.ScheduleEvent(m_device_number,
+diff --git a/Source/Core/Core/NetPlayClient.cpp b/Source/Core/Core/NetPlayClient.cpp
+index 7cfc725..c7d7d0a 100644
+--- a/Source/Core/Core/NetPlayClient.cpp
++++ b/Source/Core/Core/NetPlayClient.cpp
+@@ -171,6 +171,16 @@ u64 SteadyNowMs()
+                               std::chrono::steady_clock::now().time_since_epoch())
+                               .count());
+ }
++
++// State check, inputs part (TakeStateSampleDue): one report every 240 pops of the marker pad,
++// about 2 s at XD's 120 polls a second.
++constexpr u32 STATE_SAMPLE_POPS = 240;
++// State check, XD part (ReportXdStateSample): one report every 256 GC->GBA WRITEs of each GBA
++// port, about every 2-4 s of a battle (70-120 WRITEs a second per port) and a few a second during
++// the one-off client upload.
++[[maybe_unused]] constexpr u32 STATE_SAMPLE_WRITES = 256;
++// At most this many local 'statesync' lines per game (hours of play).
++[[maybe_unused]] constexpr u32 STATE_SAMPLE_MAX_LINES = 20000;
+ }  // namespace
+ 
+ // called from ---GUI--- thread
+@@ -594,6 +604,14 @@ void NetPlayClient::OnData(sf::Packet& packet)
+     OnXdFormat(packet);
+     break;
+ 
++  case MessageID::XdNotice:
++    OnXdNotice(packet);
++    break;
++
++  case MessageID::StateMismatch:
++    OnStateMismatch(packet);
++    break;
++
+   case MessageID::Ping:
+     OnPing(packet);
+     break;
+@@ -735,6 +753,116 @@ void NetPlayClient::OnXdFormat(sf::Packet& packet)
+   m_dialog->Update();
+ }
+ 
++// ---NETPLAY--- thread. A notice the server checked and relayed; the line is written here from
++// this machine's own player list, and goes to the room chat only (AppendChatQuiet): these arrive
++// mid-battle, while the fork keeps text off the screen.
++void NetPlayClient::OnXdNotice(sf::Packet& packet)
++{
++  u8 kind = 0;
++  PlayerId who = 0;
++  u8 arg = 0;
++  packet >> kind >> who >> arg;
++
++  std::string name = "A player";
++  {
++    std::lock_guard lkp(m_crit.players);
++    if (const auto it = m_players.find(who); it != m_players.end())
++      name = it->second.name;
++  }
++
++  std::string line;
++  const char* tag = "unknown";
++  switch (static_cast<XdNoticeKind>(kind))
++  {
++  case XdNoticeKind::LeftWindow:
++    tag = "left-window";
++    line = fmt::format("{} left the game window.", name);
++    break;
++  case XdNoticeKind::BackInWindow:
++    tag = "back-in-window";
++    line = fmt::format("{} is back in the game window.", name);
++    break;
++  case XdNoticeKind::GbaStartFailed:
++    tag = "gba-start-failed";
++    line = fmt::format("{}'s GBA on port {} failed to start. Battle stopped.", name, arg + 1);
++    break;
++  case XdNoticeKind::GbaStartFailedWatcher:
++    tag = "gba-start-failed-watcher";
++    line = fmt::format("{}'s GBA on port {} failed to start. They stopped watching.", name,
++                       arg + 1);
++    break;
++  default:
++    return;
++  }
++
++#ifdef HAS_LIBMGBA
++  // Tick 0: the netplay thread must not read CoreTiming. No name in the log, only the pid.
++  GBADetectLog::LogEvent(0, 0, "notice",
++                         fmt::format("{} pid={} arg={} wall={}", tag, who, arg, WallClockHHMMSS()));
++#else
++  (void)tag;
++#endif
++  m_dialog->AppendChatQuiet(line);
++}
++
++// ---NETPLAY--- thread. The host found two reports for the same pop that differ (see
++// NetPlayServer's StateDigest handler). Warn only: the game keeps running.
++void NetPlayClient::OnStateMismatch(sf::Packet& packet)
++{
++  u8 kind = 0;
++  u32 tag = 0;
++  u8 scope = 0;
++  PlayerId spectator = 0;
++  u8 comps = 0;
++  packet >> kind >> tag >> scope >> spectator >> comps;
++
++  const char* comp = comps == 3 ? "inputs+xd" : comps == 1 ? "inputs" : comps == 2 ? "xd" : "?";
++  // This machine's own clock at its report for that tag; a report the ring has forgotten (or a
++  // machine that never reported it) falls back to now, at most a few seconds later.
++  const u64 key = (static_cast<u64>(kind) << 32) | tag;
++  std::string since;
++  {
++    std::lock_guard lk(m_sd_time_mutex);
++    for (const auto& [k, wall] : m_sd_times)
++    {
++      if (k == key && !wall.empty())
++        since = wall;
++    }
++  }
++  if (since.empty())
++    since = WallClockHHMMSS();
++
++  const bool watcher_only = scope == 1;
++  const bool mine = watcher_only && m_local_player && spectator == m_local_player->pid;
++#ifdef HAS_LIBMGBA
++  // kind 0: tag is the marker pad's pop count; kind 1-4: the WRITE count of GBA port kind-1.
++  GBADetectLog::LogEvent(0, 0, "statesync",
++                         fmt::format("mismatch comp={} kind={} tag={} scope={} spectator={} "
++                                     "since={} wall={}",
++                                     comp, kind, tag, watcher_only ? "spectator" : "players",
++                                     spectator, since, WallClockHHMMSS()));
++#endif
++  NOTICE_LOG_FMT(NETPLAY, "statesync mismatch comp={} kind={} tag={} scope={}", comp, kind, tag,
++                 scope);
++
++  if (!watcher_only && !m_sd_warned)
++  {
++    m_sd_warned = true;
++    m_sd_warned_since = since;
++    m_sd_warned_view_only = false;
++    m_dialog->AppendChatQuiet(fmt::format("Out of sync since {}. Restart the battle.", since));
++  }
++  else if (mine && !m_sd_warned && m_sd_warned_since.empty())
++  {
++    // Only this spectator's copy split (the server says so once per game); a later split of the
++    // players' battle still gets its own line above.
++    m_sd_warned_since = since;
++    m_sd_warned_view_only = true;
++    m_dialog->AppendChatQuiet(
++        fmt::format("Your view of the battle is out of sync since {}.", since));
++  }
++}
++
+ void NetPlayClient::OnChunkedDataStart(sf::Packet& packet)
+ {
+   u32 cid;
+@@ -956,6 +1084,11 @@ void NetPlayClient::OnPadBuffer(sf::Packet& packet)
+   u32 size = 0;
+   packet >> size;
+ 
++  // A raise only adds slack if this machine's pacing keeps it: one that had fallen behind its
++  // throttle deadline (up to MaxFallback) would otherwise sprint through the new entries. The CPU
++  // thread re-anchors at its next pop. Wall-clock pacing only; which entries are used is unchanged.
++  if (size > m_target_buffer_size && m_is_running.IsSet())
++    m_throttle_reanchor.store(true, std::memory_order_relaxed);
+   m_target_buffer_size = size;
+   m_dialog->OnPadBufferChanged(size);
+ }
+@@ -1206,6 +1339,62 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
+   m_live_marker_pad.store(marker, std::memory_order_relaxed);
+   m_spec_polls_per_sec.store(m_selected_game.game_id == "GXXE01" ? 120 : 60,
+                              std::memory_order_relaxed);
++
++  // v1.7.5 state check: the first mapped pad tags the reports, in Pokemon XD rooms whose pads go
++  // through the owners' pushes (host input authority carries them another way). Same pad and
++  // same decision on every machine: the map is final here and identical everywhere. The
++  // CPU-thread state restarts here for the reason the live counters above do.
++  int sd_marker = -1;
++  if (m_selected_game.game_id == "GXXE01" && !m_host_input_authority)
++  {
++    for (size_t i = 0; i < m_net_settings.pad_map.size(); ++i)
++    {
++      if (m_net_settings.pad_map[i] > 0)
++      {
++        sd_marker = static_cast<int>(i);
++        break;
++      }
++    }
++  }
++  m_sd_marker_pad.store(sd_marker, std::memory_order_relaxed);
++  m_sd_inputs = 0;
++  m_sd_due.reset();
++  m_sd_lines = 0;
++  m_sd_warned = false;
++  m_sd_warned_since.clear();
++  m_sd_warned_view_only = false;
++#ifdef HAS_LIBMGBA
++  // Says whether this game is checked at all: a clean log from a room that was not checked must
++  // not read as "checked, no mismatch".
++  GBADetectLog::LogEvent(0, 0, "statesync",
++                         sd_marker >= 0 ?
++                             fmt::format("on marker={} pops={} writes={}", sd_marker,
++                                         STATE_SAMPLE_POPS, STATE_SAMPLE_WRITES) :
++                             fmt::format("off reason={}", m_selected_game.game_id != "GXXE01" ?
++                                                              "not-xd" :
++                                                              m_host_input_authority ? "hia" :
++                                                                                       "no-pad"));
++#endif
++  {
++    std::lock_guard lk(m_sd_time_mutex);
++    m_sd_times.fill({});
++    m_sd_time_next = 0;
++  }
++  m_throttle_reanchor.store(false, std::memory_order_relaxed);
++  {
++    const PlayerId me = m_local_player ? m_local_player->pid : 0;
++    const bool plays = me != 0 && std::ranges::any_of(m_net_settings.pad_map,
++                                                      [me](PlayerId p) { return p == me; });
++    m_send_pad_health.store(plays && !m_host_input_authority, std::memory_order_relaxed);
++    m_focus_watch.store(plays && sd_marker >= 0, std::memory_order_relaxed);
++  }
++  m_focus_gate_off_since_ms.store(0, std::memory_order_relaxed);
++  m_focus_paused_since_ms = 0;
++  m_focus_left_sent = false;
++  m_health_wait_max_us = 0;
++  m_health_starve_pops = 0;
++  m_health_pops = 0;
++  m_health_min_depth = 0xFFFFFFFF;
+   {
+     std::lock_guard lk(m_live_mutex);
+     m_live_request.reset();
+@@ -1328,6 +1517,19 @@ void NetPlayClient::OnStopGame(sf::Packet& packet)
+ 
+   StopGame();
+   m_dialog->OnMsgStopGame();
++
++  // The out-of-sync line arrives mid-battle, in a chat nobody watches then (Android shows the chat
++  // only on the room screen; a desktop game is often fullscreen): repeat it once, now, so it is
++  // the newest line when the players look at the room again.
++  if (!m_sd_warned_since.empty())
++  {
++    m_dialog->AppendChatQuiet(
++        m_sd_warned_view_only ?
++            fmt::format("Your view of the last battle was out of sync since {}.",
++                        m_sd_warned_since) :
++            fmt::format("The last battle was out of sync since {}.", m_sd_warned_since));
++    m_sd_warned_since.clear();
++  }
+ }
+ 
+ void NetPlayClient::OnPowerButton()
+@@ -2046,6 +2248,8 @@ void NetPlayClient::ThreadFunc()
+       StopGame();
+     }
+ 
++    UpdateFocusNotice();
++
+     ENetEvent netEvent;
+     int net;
+     if (m_traversal_client)
+@@ -2770,6 +2974,36 @@ u32 SpecEntries(u32 ms, u32 polls_per_sec)
+   return (ms * polls_per_sec + 999) / 1000;
+ }
+ 
++// FNV-1a step over one byte.
++u32 MixByte(u32 h, u32 b)
++{
++  return (h ^ (b & 0xFF)) * 16777619u;
++}
++
++// One popped pad entry, field by field in a fixed order (no type punning), exactly the fields
++// AddPadStateToPacket sends: a GBA pad's analog fields never travel, so they differ between the
++// owner's copy and everyone else's and must not count.
++u32 MixPadEntry(u32 h, int pad_nb, const GCPadStatus& pad, bool gba)
++{
++  if (h == 0)
++    h = 2166136261u;
++  h = MixByte(h, static_cast<u32>(pad_nb));
++  h = MixByte(h, pad.button);
++  h = MixByte(h, static_cast<u32>(pad.button) >> 8);
++  if (!gba)
++  {
++    for (const u32 v : {static_cast<u32>(pad.analogA), static_cast<u32>(pad.analogB),
++                        static_cast<u32>(pad.stickX), static_cast<u32>(pad.stickY),
++                        static_cast<u32>(pad.substickX), static_cast<u32>(pad.substickY),
++                        static_cast<u32>(pad.triggerLeft), static_cast<u32>(pad.triggerRight),
++                        static_cast<u32>(pad.isConnected ? 1 : 0)})
++    {
++      h = MixByte(h, v);
++    }
++  }
++  return h;
++}
++
+ u32 SpectatorReserveForPing(u32 ping_ms, u32 polls_per_sec)
+ {
+   return std::clamp(SpecEntries(ping_ms + SPEC_MARGIN_MS, polls_per_sec),
+@@ -3038,6 +3272,10 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
+     m_spec_after_pop[pad_nb] = depth_now > 0 ? depth_now - 1 : 0;
+   }
+ 
++  // This pad's queue depth before any wait: the slack this machine has on its owner's stream
++  // (0 means the entry had not arrived yet). Reported to the host's automatic buffer.
++  const size_t pre_depth = m_pad_buffer[pad_nb].Size();
++
+   while (m_pad_buffer[pad_nb].Size() == 0)
+   {
+     if (!m_is_running.IsSet())
+@@ -3052,6 +3290,22 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
+       return false;
+   }
+ 
++  // The buffer was raised (OnPadBuffer). Re-anchor the throttle now that this pop has its entry,
++  // as the spectator fill above does: a machine that had been starved sits up to MaxFallback
++  // behind its deadline and would otherwise run unthrottled through the slack the raise just
++  // added. Wall-clock pacing only.
++  if (m_throttle_reanchor.load(std::memory_order_relaxed) &&
++      m_throttle_reanchor.exchange(false, std::memory_order_relaxed) && !m_host_input_authority)
++  {
++    Core::System::GetInstance().GetCoreTiming().ResetThrottleToNow();
++#ifdef HAS_LIBMGBA
++    GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "autobuf",
++                           fmt::format("throttle re-anchor buf={} pad={} wall={}",
++                                       m_target_buffer_size, pad_nb, WallClockHHMMSS()),
++                           false);  // never flush under crit_netplay_client
++#endif
++  }
++
+   // Latency telemetry: how long this pad fetch had to wait for a remote frame,
+   // and how full the buffer was. All CPU-thread-local; nothing here affects the
+   // input stream or emulation. Read the REMOTE pad's numbers: waits piling into
+@@ -3074,6 +3328,22 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
+     m_lat_wait_ewma_us = m_lat_wait_ewma_us * 0.98 + static_cast<double>(wait_us) * 0.02;
+     m_lat_wait_max_us = std::max(m_lat_wait_max_us, wait_us);
+ 
++    // The automatic buffer's view: only the pads another machine owns (this machine's own pads
++    // are topped up by its own poll and never wait). pad_map is fixed for the game and
++    // m_local_player for the session, so no lock is needed.
++    const bool send_health = m_send_pad_health.load(std::memory_order_relaxed);
++    if (send_health && m_local_player && pad_nb >= 0 &&
++        static_cast<size_t>(pad_nb) < m_net_settings.pad_map.size() &&
++        m_net_settings.pad_map[pad_nb] != m_local_player->pid)
++    {
++      ++m_health_pops;
++      if (wait_us > 1000)
++        ++m_health_starve_pops;
++      m_health_wait_max_us = std::max(m_health_wait_max_us, wait_us);
++      m_health_min_depth =
++          std::min<u32>(m_health_min_depth, static_cast<u32>(std::min<size_t>(pre_depth, 0xFFFE)));
++    }
++
+     const u64 now_us = static_cast<u64>(
+         std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+@@ -3083,6 +3353,23 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
+     else if (now_us - m_lat_last_emit_us > 1'000'000)
+     {
+       m_lat_last_emit_us = now_us;
++      // A player's waits and slack for the host's automatic buffer, which lowers only while
++      // every player keeps slack and adds a cushion when one keeps waiting. Timing only; SendAsync
++      // from here as SendTimeBase does.
++      if (send_health)
++      {
++        sf::Packet health;
++        health << MessageID::PadHealth
++               << static_cast<u16>(std::min<u64>(m_health_wait_max_us / 1000, 0xFFFF))
++               << static_cast<u16>(std::min<u32>(m_health_starve_pops, 0xFFFF))
++               << static_cast<u16>(std::min<u32>(m_health_pops, 0xFFFF))
++               << static_cast<u16>(std::min<u32>(m_health_min_depth, 0xFFFF));
++        SendAsync(std::move(health));
++      }
++      m_health_wait_max_us = 0;
++      m_health_starve_pops = 0;
++      m_health_pops = 0;
++      m_health_min_depth = 0xFFFFFFFF;
+       const std::string line = fmt::format(
+           "NetLat wall={} ping={}ms buf={}/{} wait~{:.0f}ms(max{}) starve={}/{}",
+           WallClockHHMMSS(), GetPlayersMaxPing(),
+@@ -3193,6 +3480,20 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
+     ++m_live_pop_count[pad_nb];
+     if (pad_nb == m_live_marker_pad.load(std::memory_order_relaxed))
+       m_live_marker_pops.store(m_live_pop_count[pad_nb], std::memory_order_relaxed);
++
++    // State check: fold this entry into the inputs hash exactly as it travels on the wire (a GBA
++    // pad carries only its buttons), and mark a report due at every STATE_SAMPLE_POPS-th pop of
++    // the marker pad. Arithmetic only; NetPlay_GetInput sends the report after this call.
++    if (const int sd_marker = m_sd_marker_pad.load(std::memory_order_relaxed); sd_marker >= 0)
++    {
++      m_sd_inputs = MixPadEntry(m_sd_inputs, pad_nb, *pad_status,
++                                m_net_settings.gba_config[pad_nb].enabled);
++      if (pad_nb == sd_marker && m_live_pop_count[pad_nb] % STATE_SAMPLE_POPS == 0)
++      {
++        m_sd_due = StateSample{m_live_pop_count[pad_nb], m_sd_inputs};
++        m_sd_inputs = 0;
++      }
++    }
+   }
+ 
+   auto& movie = Core::System::GetInstance().GetMovie();
+@@ -3209,6 +3510,160 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
+   return true;
+ }
+ 
++// called from ---CPU--- thread, under crit_netplay_client
++std::optional<NetPlayClient::StateSample> NetPlayClient::TakeStateSampleDue()
++{
++  std::optional<StateSample> due;
++  due.swap(m_sd_due);
++  return due;
++}
++
++// called from ---CPU--- thread, under crit_netplay_client (NetPlay_GetInput)
++void NetPlayClient::SendInputsSample(const StateSample& sample)
++{
++  sf::Packet packet;
++  packet << MessageID::StateDigest << u8{0} << sample.tag << sample.inputs << u32{0} << u32{0}
++         << u32{0} << u32{0};
++  SendAsync(std::move(packet));
++
++  const std::string wall = WallClockHHMMSS();
++  {
++    std::lock_guard lk(m_sd_time_mutex);
++    m_sd_times[m_sd_time_next % m_sd_times.size()] = {sample.tag, wall};
++    ++m_sd_time_next;
++  }
++#ifdef HAS_LIBMGBA
++  // The same line on every machine for the same tag while the games agree (t= and wall= aside), so
++  // two logs diff like the xd lines: grep ' statesync in ' and strip t= and wall=.
++  if (m_sd_lines < STATE_SAMPLE_MAX_LINES)
++  {
++    ++m_sd_lines;
++    GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(), "statesync",
++                           fmt::format("in tag={} hash={:08x} wall={}", sample.tag, sample.inputs,
++                                       wall),
++                           false);  // never flush under crit_netplay_client
++  }
++#endif
++}
++
++// called from ---CPU--- thread, under crit_netplay_client (NetPlay::ReportXdStateSample), at a
++// GC->GBA WRITE of SI port `port`.
++void NetPlayClient::SendXdStateSample(int port, u32 write_count, const HLE_XD::XdDigest& xd)
++{
++  if (port < 0 || port > 3 || m_sd_marker_pad.load(std::memory_order_relaxed) < 0)
++    return;
++  const u8 kind = static_cast<u8>(1 + port);
++  const u32 xd_hash = HLE_XD::XdDigestHash(xd);
++  sf::Packet packet;
++  packet << MessageID::StateDigest << kind << write_count << xd_hash << xd.seed << xd.crc_a
++         << xd.crc_b << xd.crc_c;
++  SendAsync(std::move(packet));
++
++  const std::string wall = WallClockHHMMSS();
++  {
++    std::lock_guard lk(m_sd_time_mutex);
++    m_sd_times[m_sd_time_next % m_sd_times.size()] = {(static_cast<u64>(kind) << 32) | write_count,
++                                                      wall};
++    ++m_sd_time_next;
++  }
++#ifdef HAS_LIBMGBA
++  // Same on every machine at the same wseq while the games agree (t= and wall= aside), and wseq
++  // is the one the 'xd' lines carry: grep ' statesync xd ' and strip t= and wall=.
++  if (m_sd_lines < STATE_SAMPLE_MAX_LINES)
++  {
++    ++m_sd_lines;
++    GBADetectLog::LogEvent(port, Core::System::GetInstance().GetCoreTiming().GetTicks(),
++                           "statesync",
++                           fmt::format("xd wseq={} hash={:08x} seed={:08x} jb={:08x} ctx={:08x} "
++                                       "flags={:08x} crcA={:08x} crcB={:08x} crcC={:08x} wall={}",
++                                       write_count, xd_hash, xd.seed, xd.jb, xd.ctx, xd.flags,
++                                       xd.crc_a, xd.crc_b, xd.crc_c, wall),
++                           false);  // never flush under crit_netplay_client
++  }
++#endif
++}
++
++// Any thread. The server checks the notice against its own roster and relays it.
++void NetPlayClient::SendXdNotice(XdNoticeKind kind, u8 arg)
++{
++  sf::Packet packet;
++  packet << MessageID::XdNotice << static_cast<u8>(kind) << arg;
++  SendAsync(std::move(packet));
++}
++
++// The emulation thread, under crit_netplay_client (NetPlay::ReportGbaStartFailure). The server
++// posts the line and stops the game; nothing is stopped from here, since StopGame would take
++// crit_netplay_client again.
++void NetPlayClient::OnLocalGbaStartFailed(int port)
++{
++  if (port < 0 || port > 3)
++    return;
++#ifdef HAS_LIBMGBA
++  GBADetectLog::LogEvent(port, 0, "gba-start",
++                         fmt::format("failed under netplay, asking the host to stop wall={}",
++                                     WallClockHHMMSS()),
++                         false);
++#endif
++  SendXdNotice(XdNoticeKind::GbaStartFailed, static_cast<u8>(port));
++}
++
++// ---NETPLAY--- thread, once per loop (at least every 250 ms). One line when this player has been
++// away from the game for FOCUS_AWAY_MS, and one when they are back. Away is either of:
++// - the input gate closed (the window lost focus with Background Input off: every button reads
++//   as released), seen by the CPU thread at its SI poll;
++// - this machine's core paused, which freezes the whole room: Pause on Focus Loss (it pauses
++//   before the gate is ever seen closed), the pause button, or Android leaving the game screen
++//   (the emulation screen pauses on onPause). Read here, off the CPU thread.
++// At most one "left" per FOCUS_REPEAT_MS, and a "back" only after a "left" that was sent.
++void NetPlayClient::UpdateFocusNotice()
++{
++  constexpr u64 FOCUS_AWAY_MS = 5000;
++  constexpr u64 FOCUS_REPEAT_MS = 30000;
++  if (!m_focus_watch.load(std::memory_order_relaxed) || !m_is_running.IsSet())
++  {
++    m_focus_left_sent = false;
++    m_focus_paused_since_ms = 0;
++    return;
++  }
++  const u64 now = SteadyNowMs();
++  // Only this game's core: a previous one can still be shutting down while this game boots.
++  const bool paused = IsCurrentGameCore() &&
++                      Core::GetState(Core::System::GetInstance()) == Core::State::Paused;
++  if (!paused)
++    m_focus_paused_since_ms = 0;
++  else if (m_focus_paused_since_ms == 0)
++    m_focus_paused_since_ms = now;
++  const u64 gate_off = m_focus_gate_off_since_ms.load(std::memory_order_relaxed);
++  const u64 background = m_focus_paused_since_ms;
++  u64 away_since = gate_off;
++  if (background != 0 && (away_since == 0 || background < away_since))
++    away_since = background;
++
++  if (!m_focus_left_sent)
++  {
++    if (away_since == 0 || now < away_since + FOCUS_AWAY_MS)
++      return;
++    if (m_focus_last_left_ms != 0 && now - m_focus_last_left_ms < FOCUS_REPEAT_MS)
++      return;
++    m_focus_left_sent = true;
++    m_focus_last_left_ms = now;
++    SendXdNotice(XdNoticeKind::LeftWindow, 0);
++#ifdef HAS_LIBMGBA
++    GBADetectLog::LogEvent(0, 0, "focus",
++                           fmt::format("away gate={} paused={} wall={}", gate_off ? 0 : 1,
++                                       background ? 1 : 0, WallClockHHMMSS()));
++#endif
++  }
++  else if (away_since == 0)
++  {
++    m_focus_left_sent = false;
++    SendXdNotice(XdNoticeKind::BackInWindow, 0);
++#ifdef HAS_LIBMGBA
++    GBADetectLog::LogEvent(0, 0, "focus", fmt::format("back wall={}", WallClockHHMMSS()));
++#endif
++  }
++}
++
+ u64 NetPlayClient::GetInitialRTCValue() const
+ {
+   return m_initial_rtc;
+@@ -3338,6 +3793,23 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
+     pad_status = Pad::GetStatus(local_pad);
+   }
+ 
++  // "Left the game window" notice: Dolphin's input gate (thread-local, set on this thread right
++  // before the SI poll) is closed while the game window lacks focus and Background Input is off,
++  // and every button then reads as released. Only the moment it closed is recorded; the netplay
++  // thread decides when to tell the room (UpdateFocusNotice).
++  if (m_focus_watch.load(std::memory_order_relaxed))
++  {
++    if (!ControlReference::GetInputGate())
++    {
++      if (m_focus_gate_off_since_ms.load(std::memory_order_relaxed) == 0)
++        m_focus_gate_off_since_ms.store(SteadyNowMs(), std::memory_order_relaxed);
++    }
++    else if (m_focus_gate_off_since_ms.load(std::memory_order_relaxed) != 0)
++    {
++      m_focus_gate_off_since_ms.store(0, std::memory_order_relaxed);
++    }
++  }
++
+   if (m_host_input_authority)
+   {
+     if (m_local_player->pid != m_current_golfer)
+@@ -3948,6 +4420,20 @@ bool IsCurrentGameCore()
+   return netplay_client && netplay_client->IsCurrentGameCore();
+ }
+ 
++void ReportGbaStartFailure(int port)
++{
++  std::lock_guard lk(crit_netplay_client);
++  if (netplay_client && netplay_client->IsCurrentGameCore())
++    netplay_client->OnLocalGbaStartFailed(port);
++}
++
++void ReportXdStateSample(int port, u32 write_count, const HLE_XD::XdDigest& digest)
++{
++  std::lock_guard lk(crit_netplay_client);
++  if (netplay_client && netplay_client->IsCurrentGameCore())
++    netplay_client->SendXdStateSample(port, write_count, digest);
++}
++
+ PadDetails GetPadDetails(int pad_num)
+ {
+   std::lock_guard lk(crit_netplay_client);
+@@ -4026,7 +4512,13 @@ bool SerialInterface::CSIDevice_GCController::NetPlay_GetInput(int pad_num, GCPa
+     return false;
+   }
+ 
+-  return NetPlay::netplay_client->GetNetPads(pad_num, NetPlay::s_si_poll_batching, status);
++  const bool result =
++      NetPlay::netplay_client->GetNetPads(pad_num, NetPlay::s_si_poll_batching, status);
++  // State check, inputs part: a hash of pad entries only, sent under the lock as SendTimeBase
++  // does. XD's memory is not read at a pop: see ReportXdStateSample.
++  if (const auto sample = NetPlay::netplay_client->TakeStateSampleDue())
++    NetPlay::netplay_client->SendInputsSample(*sample);
++  return result;
+ }
+ 
+ bool NetPlay::NetPlay_GetWiimoteData(const std::span<NetPlayClient::WiimoteDataBatchEntry>& entries)
+diff --git a/Source/Core/Core/NetPlayClient.h b/Source/Core/Core/NetPlayClient.h
+index c5056d5..11ffdcb 100644
+--- a/Source/Core/Core/NetPlayClient.h
++++ b/Source/Core/Core/NetPlayClient.h
+@@ -22,6 +22,7 @@
+ #include "Common/Event.h"
+ #include "Common/SPSCQueue.h"
+ #include "Common/TraversalClient.h"
++#include "Core/HLE/HLE_XD.h"
+ #include "Core/NetPlayProto.h"
+ #include "Core/SyncIdentifier.h"
+ #include "InputCommon/GCPadStatus.h"
+@@ -67,6 +68,11 @@ public:
+ 
+   virtual void Update() = 0;
+   virtual void AppendChat(const std::string& msg) = 0;
++  // A room chat line that is never drawn over the game. XD Netplay's in-battle notices (out of
++  // sync, a player left the game window, a GBA that did not start) use it, because the fork keeps
++  // on-screen text off during the GBA link. Android's AppendChat is already chat-only, so that is
++  // the default.
++  virtual void AppendChatQuiet(const std::string& msg) { AppendChat(msg); }
+   // XD Netplay, host side: a joiner submitted a Showdown team. The
+   // implementation writes it into the GBA save that will be synced at start
+   // (UICommon/XDNetplay/TeamInjector.h -- Core cannot call uicommon directly,
+@@ -236,6 +242,29 @@ public:
+   static void SendTimeBase();
+   bool DoAllPlayersHaveGame();
+ 
++  // XD Netplay state check (v1.7.5), two parts with their own tags. Inputs: every
++  // STATE_SAMPLE_POPS pops of the first mapped pad, a hash of the pad entries this machine
++  // consumed since the last report (every pad, in pop order, as they travel on the wire), tagged
++  // with that pop count; pops only happen in the SI poll, in channel order, so the windows are
++  // identical everywhere. XD state: HLE_XD::ComputeXdDigest read at every STATE_SAMPLE_WRITES-th
++  // GC->GBA WRITE of a GBA port, tagged with that WRITE count. A pad pop is the same emulated
++  // tick on every machine but not the same instruction when the CPUs split JIT blocks
++  // differently, so XD's memory is read at the WRITE, an MMIO store in the game's own code (the
++  // point the 'xd' log lines have always matched at across x86 and ARM). Warn only: nothing here
++  // changes what any machine emulates.
++  struct StateSample
++  {
++    u32 tag = 0;
++    u32 inputs = 0;
++  };
++  // ---CPU--- thread, under crit_netplay_client.
++  std::optional<StateSample> TakeStateSampleDue();
++  void SendInputsSample(const StateSample& sample);
++  void SendXdStateSample(int port, u32 write_count, const HLE_XD::XdDigest& xd);
++  // A GBA core of this game did not start on this machine (SI port 0-3). The emulation thread,
++  // under crit_netplay_client (NetPlay::ReportGbaStartFailure).
++  void OnLocalGbaStartFailed(int port);
++
+   const PadMappingArray& GetPadMapping() const;
+   const GBAConfigArray& GetGBAConfig() const;
+   const PadMappingArray& GetWiimoteMapping() const;
+@@ -474,6 +503,11 @@ private:
+   void OnGameDigestAbort();
+   void OnXdSeats(sf::Packet& packet);
+   void OnXdFormat(sf::Packet& packet);
++  void OnXdNotice(sf::Packet& packet);
++  void OnStateMismatch(sf::Packet& packet);
++  // ---NETPLAY--- thread, every loop: the "left the game window" notice.
++  void UpdateFocusNotice();
++  void SendXdNotice(XdNoticeKind kind, u8 arg);
+ 
+   bool m_is_connected = false;
+   ConnectionState m_connection_state = ConnectionState::Failure;
+@@ -538,6 +572,50 @@ private:
+   u64 m_initial_rtc = 0;
+   u32 m_timebase_frame = 0;
+ 
++  // XD Netplay state check (TakeStateSampleDue). m_sd_marker_pad is the pad whose pop count tags
++  // the reports, fixed at OnStartGame: the first mapped pad in a Pokemon XD room without host input
++  // authority, -1 otherwise (no reports). m_sd_inputs and m_sd_due are CPU-thread state, reset in
++  // OnStartGame for the same reason the live-style counters are.
++  std::atomic<int> m_sd_marker_pad{-1};
++  u32 m_sd_inputs = 0;
++  std::optional<StateSample> m_sd_due;
++  u32 m_sd_lines = 0;
++  // This machine's wall clock at its recent reports, keyed (kind << 32 | tag), for the "since
++  // HH:MM:SS" in a mismatch line. Leaf lock: nothing is taken while holding it.
++  std::mutex m_sd_time_mutex;
++  std::array<std::pair<u64, std::string>, 64> m_sd_times{};
++  size_t m_sd_time_next = 0;
++  // ---NETPLAY--- thread: this game's players' mismatch line was shown. m_sd_warned_since: the
++  // time in the line this machine showed (players', or its own spectator view's), repeated once
++  // in the room chat when the game stops (the line is easy to miss during a battle).
++  bool m_sd_warned = false;
++  std::string m_sd_warned_since;
++  bool m_sd_warned_view_only = false;
++
++  // Set by OnPadBuffer when the buffer is raised; the CPU thread then re-anchors the throttle at
++  // its next pop, so a machine that had fallen behind its pacing deadline keeps the new slack
++  // instead of sprinting through it. Wall-clock pacing only.
++  std::atomic<bool> m_throttle_reanchor{false};
++  // A player reports its pad waits once a second (MessageID::PadHealth) for the automatic buffer.
++  // The counters cover the pads this machine does not own; CPU thread only.
++  std::atomic<bool> m_send_pad_health{false};
++  u64 m_health_wait_max_us = 0;
++  u32 m_health_starve_pops = 0;
++  u32 m_health_pops = 0;
++  u32 m_health_min_depth = 0xFFFFFFFF;
++
++  // "Left the game window" notice (UpdateFocusNotice). m_focus_watch: this machine plays a pad in
++  // the running XD game. m_focus_gate_off_since_ms: when Dolphin's input gate closed (desktop: the
++  // game window lost focus with Background Input off), 0 while open; written on the CPU thread.
++  // m_focus_paused_since_ms: when the netplay thread first saw this machine's core paused (Pause
++  // on Focus Loss, the pause button, Android leaving the game screen), 0 while running. The rest
++  // is netplay-thread state.
++  std::atomic<bool> m_focus_watch{false};
++  std::atomic<u64> m_focus_gate_off_since_ms{0};
++  u64 m_focus_paused_since_ms = 0;
++  bool m_focus_left_sent = false;
++  u64 m_focus_last_left_ms = 0;
++
+   std::unique_ptr<IOS::HLE::FS::FileSystem> m_wii_sync_fs;
+   std::vector<u64> m_wii_sync_titles;
+   std::string m_wii_sync_redirect_folder;
+diff --git a/Source/Core/Core/NetPlayProto.h b/Source/Core/Core/NetPlayProto.h
+index 71ad981..68b8622 100644
+--- a/Source/Core/Core/NetPlayProto.h
++++ b/Source/Core/Core/NetPlayProto.h
+@@ -26,6 +26,10 @@ namespace PowerPC
+ {
+ enum class CPUCore;
+ }
++namespace HLE_XD
++{
++struct XdDigest;
++}
+ 
+ namespace NetPlay
+ {
+@@ -226,9 +230,21 @@ enum class MessageID : u8
+   XdWatch = 0xA9,    // XD Netplay: client -> server. bool: this player only watches.
+   XdSeats = 0xAA,    // XD Netplay: server -> clients. Who plays GBA 2, who watches. Display only.
+   XdFormat = 0xAB,   // XD Netplay: server -> clients. u8: the room's battle format (FormatRules id).
++  // XD Netplay room notice, both ways. Client -> server: u8 XdNoticeKind, u8 arg. Server ->
++  // clients: u8 XdNoticeKind, PlayerId who, u8 arg. Each client writes the line itself, into the
++  // room chat only, never on screen.
++  XdNotice = 0xAC,
+ 
+   TimeBase = 0xB0,
+   DesyncDetected = 0xB1,
++  // XD Netplay state check (v1.7.5). Client -> server: u8 kind, u32 tag, u32 value, then u32
++  // seed, crcA, crcB, crcC for the log (0 for kind 0). Kind 0: the hash of the pad entries
++  // consumed, tag = pop count of the marker pad. Kind 1-4: the XD state hash read at a GC->GBA
++  // WRITE of SI port kind-1, tag = that port's WRITE count. Server -> clients on a mismatch that
++  // is announced: u8 kind, u32 tag, u8 scope (0 players, 1 one spectator), PlayerId spectator,
++  // u8 component bits (1 inputs, 2 XD state).
++  StateDigest = 0xB2,
++  StateMismatch = 0xB3,
+ 
+   ComputeGameDigest = 0xC0,
+   GameDigestProgress = 0xC1,
+@@ -242,11 +258,26 @@ enum class MessageID : u8
+   Ping = 0xE0,
+   Pong = 0xE1,
+   PlayerPingData = 0xE2,
++  // XD Netplay, client -> server once a second from a player, over the pads other machines own:
++  // u16 longest pad wait in ms, u16 pops that waited over 1 ms, u16 pops, u16 the smallest queue
++  // depth seen before a pop (0xFFFF: no such pop). The automatic buffer lowers only while every
++  // player keeps slack, and adds a cushion when one keeps waiting.
++  PadHealth = 0xE3,
+ 
+   SyncSaveData = 0xF1,
+   SyncCodes = 0xF2,
+ };
+ 
++// XD Netplay room notices (MessageID::XdNotice).
++enum class XdNoticeKind : u8
++{
++  LeftWindow = 0,   // a player's game window lost input focus, or their game is paused
++  BackInWindow = 1,
++  GbaStartFailed = 2,  // arg: the SI port (0-3) whose GBA core did not start
++  // Server -> clients only: the same, from a player who only watches; the battle goes on.
++  GbaStartFailedWatcher = 3,
++};
++
+ enum class ConnectionError : u8
+ {
+   NoError = 0,
+@@ -308,5 +339,12 @@ PadDetails GetPadDetails(int pad_num);
+ // True when netplay is running and the calling core is the one booted for the current game.
+ // Takes crit_netplay_client: never call it from anything NetPlay_GetInput calls.
+ bool IsCurrentGameCore();
++// A GBA core of the current game failed to start on this machine (SI port 0-3): tell the room and
++// stop the game. Takes crit_netplay_client, like IsCurrentGameCore.
++void ReportGbaStartFailure(int port);
++// State check, XD part: XD's battle state read at the write_count-th GC->GBA WRITE of SI port
++// `port`, a fixed point in the game's own code on every machine. CPU thread, from the GBA device;
++// takes crit_netplay_client, like IsCurrentGameCore.
++void ReportXdStateSample(int port, u32 write_count, const HLE_XD::XdDigest& digest);
+ int NumLocalWiimotes();
+ }  // namespace NetPlay
+diff --git a/Source/Core/Core/NetPlayServer.cpp b/Source/Core/Core/NetPlayServer.cpp
+index fe26e17..deec152 100644
+--- a/Source/Core/Core/NetPlayServer.cpp
++++ b/Source/Core/Core/NetPlayServer.cpp
+@@ -124,6 +124,25 @@ namespace NetPlay
+ // from 7.4 ms to 2.3 ms.
+ namespace
+ {
++// XD Netplay state check (OnStateDigest). Tags waiting for a player's report, and the players'
++// agreed reports kept for spectators: 64 tags is about two minutes.
++constexpr size_t STATE_PENDING_MAX = 64;
++constexpr size_t STATE_AGREED_MAX = 64;
++[[maybe_unused]] constexpr u32 STATE_DETAIL_MAX_LINES = 5;
++// A player's "left the game window" line at most this often.
++constexpr u64 XD_NOTICE_LEFT_REPEAT_MS = 20000;
++// An XD state difference is announced only when this many judged tags of one GBA port in a row
++// differ: a real split persists (the RNG seed never re-converges), a one-off does not. An inputs
++// difference is announced at once: that hash only depends on the pad entries.
++constexpr u32 STATE_XD_CONFIRM = 2;
++[[maybe_unused]] constexpr u32 STATE_TRANSIENT_MAX_LINES = 20;
++
++// Which parts of two reports differ: 1 = the inputs consumed, 2 = XD's battle state.
++u8 StateReportDiff(const NetPlayServer::StateReport& a, const NetPlayServer::StateReport& b)
++{
++  return static_cast<u8>((a.inputs != b.inputs ? 1 : 0) | (a.xd != b.xd ? 2 : 0));
++}
++
+ // ceil(ping_ms / 16.667) in integer math: 1/16.667 == 3/50.
+ constexpr u32 AUTOBUF_FRAME_NUM = 3;
+ constexpr u32 AUTOBUF_FRAME_DEN = 50;
+@@ -152,6 +171,23 @@ constexpr u64 AUTOBUF_COOLDOWN_MS = 5000;
+ // disturbance but still worth one clean sample.
+ constexpr u64 AUTOBUF_SETTLE_GAME_MS = 10000;
+ constexpr u64 AUTOBUF_SETTLE_ROSTER_MS = 2000;
++// Slack (v1.7.5), from the players' PadHealth reports while a game runs. Ping alone walked a real
++// session from 15 to 10 (an XD buffer entry is 8.3 ms, not a frame) without one wait along the
++// way: waits only show once the slack is gone. A lockstep pair splits its slack by phase, and one
++// hitch longer than MaxFallback can move all of it to one side for good; that side then waits on
++// every remote pop while ping, and so the ping rule, sees nothing wrong.
++// - Lower veto: a lower sample counts only if every player's queues for the pads other machines
++//   own held at least AUTOBUF_KEEP_DEPTH entries before every pop of the last second, so at least
++//   two remain after the step.
++// - Cushion: AUTOBUF_CUSHION_SAMPLES seconds in a row in which a player waited on at least half
++//   of those pops with the queue empty raise the buffer by AUTOBUF_CUSHION_STEP, never past
++//   need + AUTOBUF_CUSHION_CAP or AUTOBUF_MAX_FRAMES. Every client re-anchors its throttle when a
++//   raise lands (OnPadBuffer), so a machine behind its pacing deadline keeps the new slack.
++// Either only changes how many entries the owners keep in flight, never which entries are used.
++constexpr u32 AUTOBUF_KEEP_DEPTH = 3;
++constexpr u32 AUTOBUF_CUSHION_SAMPLES = 3;
++constexpr u32 AUTOBUF_CUSHION_STEP = 4;
++constexpr u32 AUTOBUF_CUSHION_CAP = 12;
+ 
+ u32 AutoBufferTargetForPing(u32 ping_ms)
+ {
+@@ -642,6 +678,7 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
+   // before it believes anything (netplay thread owns these fields).
+   m_auto_buffer_raise_streak = 0;
+   m_auto_buffer_lower_streak = 0;
++  m_auto_buffer_cushion_streak = 0;
+   m_auto_buffer_quiet_until_ms = Common::Timer::NowMs() + AUTOBUF_SETTLE_ROSTER_MS;
+ 
+   return ConnectionError::NoError;
+@@ -664,8 +701,21 @@ unsigned int NetPlayServer::OnDisconnect(const Client& player)
+   // Roster change: same reasoning as in OnConnect.
+   m_auto_buffer_raise_streak = 0;
+   m_auto_buffer_lower_streak = 0;
++  m_auto_buffer_cushion_streak = 0;
+   m_auto_buffer_quiet_until_ms = Common::Timer::NowMs() + AUTOBUF_SETTLE_ROSTER_MS;
+ 
++  // XD Netplay notices and state check: a pid can be reused by the next joiner.
++  m_xd_away.erase(pid);
++  m_xd_last_left_ms.erase(pid);
++  m_sd_spectators_warned.erase(pid);
++  m_sd_spec_streak.erase(pid);
++  for (auto& pending : m_sd_pending)
++  {
++    for (auto& reports : std::views::values(pending))
++      reports.erase(pid);
++  }
++  m_pad_health.erase(pid);
++
+   if (m_is_running)
+   {
+     for (PlayerId& mapping : m_pad_map)
+@@ -863,6 +913,8 @@ void NetPlayServer::UpdateAutoPadBuffer()
+ {
+   const bool enabled = m_auto_buffer_enabled.load();
+   const u64 now_ms = Common::Timer::NowMs();
++  // Consumed every tick, whatever returns early below, so a decision never reads old reports.
++  const PadHealthTick health = TakePadHealthTick();
+ 
+   // Re-enabled from the UI: start from a clean slate and take one settled
+   // sample before touching anything.
+@@ -870,6 +922,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
+   {
+     m_auto_buffer_raise_streak = 0;
+     m_auto_buffer_lower_streak = 0;
++    m_auto_buffer_cushion_streak = 0;
+     m_auto_buffer_quiet_until_ms = now_ms + AUTOBUF_SETTLE_ROSTER_MS;
+   }
+   m_auto_buffer_was_enabled = enabled;
+@@ -888,6 +941,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
+     m_auto_buffer_was_running = m_is_running;
+     m_auto_buffer_raise_streak = 0;
+     m_auto_buffer_lower_streak = 0;
++    m_auto_buffer_cushion_streak = 0;
+     m_auto_buffer_quiet_until_ms = now_ms + AUTOBUF_SETTLE_GAME_MS;
+     return;
+   }
+@@ -898,6 +952,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
+   {
+     m_auto_buffer_raise_streak = 0;
+     m_auto_buffer_lower_streak = 0;
++    m_auto_buffer_cushion_streak = 0;
+     m_auto_buffer_quiet_until_ms = now_ms + AUTOBUF_SETTLE_GAME_MS;
+     return;
+   }
+@@ -910,6 +965,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
+   {
+     m_auto_buffer_raise_streak = 0;
+     m_auto_buffer_lower_streak = 0;
++    m_auto_buffer_cushion_streak = 0;
+     return;
+   }
+ 
+@@ -941,45 +997,93 @@ void NetPlayServer::UpdateAutoPadBuffer()
+   const u32 need = AutoBufferTargetForPing(max_ping);
+   const u32 current = m_target_buffer_size;
+ 
+-  if (need > current)
+-  {
+-    m_auto_buffer_lower_streak = 0;
+-    ++m_auto_buffer_raise_streak;
+-  }
+-  else if (need + AUTOBUF_LOWER_SLACK <= current)
+-  {
+-    m_auto_buffer_raise_streak = 0;
+-    ++m_auto_buffer_lower_streak;
+-  }
+-  else
++  // Players report PadHealth only while a game runs; in the lobby ping alone decides, as before.
++  const bool use_health = m_is_running;
++  if (use_health)
+   {
+-    // Inside the dead band: the current size is right. Forget both streaks so
+-    // a change always needs its full run of *consecutive* samples.
+-    m_auto_buffer_raise_streak = 0;
+-    m_auto_buffer_lower_streak = 0;
+-    return;
++    if (health.starving)
++      ++m_auto_buffer_cushion_streak;
++    else if (health.all_reported)
++      m_auto_buffer_cushion_streak = 0;
+   }
+ 
+-  if (now_ms - m_auto_buffer_last_change_ms < AUTOBUF_COOLDOWN_MS)
+-    return;
+-
+   u32 next = current;
+   const char* why = nullptr;
+-  if (m_auto_buffer_raise_streak >= AUTOBUF_RAISE_SAMPLES)
++  std::string why_detail;
++  if (use_health && m_auto_buffer_cushion_streak >= AUTOBUF_CUSHION_SAMPLES &&
++      now_ms - m_auto_buffer_last_change_ms >= AUTOBUF_COOLDOWN_MS)
+   {
+-    // Jump straight to what the link needs: starvation hurts every frame until
+-    // it is fixed, so there is nothing to gain by creeping upward.
+-    next = need;
+-    why = "raise";
++    const u32 cap = std::min(std::max(need + AUTOBUF_CUSHION_CAP, current), AUTOBUF_MAX_FRAMES);
++    const u32 cushion = std::min(current + AUTOBUF_CUSHION_STEP, cap);
++    if (cushion > current)
++    {
++      next = cushion;
++      why = "cushion";
++      why_detail = " " + health.detail;
++    }
+   }
+-  else if (m_auto_buffer_lower_streak >= AUTOBUF_LOWER_SAMPLES)
++
++  if (why == nullptr)
+   {
+-    // Give back one frame at a time. Shedding delay is never urgent, and a slow
+-    // walk down re-measures at each step instead of overshooting into stutter.
+-    // (The dead band already makes a lower vote impossible at the floor; the
+-    // guard is here so the unsigned subtraction can never wrap regardless.)
+-    next = current > AUTOBUF_MIN_FRAMES ? current - 1 : current;
+-    why = "lower";
++    if (need > current)
++    {
++      m_auto_buffer_lower_streak = 0;
++      ++m_auto_buffer_raise_streak;
++    }
++    else if (need + AUTOBUF_LOWER_SLACK <= current)
++    {
++      m_auto_buffer_raise_streak = 0;
++      if (use_health && health.low)
++      {
++        // Ping says there is slack, but a player's queues say there is none on their side, and a
++        // lower takes an entry from both sides at once.
++        m_auto_buffer_lower_streak = 0;
++        if (!m_auto_buffer_veto_logged)
++        {
++          m_auto_buffer_veto_logged = true;
++          const std::string detail =
++              fmt::format("buf {} kept ping={}ms need={} why=lower-veto {}", current, max_ping,
++                          need, health.detail);
++          NOTICE_LOG_FMT(NETPLAY, "AutoBuffer {}", detail);
++#ifdef HAS_LIBMGBA
++          GBADetectLog::LogEvent(0, 0, "autobuf", detail);
++#endif
++        }
++        return;
++      }
++      // A player whose report has not come in yet: no vote either way this second.
++      if (use_health && !health.all_reported)
++        return;
++      ++m_auto_buffer_lower_streak;
++    }
++    else
++    {
++      // Inside the dead band: the current size is right. Forget both streaks so
++      // a change always needs its full run of *consecutive* samples.
++      m_auto_buffer_raise_streak = 0;
++      m_auto_buffer_lower_streak = 0;
++      return;
++    }
++
++    if (now_ms - m_auto_buffer_last_change_ms < AUTOBUF_COOLDOWN_MS)
++      return;
++
++    if (m_auto_buffer_raise_streak >= AUTOBUF_RAISE_SAMPLES)
++    {
++      // Jump straight to what the link needs: starvation hurts every frame until
++      // it is fixed, so there is nothing to gain by creeping upward.
++      next = need;
++      why = "raise";
++    }
++    else if (m_auto_buffer_lower_streak >= AUTOBUF_LOWER_SAMPLES)
++    {
++      // Give back one frame at a time. Shedding delay is never urgent, and a slow
++      // walk down re-measures at each step instead of overshooting into stutter.
++      // (The dead band already makes a lower vote impossible at the floor; the
++      // guard is here so the unsigned subtraction can never wrap regardless.)
++      next = current > AUTOBUF_MIN_FRAMES ? current - 1 : current;
++      why = "lower";
++    }
+   }
+ 
+   if (why == nullptr || next == current)
+@@ -987,11 +1091,13 @@ void NetPlayServer::UpdateAutoPadBuffer()
+ 
+   m_auto_buffer_raise_streak = 0;
+   m_auto_buffer_lower_streak = 0;
++  m_auto_buffer_cushion_streak = 0;
++  m_auto_buffer_veto_logged = false;
+   m_auto_buffer_last_change_ms = now_ms;
+ 
+   const std::string detail =
+-      fmt::format("buf {}->{} ping={}ms need={} why={} players={} running={}", current, next,
+-                  max_ping, need, why, m_players.size(), m_is_running ? 1 : 0);
++      fmt::format("buf {}->{} ping={}ms need={} why={}{} players={} running={}", current, next,
++                  max_ping, need, why, why_detail, m_players.size(), m_is_running ? 1 : 0);
+   NOTICE_LOG_FMT(NETPLAY, "AutoBuffer {}", detail);
+ #ifdef HAS_LIBMGBA
+   // Same session log and same sock=0 channel as the NetLat lines, so a user's
+@@ -1004,6 +1110,34 @@ void NetPlayServer::UpdateAutoPadBuffer()
+   AdjustPadBufferSize(next);
+ }
+ 
++// ---NETPLAY--- thread, once per UpdateAutoPadBuffer tick: fold the players' PadHealth reports
++// since the last tick and start the next window. Players are those with a pad in the running game.
++NetPlayServer::PadHealthTick NetPlayServer::TakePadHealthTick()
++{
++  PadHealthTick tick;
++  for (const auto& [pid, client] : m_players)
++  {
++    if (!m_is_running || client.current_game != m_current_game || !PlayerHasControllerMapped(pid))
++      continue;
++    PadHealthState& state = m_pad_health[pid];
++    if (!state.reported)
++    {
++      tick.all_reported = false;
++      continue;
++    }
++    if (state.low || state.starving)
++    {
++      tick.low = tick.low || state.low;
++      tick.starving = tick.starving || state.starving;
++      if (tick.detail.empty())
++        tick.detail = state.detail;
++    }
++  }
++  for (auto& state : std::views::values(m_pad_health))
++    state = PadHealthState{};
++  return tick;
++}
++
+ void NetPlayServer::SetPadBufferSizeManual(unsigned int size)
+ {
+   // Manual wins, permanently: the host asked for a number, so the sizer stops
+@@ -1513,6 +1647,62 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
+   }
+   break;
+ 
++  case MessageID::XdNotice:
++  {
++    u8 kind = 0;
++    u8 arg = 0;
++    packet >> kind >> arg;
++    OnXdNoticeFrom(player, kind, arg);
++  }
++  break;
++
++  case MessageID::StateDigest:
++  {
++    u8 kind = 0;
++    u32 tag = 0;
++    u32 value = 0;
++    StateReport report;
++    packet >> kind >> tag >> value >> report.seed >> report.crc_a >> report.crc_b >> report.crc_c;
++    // A report from the previous game still in flight is ignored, as PadData is.
++    if (!m_is_running || player.current_game != m_current_game || kind >= STATE_KINDS)
++      break;
++    if (kind == 0)
++      report.inputs = value;
++    else
++      report.xd = value;
++    OnStateDigest(player.pid, kind, tag, report);
++  }
++  break;
++
++  case MessageID::PadHealth:
++  {
++    u16 max_wait_ms = 0;
++    u16 starve = 0;
++    u16 pops = 0;
++    u16 min_depth = 0xFFFF;
++    packet >> max_wait_ms >> starve >> pops >> min_depth;
++    if (!m_is_running || player.current_game != m_current_game ||
++        !PlayerHasControllerMapped(player.pid))
++    {
++      break;
++    }
++    // Folded until the next autobuf tick. A second with no pop of a remote pad (min_depth
++    // 0xFFFF, pops 0) says nothing about slack either way.
++    PadHealthState& state = m_pad_health[player.pid];
++    const bool low = pops > 0 && min_depth < AUTOBUF_KEEP_DEPTH;
++    const bool starving =
++        pops > 0 && min_depth == 0 && static_cast<u32>(starve) * 2 >= static_cast<u32>(pops);
++    state.reported = true;
++    if ((low || starving) && (state.detail.empty() || starving))
++    {
++      state.detail = fmt::format("pid={} depth={} starve={}/{} max={}ms", player.pid, min_depth,
++                                 starve, pops, max_wait_ms);
++    }
++    state.low = state.low || low;
++    state.starving = state.starving || starving;
++  }
++  break;
++
+   case MessageID::TimeBase:
+   {
+     u64 timebase = Common::PacketReadU64(packet);
+@@ -3034,6 +3224,254 @@ XdFormatChange NetPlayServer::SetXdFormat(int format,
+   return change;
+ }
+ 
++// ---NETPLAY--- thread. XD Netplay state check: every machine in the game reports each tag of each
++// kind (0: the pad entries consumed, tagged by the marker pad's pop count; 1-4: XD's state at a
++// GBA port's WRITE, tagged by that port's WRITE count; see NetPlayClient). The players' reports
++// are compared once all of them are in; a spectator's is compared with the players' agreed
++// report, since a spectator only replays the players' inputs later.
++//
++// Who is told what:
++// - Players disagree: the battle itself has split. Every machine logs 'statesync mismatch' and
++//   shows one room chat line ("Out of sync since ..."), once per game. The game is not stopped.
++//   An inputs difference is announced at once. An XD state difference is announced when
++//   STATE_XD_CONFIRM judged tags of that port differ in a row; a single one is only logged here
++//   ('statesync xd-transient'), since a real split never closes again by itself.
++// - Only a spectator disagrees with the players: the players' battle is fine; only that
++//   spectator's copy went wrong (a spectator runs full cores of its own). Every machine logs it,
++//   but only that spectator gets a chat line, once per game. Spectators never decide what the
++//   players are told.
++// Comparing never stops: the host log keeps the first few differing tags with every value, so
++// the order in which the parts diverged can be read afterwards.
++void NetPlayServer::OnStateDigest(PlayerId pid, u8 kind, u32 tag, const StateReport& report)
++{
++  if (m_sd_game != m_current_game)
++  {
++    m_sd_game = m_current_game;
++    for (auto& pending : m_sd_pending)
++      pending.clear();
++    for (auto& agreed : m_sd_agreed)
++      agreed.clear();
++    m_sd_judged.fill(0);
++    m_sd_xd_streak.fill(0);
++    m_sd_players_warned = false;
++    m_sd_detail_lines = 0;
++    m_sd_transient_lines = 0;
++    m_sd_incomplete_logged = false;
++    m_sd_spectators_warned.clear();
++    m_sd_spec_streak.clear();
++  }
++
++  std::vector<PlayerId> players;
++  for (const auto& [id, client] : m_players)
++  {
++    if (client.current_game == m_current_game && PlayerHasControllerMapped(id))
++      players.push_back(id);
++  }
++  const bool plays = std::ranges::find(players, pid) != players.end();
++
++  auto& pending = m_sd_pending[kind];
++  auto& agreed = m_sd_agreed[kind];
++  if (!plays)
++  {
++    if (const auto it = agreed.find(tag); it != agreed.end())
++    {
++      CheckSpectatorReport(pid, kind, tag, report, it->second);
++      return;
++    }
++    // Already judged without an agreed report to keep (the players differed there, or it aged
++    // out): nothing to compare with. Otherwise the players have not all reported it yet (a late
++    // player): wait with them.
++    if (tag <= m_sd_judged[kind] && !pending.contains(tag))
++      return;
++  }
++
++  auto& reports = pending[tag];
++  reports[pid] = report;
++
++  const bool complete = !players.empty() && std::ranges::all_of(players, [&reports](PlayerId id) {
++    return reports.contains(id);
++  });
++  if (!complete)
++  {
++    // Bounded: a tag a player never reports (the game ended under it) is dropped eventually.
++    while (pending.size() > STATE_PENDING_MAX)
++    {
++      if (!m_sd_incomplete_logged)
++      {
++        m_sd_incomplete_logged = true;
++#ifdef HAS_LIBMGBA
++        GBADetectLog::LogPostSession(fmt::format("statesync incomplete kind={} tag={} reports={}",
++                                                 kind, pending.begin()->first,
++                                                 pending.begin()->second.size()));
++#endif
++      }
++      pending.erase(pending.begin());
++    }
++    return;
++  }
++
++  m_sd_judged[kind] = std::max(m_sd_judged[kind], tag);
++  const StateReport& reference = reports.at(players.front());
++  u8 comps = 0;
++  for (const PlayerId id : players)
++    comps |= StateReportDiff(reference, reports.at(id));
++
++  if (comps != 0)
++  {
++    const bool confirmed = kind == 0 || ++m_sd_xd_streak[kind] >= STATE_XD_CONFIRM;
++#ifdef HAS_LIBMGBA
++    if (confirmed ? m_sd_detail_lines < STATE_DETAIL_MAX_LINES :
++                    m_sd_transient_lines < STATE_TRANSIENT_MAX_LINES)
++    {
++      ++(confirmed ? m_sd_detail_lines : m_sd_transient_lines);
++      std::string values;
++      for (const auto& [id, r] : reports)
++      {
++        values += fmt::format(" | pid={} in={:08x} xd={:08x} seed={:08x} crcA={:08x} crcB={:08x} "
++                              "crcC={:08x}",
++                              id, r.inputs, r.xd, r.seed, r.crc_a, r.crc_b, r.crc_c);
++      }
++      GBADetectLog::LogPostSession(fmt::format("statesync {} kind={} tag={} comp={}{}",
++                                               confirmed ? "mismatch-detail" : "xd-transient",
++                                               kind, tag, comps, values));
++    }
++#endif
++    if (confirmed && !m_sd_players_warned)
++    {
++      m_sd_players_warned = true;
++      SendStateMismatch(kind, tag, 0, 0, comps);
++    }
++  }
++  else
++  {
++    m_sd_xd_streak[kind] = 0;
++    agreed[tag] = reference;
++    while (agreed.size() > STATE_AGREED_MAX)
++      agreed.erase(agreed.begin());
++    // Spectators that reported this tag before the last player did.
++    for (const auto& [id, r] : reports)
++    {
++      if (std::ranges::find(players, id) == players.end())
++        CheckSpectatorReport(id, kind, tag, r, reference);
++    }
++  }
++  pending.erase(tag);
++}
++
++void NetPlayServer::CheckSpectatorReport(PlayerId pid, u8 kind, u32 tag, const StateReport& report,
++                                         const StateReport& agreed)
++{
++  const u8 comps = StateReportDiff(agreed, report);
++  u32& streak = m_sd_spec_streak[pid][kind];
++  if (comps == 0)
++  {
++    streak = 0;
++    return;
++  }
++  // The same confirmation as the players' XD state.
++  if (kind != 0 && ++streak < STATE_XD_CONFIRM)
++    return;
++  if (m_sd_spectators_warned.contains(pid))
++    return;
++  m_sd_spectators_warned.insert(pid);
++#ifdef HAS_LIBMGBA
++  GBADetectLog::LogPostSession(fmt::format(
++      "statesync mismatch-detail kind={} tag={} comp={} spectator={} in={:08x}/{:08x} "
++      "xd={:08x}/{:08x}",
++      kind, tag, comps, pid, report.inputs, agreed.inputs, report.xd, agreed.xd));
++#endif
++  SendStateMismatch(kind, tag, 1, pid, comps);
++}
++
++void NetPlayServer::SendStateMismatch(u8 kind, u32 tag, u8 scope, PlayerId spectator, u8 comps)
++{
++  sf::Packet spac;
++  spac << MessageID::StateMismatch << kind << tag << scope << spectator << comps;
++  std::lock_guard lkp(m_crit.players);
++  SendToClients(spac);
++}
++
++void NetPlayServer::SendXdNoticeToAll(XdNoticeKind kind, PlayerId who, u8 arg)
++{
++  sf::Packet spac;
++  spac << MessageID::XdNotice << static_cast<u8>(kind) << who << arg;
++  std::lock_guard lkp(m_crit.players);
++  SendToClients(spac);
++}
++
++// ---NETPLAY--- thread. A player's notice, checked against this server's own view before it is
++// relayed: only for the running game, "left" and "back" only from a player with a pad, "back"
++// only after a relayed "left", and "left" at most every XD_NOTICE_LEFT_REPEAT_MS.
++void NetPlayServer::OnXdNoticeFrom(const Client& player, u8 kind, u8 arg)
++{
++  const PlayerId pid = player.pid;
++  const bool in_game = m_is_running && player.current_game == m_current_game;
++  const u64 now = Common::Timer::NowMs();
++
++  switch (static_cast<XdNoticeKind>(kind))
++  {
++  case XdNoticeKind::LeftWindow:
++  {
++    if (!in_game || !PlayerHasControllerMapped(pid))
++      return;
++    if (const auto it = m_xd_away.find(pid); it != m_xd_away.end() && it->second == m_current_game)
++      return;
++    if (const auto it = m_xd_last_left_ms.find(pid);
++        it != m_xd_last_left_ms.end() && now - it->second < XD_NOTICE_LEFT_REPEAT_MS)
++    {
++      return;
++    }
++    m_xd_away[pid] = m_current_game;
++    m_xd_last_left_ms[pid] = now;
++    SendXdNoticeToAll(XdNoticeKind::LeftWindow, pid, 0);
++    break;
++  }
++  case XdNoticeKind::BackInWindow:
++  {
++    const auto it = m_xd_away.find(pid);
++    if (it == m_xd_away.end())
++      return;
++    const bool same_game = it->second == m_current_game;
++    m_xd_away.erase(it);
++    if (!in_game || !same_game)
++      return;
++    SendXdNoticeToAll(XdNoticeKind::BackInWindow, pid, 0);
++    break;
++  }
++  case XdNoticeKind::GbaStartFailed:
++  {
++    if (!in_game || arg > 3)
++      return;
++    const bool plays = PlayerHasControllerMapped(pid);
++#ifdef HAS_LIBMGBA
++    GBADetectLog::LogPostSession(
++        fmt::format("gba-start-failed pid={} port={} plays={}", pid, arg, plays ? 1 : 0));
++#endif
++    SendXdNoticeToAll(plays ? XdNoticeKind::GbaStartFailed : XdNoticeKind::GbaStartFailedWatcher,
++                      pid, arg);
++    sf::Packet spac;
++    spac << MessageID::StopGame;
++    if (plays)
++    {
++      // The battle cannot go on: that machine's XD sees no GBA where every other one sees one.
++      // Same as a StopGame from a player.
++      m_is_running = false;
++      std::lock_guard lkp(m_crit.players);
++      SendToClients(spac);
++    }
++    else
++    {
++      // A spectator's copy is its own: stop only that one.
++      std::lock_guard lkp(m_crit.players);
++      Send(player.socket, spac);
++    }
++    break;
++  }
++  default:
++    break;
++  }
++}
++
+ // called from ---GUI--- thread
+ void NetPlayServer::SendXdNote(PlayerId pid, const std::string& msg)
+ {
+diff --git a/Source/Core/Core/NetPlayServer.h b/Source/Core/Core/NetPlayServer.h
+index 0b2b5c6..856c390 100644
+--- a/Source/Core/Core/NetPlayServer.h
++++ b/Source/Core/Core/NetPlayServer.h
+@@ -5,6 +5,7 @@
+ 
+ #include <SFML/Network/Packet.hpp>
+ 
++#include <array>
+ #include <atomic>
+ #include <functional>
+ #include <map>
+@@ -186,6 +187,17 @@ public:
+ 
+   bool is_connected = false;
+ 
++  // One machine's XD Netplay state check report for one tag (MessageID::StateDigest).
++  struct StateReport
++  {
++    u32 inputs = 0;
++    u32 xd = 0;
++    u32 seed = 0;
++    u32 crc_a = 0;
++    u32 crc_b = 0;
++    u32 crc_c = 0;
++  };
++
+ private:
+   class Client
+   {
+@@ -285,6 +297,23 @@ private:
+   // ---NETPLAY--- thread only, once per second off the ping tick.
+   void UpdateAutoPadBuffer();
+ 
++  // XD Netplay state check and room notices (v1.7.5). ---NETPLAY--- thread only.
++  void OnStateDigest(PlayerId pid, u8 kind, u32 tag, const StateReport& report);
++  void CheckSpectatorReport(PlayerId pid, u8 kind, u32 tag, const StateReport& report,
++                            const StateReport& agreed);
++  void SendStateMismatch(u8 kind, u32 tag, u8 scope, PlayerId spectator, u8 comps);
++  // The automatic buffer's view of the players' PadHealth reports since the last 1 Hz tick.
++  struct PadHealthTick
++  {
++    bool all_reported = true;  // every player in the game reported since the last tick
++    bool low = false;          // a player had fewer than AUTOBUF_KEEP_DEPTH entries of slack
++    bool starving = false;     // a player waited on most pops with an empty queue
++    std::string detail;
++  };
++  PadHealthTick TakePadHealthTick();
++  void OnXdNoticeFrom(const Client& player, u8 kind, u8 arg);
++  void SendXdNoticeToAll(XdNoticeKind kind, PlayerId who, u8 arg);
++
+   // pulled from OnConnect()
+   void AssignNewUserAPad(const Client& player);
+   // pulled from OnConnect()
+@@ -324,6 +353,40 @@ private:
+   unsigned int m_auto_buffer_lower_streak = 0;
+   u64 m_auto_buffer_quiet_until_ms = 0;
+   u64 m_auto_buffer_last_change_ms = 0;
++  // PadHealth (v1.7.5): what each player reported since the last tick. A lower goes through only
++  // while every player keeps slack; a player that keeps waiting gets a cushion (why=cushion).
++  struct PadHealthState
++  {
++    bool reported = false;
++    bool low = false;
++    bool starving = false;
++    std::string detail;
++  };
++  std::map<PlayerId, PadHealthState> m_pad_health;
++  u32 m_auto_buffer_cushion_streak = 0;
++  bool m_auto_buffer_veto_logged = false;
++
++  // XD Netplay state check (OnStateDigest), all ---NETPLAY--- thread, indexed by report kind
++  // (0 inputs, 1-4 XD state at GBA port kind-1). m_sd_game is the game the rest belongs to.
++  // m_sd_pending: reports per tag still waiting for a player's. m_sd_agreed: the players' common
++  // report per tag, kept a while for spectators, who report later. m_sd_xd_streak: consecutive
++  // judged XD tags that differed; one alone is logged, two in a row are announced.
++  static constexpr size_t STATE_KINDS = 5;
++  u32 m_sd_game = 0;
++  std::array<std::map<u32, std::map<PlayerId, StateReport>>, STATE_KINDS> m_sd_pending;
++  std::array<std::map<u32, StateReport>, STATE_KINDS> m_sd_agreed;
++  std::array<u32, STATE_KINDS> m_sd_judged{};  // the newest tag the players were compared for
++  std::array<u32, STATE_KINDS> m_sd_xd_streak{};
++  bool m_sd_players_warned = false;
++  u32 m_sd_detail_lines = 0;
++  u32 m_sd_transient_lines = 0;
++  bool m_sd_incomplete_logged = false;
++  std::unordered_set<PlayerId> m_sd_spectators_warned;
++  std::map<PlayerId, std::array<u32, STATE_KINDS>> m_sd_spec_streak;
++  // XD Netplay notices: players away from the game window (pid -> game), and when each last
++  // left, for the rate limit.
++  std::map<PlayerId, u32> m_xd_away;
++  std::map<PlayerId, u64> m_xd_last_left_ms;
+ 
+   std::map<PlayerId, Client> m_players;
+ 
+diff --git a/Source/Core/Core/PatchEngine.cpp b/Source/Core/Core/PatchEngine.cpp
+index 77ad160..3993a64 100644
+--- a/Source/Core/Core/PatchEngine.cpp
++++ b/Source/Core/Core/PatchEngine.cpp
+@@ -235,6 +235,51 @@ void LoadPatches()
+     for (const ActionReplay::ARCode& code : active)
+       for (const ActionReplay::AREntry& op : code.ops)
+         GBADetectLog::NoteBoot(fmt::format("ar op {:08X} {:08X}", op.cmd_addr, op.value));
++
++    // v1.7.5: the other two code paths that write game memory. Neither is synced by netplay:
++    // OnFrame patches come from each machine's own INIs (a player can tick the shipped savestate
++    // patch in Game Properties) and Gecko codes are synced but filtered locally. Log only; the two
++    // players' crc32= values must match like the 'ar active' ones.
++    std::string frame_blob;
++    size_t frame_patches = 0;
++    size_t frame_lines = 0;
++    for (const Patch& patch : s_on_frame)
++    {
++      if (!patch.enabled)
++        continue;
++      ++frame_patches;
++      for (const PatchEntry& entry : patch.entries)
++      {
++        frame_blob += fmt::format("{} {:08X} {:08X} {:08X} {}\n", static_cast<int>(entry.type),
++                                  entry.address, entry.value, entry.comparand,
++                                  entry.conditional ? 1 : 0);
++        ++frame_lines;
++      }
++    }
++    size_t debugger_patches = 0;
++    {
++      std::lock_guard lock(s_on_frame_memory_mutex);
++      debugger_patches = s_on_frame_memory.size();
++    }
++    // debugger= counts memory patches applied from the debugger each frame: they should be 0.
++    GBADetectLog::NoteBoot(
++        fmt::format("onframe active patches={} lines={} debugger={} crc32={:08x}", frame_patches,
++                    frame_lines, debugger_patches, Common::ComputeCRC32(frame_blob)));
++
++    const std::vector<Gecko::GeckoCode> gecko = Gecko::GetActiveCodesSnapshot();
++    std::string gecko_blob;
++    size_t gecko_lines = 0;
++    for (const Gecko::GeckoCode& code : gecko)
++    {
++      for (const Gecko::GeckoCode::Code& line : code.codes)
++      {
++        gecko_blob += fmt::format("{:08X} {:08X}\n", line.address, line.data);
++        ++gecko_lines;
++      }
++    }
++    GBADetectLog::NoteBoot(fmt::format("gecko active cheats={} codes={} lines={} crc32={:08x}",
++                                       Config::AreCheatsEnabled() ? 1 : 0, gecko.size(),
++                                       gecko_lines, Common::ComputeCRC32(gecko_blob)));
+   }
+ #endif
+ 
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+index 13fef89..fe715b6 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+@@ -48,6 +48,7 @@
+ #include "Common/TraversalClient.h"
+ #include "Core/NetPlayCommon.h"
+ 
++#include "Core/AchievementManager.h"
+ #include "Core/Boot/Boot.h"
+ #include "Core/Config/GraphicsSettings.h"
+ #include "Core/Config/MainSettings.h"
+@@ -650,6 +651,20 @@ void NetPlayDialog::OnStart()
+       DisplayMessage(tr("Can't start: the last battle is still closing."), "red");
+       return;
+     }
++    // The previous game's GBA cores write their saves back as they shut down, which can land
++    // after this Start has read and sent them: wait until emulation is fully down.
++    if (!Core::IsUninitialized(Core::System::GetInstance()))
++    {
++      DisplayMessage(tr("Can't start: the last battle is still closing."), "red");
++      return;
++    }
++    // Hardcore mode filters this machine's Action Replay codes, not the synced copy the other
++    // player runs, so the two would play different rules.
++    if (AchievementManager::GetInstance().IsHardcoreModeActive())
++    {
++      DisplayMessage(tr("Can't start: RetroAchievements hardcore mode is on."), "red");
++      return;
++    }
+     // The room's format is what every player was shown. The non-modal
+     // launcher can write the key while a room is open, so put it back before
+     // PrepareForStart reads it.
+@@ -1091,6 +1106,18 @@ void NetPlayDialog::AppendChat(const std::string& msg)
+   QApplication::alert(this);
+ }
+ 
++// The room chat only: DisplayMessage would also draw the line over the running game, and XD
++// Netplay's in-battle notices must not appear on screen during the GBA link.
++void NetPlayDialog::AppendChatQuiet(const std::string& msg)
++{
++  const QString text = QString::fromStdString(msg);
++  QueueOnObject(m_chat_edit, [this, text] {
++    m_chat_edit->append(QStringLiteral("<font color='%1'>%2</font>")
++                            .arg(QStringLiteral("darkorange"), text.toHtmlEscaped()));
++    QApplication::alert(this);
++  });
++}
++
+ std::string NetPlayDialog::OnTeamSubmission(const std::string& player, const std::string& text)
+ {
+   // Host side, NETPLAY thread. The write must finish before we return: the
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
+index 81f5f8c..6c904e4 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
+@@ -57,6 +57,7 @@ public:
+ 
+   void Update() override;
+   void AppendChat(const std::string& msg) override;
++  void AppendChatQuiet(const std::string& msg) override;
+   std::string OnTeamSubmission(const std::string& player, const std::string& text) override;
+   bool OnXdGuestSlotReset() override;
+   void OnRoomClosed() override;
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index e0c2605..43b8a09 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -1243,6 +1243,15 @@ void XDLauncherDialog::OnBootSolo()
+                                  tr("A game is running. Boot solo after it ends."));
+     return;
+   }
++  // Nor while a room is open: between games, and while a Start is still sending the saves and
++  // codes, no game runs, yet the rewrite below would change what this machine boots.
++  if (XDNetplay::BattleCustomizer::IsNetplaySessionActive() ||
++      Settings::Instance().GetNetPlayClient() || Settings::Instance().GetNetPlayServer())
++  {
++    ModalMessageBox::information(this, tr("OrreLink"),
++                                 tr("A netplay room is open. Close it to boot solo."));
++    return;
++  }
+ 
+   const auto game = FindXdGame();
+   if (!game)
+diff --git a/Source/Core/UICommon/XDNetplay/SaveImport.cpp b/Source/Core/UICommon/XDNetplay/SaveImport.cpp
+index d42e4dd..3dd69fb 100644
+--- a/Source/Core/UICommon/XDNetplay/SaveImport.cpp
++++ b/Source/Core/UICommon/XDNetplay/SaveImport.cpp
+@@ -7,6 +7,7 @@
+ #include <string_view>
+ #include <utility>
+ 
++#include "UICommon/XDNetplay/BattleCustomizer.h"
+ #include "UICommon/XDNetplay/DisposableSave.h"
+ 
+ #include <fmt/format.h>
+@@ -160,10 +161,14 @@ bool RefuseIfSaveIsLive(int device, const std::string& save_path, std::string* e
+   // imported port to a disposable save at creation (DisposableSave.h), and an
+   // import landing NOW would bypass that swap -- the next Start would sync the
+   // complete file to the guest, the exact leak the disposable exists to close.
+-  if (NetPlay::IsNetPlayRunning())
++  // NetPlay::IsNetPlayRunning() alone is GAME-scoped: false in the lobby and while a Start is
++  // still syncing saves, which is exactly when an import would give the two machines different
++  // parties (the host's save already shipped, the file it boots rewritten). The room is open from
++  // BattleCustomizer::BeginSession until it closes.
++  if (NetPlay::IsNetPlayRunning() || BattleCustomizer::IsNetplaySessionActive())
+   {
+     if (error)
+-      *error = "A netplay room is open — close it first, then import.";
++      *error = "A netplay room is open. Close it to import.";
+     return true;
+   }
+   return false;
+diff --git a/Source/Core/UICommon/XDNetplay/Version.h b/Source/Core/UICommon/XDNetplay/Version.h
+index 56bd8da..556e150 100644
+--- a/Source/Core/UICommon/XDNetplay/Version.h
++++ b/Source/Core/UICommon/XDNetplay/Version.h
+@@ -11,5 +11,5 @@ namespace XDNetplay
+ // fork's release, so it cannot answer "which XD Netplay am I?" -- this constant is the only thing
+ // that can. It MUST be bumped in the same patch that a release is tagged from: ship a tag ahead of
+ // this string and every user of that release is told they are out of date forever.
+-constexpr char VERSION[] = "1.7.4";
++constexpr char VERSION[] = "1.7.5";
+ }  // namespace XDNetplay
+-- 
+2.39.5 (Apple Git-154)
+
