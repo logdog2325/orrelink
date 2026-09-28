@@ -92,12 +92,15 @@ object XdMatchmaker {
      */
     fun pickMatch(sessions: List<LobbySession>): LobbySession? {
         val localVersion = NetPlayIndexBridge.localVersion
+        // A Multi room is a tester's, waiting for three more players, not a 1v1 opponent.
+        val multiTag = FormatBridge.sessionTag(FormatBridge.FORMAT_MULTI)
         return sessions.firstOrNull { session ->
             session.version == localVersion &&
                 session.isXdBattle &&
                 session.playerCount == 1 &&
                 !session.inGame &&
-                !session.hasPassword
+                !session.hasPassword &&
+                !session.name.startsWith(multiTag)
         }
     }
 

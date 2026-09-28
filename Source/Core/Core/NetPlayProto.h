@@ -294,6 +294,10 @@ enum class XdNoticeKind : u8
   GbaStartFailed = 2,  // arg: the SI port (0-3) whose GBA core did not start
   // Server -> clients only: the same, from a player who only watches; the battle goes on.
   GbaStartFailedWatcher = 3,
+  // 4 is kept for a later per-seat notice.
+  // Server -> clients only, who = 0: a Multi battle's worst route needs more input delay than the
+  // cap (once per game, mid-battle; the copy before the boot goes out as a plain chat line).
+  DelayAtLimit = 5,
 };
 
 enum class ConnectionError : u8
@@ -361,6 +365,10 @@ PadDetails GetPadDetails(int pad_num);
 // netplay game, -1 when that GBA is not this machine's; outside a netplay game, the channel
 // itself. Lock-free (atomics filled at OnStartGame): safe from a UI thread per input event.
 int GbaInputPadFor(int channel);
+// Whether this machine's local GameCube pad `local_pad` plays a GameCube port in the running
+// netplay game (a joiner's never does: its only ports are GBAs); outside a netplay game, true.
+// Lock-free, like GbaInputPadFor.
+bool LocalGcPadPlays(int local_pad);
 // True when netplay is running and the calling core is the one booted for the current game.
 // Takes crit_netplay_client: never call it from anything NetPlay_GetInput calls.
 bool IsCurrentGameCore();

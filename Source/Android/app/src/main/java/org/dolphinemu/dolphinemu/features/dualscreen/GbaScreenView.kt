@@ -54,9 +54,6 @@ class GbaScreenView @JvmOverloads constructor(
     // resolved once per visible-device change: in netplay a GBA's input comes from its owner's
     // local pad, not from the pad with the channel's number. NO_DEVICE: not this player's GBA.
     private var inputPad = GbaHostBridge.NO_DEVICE
-    // The visible GBA is the XD Multi port: its controller must stay usable, so this view never
-    // takes input focus from it.
-    private var inputConvertedPort = false
     private var title = ""
     private var titleVisible = true
     private var consumingFrames = false
@@ -275,7 +272,6 @@ class GbaScreenView @JvmOverloads constructor(
         } else {
             GbaHostBridge.NO_DEVICE
         }
-        inputConvertedPort = deviceNumber in 0..3 && GbaHostBridge.isConvertedPort(deviceNumber)
         title = displayTitle(info)
         resetTitleVisibility()
         bitmap = null
@@ -578,9 +574,9 @@ class GbaScreenView @JvmOverloads constructor(
         // Never steer a GBA this player does not own. Outside netplay isLocal is
         // always true, so solo is unchanged; in netplay the remote player's
         // handheld stays theirs no matter what ends up on screen.
-        // The XD Multi port is the player's GameCube controller too: focusing its GBA would block
-        // that controller, so it takes touch input without focus.
-        if (inputPad in 0..3 && visibleInfo?.isLocal != false && !inputConvertedPort) {
+        // Focus is also what opens the GBA pad's input gate (InputOverrider), touch included. On the
+        // XD Multi port it blocks no GameCube port: SI port 1 is then device 14, not a GC pad type.
+        if (inputPad in 0..3 && visibleInfo?.isLocal != false) {
             GbaInputFocusManager.requestFocus(inputPad)
         }
     }

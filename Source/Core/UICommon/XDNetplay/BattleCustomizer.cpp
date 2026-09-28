@@ -968,7 +968,9 @@ static std::string TimerSummary()
 
 // Multi (layout 3, XD's "GBA + GBA VS GBA + GBA"): the menu globals. Layout 3 is the four-GBA
 // tag layout (>= 2 forces tag at commit); pairing 0 is the seat order the layout table pairs as
-// ports {1,2} vs {3,4}; rules Custom 1 as for the 1v1 formats.
+// ports {1,2} vs {3,4}; rules Custom 1 as for the 1v1 formats. Like every line here the pairing
+// is written each frame, so in phase 1 the sides are fixed by seat: if XD's post-battle "change
+// combination" edits this word (test S1c), the pin puts it back before the next battle.
 constexpr u32 MULTI_MENU_GLOBAL_LINES[][2] = {
     {0x044349EC, 0x00000003},  // player layout = GBA + GBA VS GBA + GBA
     {0x044349E4, 0x00000000},  // pairing

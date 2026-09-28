@@ -204,20 +204,27 @@ u32 AutoBufferTargetForPing(u32 ping_ms, u32 max_frames)
   return std::clamp(AutoBufferFramesForPing(ping_ms), AUTOBUF_MIN_FRAMES, max_frames);
 }
 
-// Multi: the worst guest-to-guest route, from the pings of the guests that play (host to each):
-// the two largest summed, plus the relay; one guest alone is just its own ping.
+// A guest's ping as MultiRoutePing takes it: 0 only while its first pong is still out (unknown,
+// not fast); a measured 0 ms (a LAN guest) counts as 1.
+u32 MultiGuestPing(bool has_ping, u32 ping)
+{
+  return has_ping ? std::max<u32>(ping, 1) : 0;
+}
+
+// Multi: the worst guest-to-guest route, from the pings of the guests that play (host to each,
+// through MultiGuestPing): the two largest summed, plus the relay; one guest alone is just its own
+// ping. 0 while any of them is unknown.
 u32 MultiRoutePing(std::vector<u32> guest_pings)
 {
-  std::ranges::sort(guest_pings, std::greater<>());
-  if (guest_pings.empty())
+  if (guest_pings.empty() || std::ranges::find(guest_pings, 0u) != guest_pings.end())
     return 0;
+  std::ranges::sort(guest_pings, std::greater<>());
   if (guest_pings.size() == 1)
     return guest_pings[0];
-  if (guest_pings[0] == 0 || guest_pings[1] == 0)
-    return 0;  // a guest's first pong is still out: unknown, not fast
   return guest_pings[0] + guest_pings[1] + AUTOBUF_MULTI_RELAY_MS;
 }
 
+// Before the boot only (StartGame); mid-battle it goes as XdNoticeKind::DelayAtLimit.
 constexpr const char* MULTI_DELAY_LIMIT_LINE =
     "Input delay is at its limit for this room. Expect slowdown.";
 }  // namespace
@@ -1020,8 +1027,11 @@ void NetPlayServer::UpdateAutoPadBuffer()
   // A Multi room: every machine waits on every other, and the worst route runs guest to guest
   // through the host, so the need is sized from the two slowest guests' pings summed
   // (MultiRoutePing). In its lobby the players are the host and the seat holders (the lobby pad
-  // map is 1v1-shaped); in a game the pad map decides, as below.
+  // map is 1v1-shaped); in a game the pad map decides, as below. The same seat rule sizes a lobby
+  // whose pad map a Multi game left behind ({host, s2, s3, s4} until the next Start maps again),
+  // so a room that goes back to 1v1 is sized for the host and its Seat 3, not the old seats.
   const bool multi = IsXdMultiRoom();
+  const bool lobby_by_seat = !m_is_running && (multi || m_xd_multi_wire);
   const u32 max_frames = multi ? AUTOBUF_MAX_FRAMES_MULTI : AUTOBUF_MAX_FRAMES;
   u32 max_ping = 0;
   bool any_mapped = false;
@@ -1031,7 +1041,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
     // In the lobby a watcher can still hold a pad slot from AssignNewUserAPad, and nobody waits
     // on it. In a game the pad map decides: a seated player who ticked Watch only during the
     // save sync still plays this battle.
-    const bool plays = multi && !m_is_running ?
+    const bool plays = lobby_by_seat ?
                            (client.IsHost() || client.xd_seat != 0) :
                            PlayerHasControllerMapped(pid) && !(client.xd_watching && !m_is_running);
     if (!plays)
@@ -1039,7 +1049,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
     any_mapped = true;
     max_ping = std::max(max_ping, client.ping);
     if (!client.IsHost())
-      guest_pings.push_back(client.ping);
+      guest_pings.push_back(MultiGuestPing(client.has_ping, client.ping));
   }
   if (!any_mapped)
   {
@@ -1047,7 +1057,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
     {
       max_ping = std::max(max_ping, client.ping);
       if (!client.IsHost())
-        guest_pings.push_back(client.ping);
+        guest_pings.push_back(MultiGuestPing(client.has_ping, client.ping));
     }
   }
   if (multi)
@@ -1061,11 +1071,13 @@ void NetPlayServer::UpdateAutoPadBuffer()
   const u32 current = m_target_buffer_size;
   const char* const multi_field = multi ? " multi=1" : "";
 
-  // Multi: the worst route needs more than the cap. Said once per game, in the room chat.
+  // Multi: the worst route needs more than the cap. Said once per game, in the room chat only:
+  // this is mid-battle, so it goes as a notice each client writes with AppendChatQuiet (a plain
+  // chat line would also be drawn over the game).
   if (multi && m_is_running && AutoBufferFramesForPing(max_ping) > max_frames &&
       !m_auto_buffer_limit_warned.exchange(true))
   {
-    SendChatMessage(MULTI_DELAY_LIMIT_LINE);
+    SendXdNoticeToAll(XdNoticeKind::DelayAtLimit, 0, 0);
   }
 
   // Players report PadHealth only while a game runs; in the lobby ping alone decides, as before.
@@ -1674,6 +1686,7 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     if (m_ping_key == ping_key)
     {
       player.ping = ping;
+      player.has_ping = true;
     }
 
     sf::Packet spac;
@@ -2495,7 +2508,7 @@ bool NetPlayServer::StartGame()
       for (const auto& [pid, client] : m_players)
       {
         if (!client.IsHost() && PlayerHasControllerMapped(pid))
-          guest_pings.push_back(client.ping);
+          guest_pings.push_back(MultiGuestPing(client.has_ping, client.ping));
       }
     }
     const u32 ping_eff = MultiRoutePing(guest_pings);
@@ -3430,16 +3443,33 @@ XdStartClaim NetPlayServer::ClaimXdStart()
       const Client& holder = m_players.at(pid);
       claim.seats[i] = {holder.pid, holder.xd_serial, holder.name, holder.xd_stage};
     }
-    // Tester switch: two machines play all four seats. Only empty seats are filled.
+    // Tester switch: two machines play all four seats. Only the claim changes; the lobby seats
+    // and m_xd_start_seats (the leave check) keep the real holders.
     if (fill_seats)
     {
-      if (claim.seats[0].pid == 0)
+      const auto host = m_players.find(1);
+      const XdStartClaim::Seat host_seat = {
+          1, 0, host != m_players.end() ? host->second.name : std::string{}, true};
+      const auto seated = std::ranges::count_if(
+          claim.seats, [](const XdStartClaim::Seat& seat) { return seat.pid != 0; });
+      if (seated == 1)
       {
-        const auto host = m_players.find(1);
-        claim.seats[0] = {1, 0, host != m_players.end() ? host->second.name : std::string{}, true};
+        // One guest, on whichever seat the join order gave it: the host plays Seat 2 and the
+        // guest plays Seats 3 and 4.
+        const XdStartClaim::Seat guest = *std::ranges::find_if(
+            claim.seats, [](const XdStartClaim::Seat& seat) { return seat.pid != 0; });
+        claim.seats = {host_seat, guest, guest};
       }
-      if (claim.seats[2].pid == 0 && claim.seats[1].pid != 0)
-        claim.seats[2] = claim.seats[1];
+      else
+      {
+        // Only empty seats are filled: Seat 2 by the host, Seat 3 or 4 by the other opponent.
+        if (claim.seats[0].pid == 0)
+          claim.seats[0] = host_seat;
+        if (claim.seats[2].pid == 0 && claim.seats[1].pid != 0)
+          claim.seats[2] = claim.seats[1];
+        else if (claim.seats[1].pid == 0 && claim.seats[2].pid != 0)
+          claim.seats[1] = claim.seats[2];
+      }
     }
     // Multi never touches the GBA 2 slot (device 2): its teams are staged per player.
     m_xd_start_opponent = 0;
