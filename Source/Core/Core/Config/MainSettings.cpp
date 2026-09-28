@@ -429,6 +429,9 @@ const Info<int> MAIN_XD_STYLE_VENUE{{System::Main, "XDNetplay", "StyleVenue"}, 0
 const Info<int> MAIN_XD_FORMAT{{System::Main, "XDNetplay", "Format"},
                               1};  // FormatRules::FORMAT_ORRE_COLOSSEUM
 const Info<bool> MAIN_XD_MULTI_ENABLED{{System::Main, "XDNetplay", "MultiEnabled"}, false};
+const Info<bool> MAIN_XD_MULTI_FILL_SEATS{{System::Main, "XDNetplay", "MultiFillSeats"}, false};
+const Info<bool> MAIN_XD_MULTI_PREVIEW_CANCEL_PIN{
+    {System::Main, "XDNetplay", "MultiPreviewCancelPin"}, false};
 const Info<bool> MAIN_XD_TIMER_ENABLED{{System::Main, "XDNetplay", "TimerEnabled"}, false};
 const Info<int> MAIN_XD_TIMER_TURN_SECONDS{{System::Main, "XDNetplay", "TimerTurnSeconds"}, 60};
 const Info<int> MAIN_XD_TIMER_GAME_MINUTES{{System::Main, "XDNetplay", "TimerGameMinutes"}, 20};

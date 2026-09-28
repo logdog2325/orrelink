@@ -14,7 +14,9 @@
 
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
+#include "Core/Core.h"
 #include "Core/CoreTiming.h"
+#include "Core/HLE/HLE_XD.h"
 #include "Core/HW/GBADetectLog.h"
 #include "Core/HW/GBAPad.h"
 #include "Core/HW/GCPad.h"
@@ -22,6 +24,7 @@
 #include "Core/HW/SI/SI.h"
 #include "Core/HW/SI/SI_DeviceGBAEmu.h"
 #include "Core/HW/SI/SI_DeviceGCController.h"
+#include "Core/HW/SI/XDMultiCtl.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/Movie.h"
 #include "Core/NetPlayProto.h"
@@ -68,11 +71,15 @@ constexpr u32 CTX_ERROR = 7;
 constexpr u32 MODE_MULTI = 3;
 
 constexpr u16 COMBO_BUTTONS = PAD_BUTTON_X | PAD_BUTTON_Y | PAD_TRIGGER_L | PAD_TRIGGER_R;
-constexpr u16 GBA_KEY_MASK = PAD_BUTTON_A | PAD_BUTTON_B | PAD_TRIGGER_Z | PAD_BUTTON_START |
-                             PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_UP |
-                             PAD_BUTTON_DOWN | PAD_TRIGGER_R | PAD_TRIGGER_L;
 constexpr int STICK_DEADZONE = 48;
 constexpr u8 TRIGGER_DIGITAL = 0xC0;
+// A re-plugged GBA stays silent this many pops of this device (about 150 ms at XD's 120 polls a
+// second, the old tick-based window), so XD's type table sees it absent.
+constexpr u32 REPLUG_SILENT_POPS = 18;
+// Post-battle, when the socket-1 wait hook is installed (HLE_XD): the hook replaces both the 1 s
+// quiet rule and the 5 s late rule. Set this to true to keep the 5 s rule next to the hook (the
+// fallback if a converted GBA turns out unable to drive XD's post-battle menu).
+constexpr bool KEEP_POST_BATTLE_LATE_WITH_HOOK = false;
 
 enum WantReason : u8
 {
@@ -85,6 +92,7 @@ enum WantReason : u8
   WANT_MODE_EXIT,
   WANT_ORPHAN,
   WANT_LINK_LOST,
+  WANT_SOCKET1_WAIT,
 };
 
 const char* WantReasonName(u8 reason)
@@ -107,6 +115,8 @@ const char* WantReasonName(u8 reason)
     return "orphan";
   case WANT_LINK_LOST:
     return "link-lost";
+  case WANT_SOCKET1_WAIT:
+    return "socket1-wait";
   default:
     return "none";
   }
@@ -149,7 +159,16 @@ CSIDevice_XDMultiPort::CSIDevice_XDMultiPort(Core::System& system, SIDevices dev
   {
     m_gba = std::make_unique<CSIDevice_GBAEmu>(system, SIDEVICE_GC_GBA_EMULATED, device_number);
     m_mode_tick = now;
-    Log(now, "init ch=0 mode=pad armed=1", true);
+    // This game's CPU thread, before any pop; the previous game's has ended. A command the last
+    // game posted and never applied must not reach this one.
+    XDMultiCtl::Reset();
+    m_boot_seq = Core::GetBootSequence();
+    m_netplay = NetPlay::IsNetPlayRunning();
+    m_is_local = !m_netplay || NetPlay::GetPadDetails(0).is_local;
+    Log(now,
+        fmt::format("init ch=0 mode=pad armed=1 netplay={} plans={}", m_netplay ? 1 : 0,
+                    m_is_local ? 1 : 0),
+        true);
   }
   else
   {
@@ -210,10 +229,88 @@ GCPadStatus CSIDevice_XDMultiPort::ToGba(const GCPadStatus& pad)
   return out;
 }
 
-void CSIDevice_XDMultiPort::EvaluateTransitions(u64 now, bool en0)
+u16 CSIDevice_XDMultiPort::KeysToPadButtons(u16 keys)
+{
+  // CSIDevice_GBAEmu::GbaKeysFromPad's order, inverted.
+  static constexpr std::array<u16, 10> buttons = {
+      PAD_BUTTON_A,     PAD_BUTTON_B,    PAD_TRIGGER_Z, PAD_BUTTON_START, PAD_BUTTON_RIGHT,
+      PAD_BUTTON_LEFT,  PAD_BUTTON_UP,   PAD_BUTTON_DOWN, PAD_TRIGGER_R, PAD_TRIGGER_L};
+  u16 out = 0;
+  for (size_t i = 0; i < buttons.size(); ++i)
+  {
+    if ((keys >> i) & 1)
+      out |= buttons[i];
+  }
+  return out;
+}
+
+CSIDevice_XDMultiPort::Sample CSIDevice_XDMultiPort::PopSynced()
+{
+  // Exactly one synced pad pop per call. Solo also reads the GBA window here: GetGBAStatus
+  // consumes its reset request, so it is sampled once, never in netplay or movie playback.
+  auto& movie = m_system.GetMovie();
+  const bool netplay_now = NetPlay::IsNetPlayRunning();
+  const bool solo = !netplay_now && !movie.IsPlayingInput();
+  Sample sample;
+  GCPadStatus gl{};
+  if (!netplay_now)
+    sample.pad = Pad::GetStatus(m_device_number);
+  if (solo)
+    gl = Pad::GetGBAStatus(m_device_number);
+  CSIDevice_GCController::HandleMoviePadStatus(movie, m_device_number, &sample.pad);
+  m_controller->ApplyOriginRequest(sample.pad);
+  ++m_pops;
+  if (m_silent_pops > 0)
+    --m_silent_pops;
+
+  if (m_netplay && netplay_now)
+  {
+    // The Multi wire (XDMultiCtl.h): keys and control in the analog bytes, which XD then sees
+    // rebuilt from the A/B buttons exactly as GCPadEmu builds them.
+    const u8 a = sample.pad.analogA;
+    const u8 b = sample.pad.analogB;
+    sample.reset = (b & XDMultiCtl::WIRE_RESET) != 0;
+    sample.cmd = (b & XDMultiCtl::WIRE_CMD_MASK) >> XDMultiCtl::WIRE_CMD_SHIFT;
+    sample.keys = static_cast<u16>(
+        a | (((b & XDMultiCtl::WIRE_KEYS_HI_MASK) >> XDMultiCtl::WIRE_KEYS_HI_SHIFT) << 8));
+    sample.pad.analogA = (sample.pad.button & PAD_BUTTON_A) ? 0xFF : 0x00;
+    sample.pad.analogB = (sample.pad.button & PAD_BUTTON_B) ? 0xFF : 0x00;
+  }
+  else
+  {
+    sample.keys = CSIDevice_GBAEmu::GbaKeysFromPad(gl) & 0x3FF;
+    sample.reset = (gl.button & PAD_BUTTON_X) != 0;
+  }
+  m_last_buttons = sample.pad.button;
+  return sample;
+}
+
+void CSIDevice_XDMultiPort::ApplyCtl(const Sample& sample, u64 now)
+{
+  if (sample.cmd == XDMultiCtl::CMD_NONE)
+    return;
+  // No latch and no other condition: every machine pops this entry at the same poll and runs the
+  // same command there. A GBA transfer still in flight drains to the inner GBA (RunBuffer).
+  Execute(sample.cmd, XDMultiCtl::CommandName(sample.cmd), now);
+  if (m_is_local)
+    XDMultiCtl::MarkApplied();
+}
+
+void CSIDevice_XDMultiPort::ApplyGbaInput(const Sample& sample, bool keys_active)
+{
+  // The GBA sees its keys only while port 1 is a GBA; the Reset (X) reaches it in every mode,
+  // like the plain GBA device's.
+  GCPadStatus g = keys_active ? ToGba(sample.pad) : GCPadStatus{};
+  if (keys_active)
+    g.button |= KeysToPadButtons(sample.keys);
+  if (sample.reset)
+    g.button |= PAD_BUTTON_X;
+  m_gba->ApplyPadStatus(g);
+}
+
+void CSIDevice_XDMultiPort::EvaluateTransitions(u64 now, bool en0, const XdRam& ram)
 {
   const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
-  const XdRam ram = ReadXdRam();
 
   const bool at_prompt = ram.is_xd && ram.ctxmode == MODE_MULTI && ram.ctx[0] == CTX_PROMPT &&
                          ram.ctxch == 0;
@@ -277,7 +374,7 @@ void CSIDevice_XDMultiPort::EvaluateTransitions(u64 now, bool en0)
   if (!ram.is_xd && m_mode != Mode::Pad)
   {
     if (!m_gba_pending)
-      SwitchMode(Mode::Pad, "not-xd", ram, now);
+      Decide(XDMultiCtl::CMD_TO_PAD, "not-xd", now);
   }
   else
   {
@@ -294,8 +391,6 @@ void CSIDevice_XDMultiPort::EvaluateTransitions(u64 now, bool en0)
       break;
     }
   }
-
-  LogDiagnostics(ram, en0, now);
 
   m_ctx_prev = ram.ctx;
   m_errflag_prev = ram.errflag;
@@ -321,7 +416,7 @@ void CSIDevice_XDMultiPort::EvaluatePad(const XdRam& ram, bool at_prompt, bool p
     if (m_trigger_streak >= 2)
     {
       m_armed = false;
-      SwitchMode(Mode::Unplug, "socket1", ram, now);
+      Decide(XDMultiCtl::CMD_TO_UNPLUG, "socket1", now);
     }
     return;
   }
@@ -334,7 +429,7 @@ void CSIDevice_XDMultiPort::EvaluatePad(const XdRam& ram, bool at_prompt, bool p
       return;
     }
     Log(now, "combo-fired");
-    SwitchMode(Mode::Unplug, "combo", ram, now);
+    Decide(XDMultiCtl::CMD_TO_UNPLUG, "combo", now);
   }
 }
 
@@ -344,13 +439,13 @@ void CSIDevice_XDMultiPort::EvaluateUnplug(const XdRam& ram, bool at_prompt, boo
   const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
   if (err_edge)
   {
-    SwitchMode(Mode::Pad, "err", ram, now);
+    Decide(XDMultiCtl::CMD_TO_PAD, "err", now);
     return;
   }
   if (combo_fire)
   {
     Log(now, "combo-fired");
-    SwitchMode(Mode::Pad, "combo", ram, now);
+    Decide(XDMultiCtl::CMD_TO_PAD, "combo", now);
     return;
   }
   if (!at_prompt)
@@ -358,20 +453,20 @@ void CSIDevice_XDMultiPort::EvaluateUnplug(const XdRam& ram, bool at_prompt, boo
     if (m_cond_since == 0)
       m_cond_since = Stamp(now);
     if (Since(now, m_cond_since) >= tps / 2)
-      SwitchMode(Mode::Pad, "cancel", ram, now);
+      Decide(XDMultiCtl::CMD_TO_PAD, "cancel", now);
     return;
   }
   m_cond_since = 0;
   if (!en0)
   {
-    SwitchMode(Mode::Gba, "en0-clear", ram, now);
+    Decide(XDMultiCtl::CMD_TO_GBA, "en0-clear", now);
     return;
   }
   if (Since(now, m_mode_tick) >= 2 * tps)
   {
     // The snapshot carries EN1-3 and SISR.
     Log(now, fmt::format("unplug-stuck {}", Snapshot(now)), true);
-    SwitchMode(Mode::Gba, "unplug-timeout", ram, now);
+    Decide(XDMultiCtl::CMD_TO_GBA, "unplug-timeout", now);
   }
 }
 
@@ -432,21 +527,34 @@ void CSIDevice_XDMultiPort::EvaluateGba(const XdRam& ram, bool err_edge, int err
     m_link_lost_since = Stamp(now);
   const bool link_lost = link_lost_cond && Since(now, m_link_lost_since) >= tps;
 
+  // XD waits for the socket-1 controller (the HLE counter, HLE_XD.h): at least two calls since
+  // the last attach or re-plug, the latest within 100 ms. While the hook is installed it replaces
+  // the post-battle timing rules below: XD itself says when it wants the controller back, so
+  // "battle again" and "change combination" keep the GBA and nothing flips at an idle menu.
+  const HLE_XD::Socket1Wait s1 = HLE_XD::GetSocket1Wait();
+  const bool socket1_wait =
+      s1.installed && s1.calls - m_s1_base >= 2 && Since(now, s1.tick) <= tps / 10;
+  const bool post_battle_quiet_rule = !s1.installed;
+  const bool post_battle_late_rule = !s1.installed || KEEP_POST_BATTLE_LATE_WITH_HOOK;
+
   if (!m_want_pad)
   {
     u8 reason = WANT_NONE;
     if (err_edge)
       reason = WANT_ERR;
+    else if (socket1_wait)
+      reason = WANT_SOCKET1_WAIT;
     else if (cancel)
       reason = WANT_CANCEL;
     else if (combo_fire)
       reason = WANT_COMBO;
     else if (link_lost)
       reason = WANT_LINK_LOST;
-    else if (m_battle_seen && ram.bflag == 0 && Since(now, m_battle_end_tick) >= tps &&
-             quiet >= tps)
+    else if (post_battle_quiet_rule && m_battle_seen && ram.bflag == 0 &&
+             Since(now, m_battle_end_tick) >= tps && quiet >= tps)
       reason = WANT_POST_BATTLE;
-    else if (m_battle_seen && ram.bflag == 0 && Since(now, m_battle_end_tick) >= 5 * tps)
+    else if (post_battle_late_rule && m_battle_seen && ram.bflag == 0 &&
+             Since(now, m_battle_end_tick) >= 5 * tps)
       reason = WANT_POST_BATTLE_LATE;
     else if (ram.ctxmode != MODE_MULTI && ram.bflag == 0 && quiet >= 4 * tps)
       reason = WANT_MODE_EXIT;
@@ -464,6 +572,8 @@ void CSIDevice_XDMultiPort::EvaluateGba(const XdRam& ram, bool err_edge, int err
         detail = fmt::format(" ctx7={}", err_ctx);
       else if (reason == WANT_LINK_LOST)
         detail = fmt::format(" ch={}", lost_socket);
+      else if (reason == WANT_SOCKET1_WAIT)
+        detail = fmt::format(" lr={:08x} calls={}", s1.lr, s1.calls - m_s1_base);
       Log(now,
           fmt::format("want-pad reason={}{} pend={}", WantReasonName(reason), detail,
                       m_gba_pending ? 1 : 0),
@@ -477,7 +587,7 @@ void CSIDevice_XDMultiPort::EvaluateGba(const XdRam& ram, bool err_edge, int err
 
   if (m_want_pad && !m_gba_pending)
   {
-    SwitchMode(Mode::Pad, WantReasonName(m_want_reason), ram, now);
+    Decide(XDMultiCtl::CMD_TO_PAD, WantReasonName(m_want_reason), now);
     return;
   }
 
@@ -502,16 +612,92 @@ void CSIDevice_XDMultiPort::EvaluateGba(const XdRam& ram, bool err_edge, int err
 
   if (kind == 6)
     m_replug6_done = true;
-  m_silent_until = now + 3 * tps / 20;
-  m_gba->ReleaseLinkLatches("xdmulti-replug");
-  m_gba->RequestSyncedReset(now, "xdmulti-replug");
-  Log(now, fmt::format("replug kind={} {}", kind, Snapshot(now)), true);
+  Decide(XDMultiCtl::CMD_REPLUG, kind == 6 ? "replug-6" : "replug-2", now);
 }
 
-void CSIDevice_XDMultiPort::SwitchMode(Mode to, const char* reason, const XdRam& ram, u64 now)
+void CSIDevice_XDMultiPort::Decide(u8 cmd, const char* reason, u64 now)
 {
-  // Hard rule: never change mode in the middle of a GBA transfer.
-  if (m_gba_pending || to == m_mode)
+  if (!m_netplay)
+  {
+    // Solo: the switch lands on the poll that decided it (the field-proven timing).
+    Execute(cmd, reason, now);
+    return;
+  }
+  // Netplay host: the next channel-0 entry pushed carries it; every machine applies it at the pop
+  // of that entry. The caller only plans while nothing is waiting or in flight.
+  if (XDMultiCtl::Post(cmd, m_boot_seq))
+  {
+    Log(now,
+        fmt::format("post cmd={} reason={} pop={} mode={}", XDMultiCtl::CommandName(cmd), reason,
+                    m_pops, ModeName(m_mode)),
+        true);
+  }
+}
+
+void CSIDevice_XDMultiPort::Execute(u8 cmd, const char* reason, u64 now)
+{
+  const Mode from = m_mode;
+  bool valid = false;
+  switch (cmd)
+  {
+  case XDMultiCtl::CMD_TO_UNPLUG:
+    valid = from == Mode::Pad;
+    break;
+  case XDMultiCtl::CMD_TO_GBA:
+    valid = from == Mode::Unplug || from == Mode::Pad;
+    break;
+  case XDMultiCtl::CMD_TO_PAD:
+    valid = from == Mode::Gba || from == Mode::Unplug;
+    break;
+  case XDMultiCtl::CMD_REPLUG:
+    valid = from == Mode::Gba;
+    break;
+  default:
+    break;
+  }
+  // The same line on every machine of a netplay game (nothing per-machine in it).
+  if (m_netplay)
+  {
+    Log(now, fmt::format("apply cmd={} pop={} mode={}{}", XDMultiCtl::CommandName(cmd), m_pops,
+                         ModeName(from), valid ? "" : " invalid"),
+        true);
+  }
+  if (!valid)
+    return;
+
+  switch (cmd)
+  {
+  case XDMultiCtl::CMD_TO_UNPLUG:
+    SwitchMode(Mode::Unplug, reason, now);
+    break;
+  case XDMultiCtl::CMD_TO_GBA:
+    SwitchMode(Mode::Gba, reason, now);
+    break;
+  case XDMultiCtl::CMD_TO_PAD:
+    SwitchMode(Mode::Pad, reason, now);
+    break;
+  case XDMultiCtl::CMD_REPLUG:
+    Replug(reason, now);
+    break;
+  default:
+    break;
+  }
+}
+
+void CSIDevice_XDMultiPort::Replug(const char* reason, u64 now)
+{
+  m_silent_pops = REPLUG_SILENT_POPS;
+  m_s1_base = HLE_XD::GetSocket1Wait().calls;
+  m_gba->ReleaseLinkLatches("xdmulti-replug");
+  // Anchored where the X-button reset anchors: the last command sent to this GBA.
+  m_gba->RequestSyncedReset(m_gba->GetTimestampSent(), "xdmulti-replug");
+  Log(now, fmt::format("replug {} {}", reason, Snapshot(now)), true);
+}
+
+void CSIDevice_XDMultiPort::SwitchMode(Mode to, const char* reason, u64 now)
+{
+  // No transfer condition: a GBA transfer in flight drains to the inner GBA (RunBuffer).
+  if (to == m_mode)
     return;
 
   const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
@@ -526,7 +712,7 @@ void CSIDevice_XDMultiPort::SwitchMode(Mode to, const char* reason, const XdRam&
   m_want_pad = false;
   m_want_reason = WANT_NONE;
   m_trigger_streak = 0;
-  m_silent_until = 0;
+  m_silent_pops = 0;
 
   Log(now,
       fmt::format("mode from={} to={} reason={} dur_ms={} armed={} {}", ModeName(from),
@@ -540,11 +726,12 @@ void CSIDevice_XDMultiPort::SwitchMode(Mode to, const char* reason, const XdRam&
     m_probe_fail_streak = 0;
     m_last_data_tick = 0;
     // The prompt's own 2 is not a re-plug.
-    m_ctx_prev[0] = ram.ctx[0];
+    m_ctx_prev[0] = ReadXdRam().ctx[0];
+    m_s1_base = HLE_XD::GetSocket1Wait().calls;
     m_gba->ReleaseLinkLatches("xdmulti-attach");
     // A fresh Emerald boot, the same path sockets 2-4 take, even on a rematch
-    // where the old client is still running.
-    m_gba->RequestSyncedReset(now, "xdmulti-attach");
+    // where the old client is still running. Anchored where the X-button reset anchors.
+    m_gba->RequestSyncedReset(m_gba->GetTimestampSent(), "xdmulti-attach");
     m_diag_ctx_lines = 0;
     m_diag_padok_armed = false;
   }
@@ -570,50 +757,37 @@ DataResponse CSIDevice_XDMultiPort::GetData(u32& hi, u32& low)
     return m_controller->GetData(hi, low);
 
   const u64 now = m_system.GetCoreTiming().GetTicks();
-  auto& movie = m_system.GetMovie();
 
-  // GetGBAStatus consumes the GBA window's reset request, so it is sampled once
-  // per call and never in netplay or movie playback.
-  const bool solo = !NetPlay::IsNetPlayRunning() && !movie.IsPlayingInput();
-  GCPadStatus gl{};
-  if (solo)
-    gl = Pad::GetGBAStatus(m_device_number);
-  const u16 reset = gl.button & PAD_BUTTON_X;
+  // 1. The pop, and the command that rode with it (netplay).
+  const Sample sample = PopSynced();
+  ApplyCtl(sample, now);
 
-  EvaluateTransitions(now, m_system.GetSerialInterface().IsChannelPollEnabled(m_device_number));
+  // 2. The planner: solo, or the netplay host while no command is waiting or in flight. It sees
+  // the mode every machine has at this pop.
   const bool en0 = m_system.GetSerialInterface().IsChannelPollEnabled(m_device_number);
+  const XdRam ram = ReadXdRam();
+  if (m_is_local && (!m_netplay || !XDMultiCtl::Busy()))
+    EvaluateTransitions(now, en0, ram);
+  LogDiagnostics(ram, en0, now);
 
+  // 3. Respond in the committed mode with the popped status.
   if (m_mode == Mode::Pad)
   {
     // The field-proven controller, including Success while EN0 is clear.
-    const DataResponse r = m_controller->GetData(hi, low);
-    m_last_buttons = r == DataResponse::Success ? static_cast<u16>(hi >> 16) : 0;
-    GCPadStatus g{};
-    g.button = reset;
-    m_gba->ApplyPadStatus(g);
+    const DataResponse r = m_controller->GetDataFromStatus(sample.pad, hi, low);
+    ApplyGbaInput(sample, /*keys_active=*/false);
     return r;
   }
-
-  // Exactly one synced pad pop per call, as in Pad mode.
-  GCPadStatus s{};
-  if (!NetPlay::IsNetPlayRunning())
-    s = Pad::GetStatus(m_device_number);
-  CSIDevice_GCController::HandleMoviePadStatus(movie, m_device_number, &s);
-  m_last_buttons = s.button;
 
   if (m_mode == Mode::Unplug)
   {
     hi = 0;
     low = 0;
-    GCPadStatus g{};
-    g.button = reset;
-    m_gba->ApplyPadStatus(g);
+    ApplyGbaInput(sample, /*keys_active=*/false);
     return en0 ? DataResponse::ErrorNoResponseReady : DataResponse::NoData;
   }
 
-  GCPadStatus g = ToGba(s);
-  g.button |= (gl.button & GBA_KEY_MASK) | reset;
-  m_gba->ApplyPadStatus(g);
+  ApplyGbaInput(sample, /*keys_active=*/true);
   if (en0)
   {
     hi = 0;
@@ -632,6 +806,11 @@ int CSIDevice_XDMultiPort::RunBuffer(u8* buffer, int request_length)
   const u64 now = m_system.GetCoreTiming().GetTicks();
   const u8 cmd = buffer[0];
 
+  // A transfer in flight finishes on the GBA whatever the mode, so a switch applied at a pop never
+  // cuts one short, on any machine.
+  if (m_gba_pending)
+    return RunGba(buffer, request_length, now);
+
   switch (m_mode)
   {
   case Mode::Pad:
@@ -642,7 +821,33 @@ int CSIDevice_XDMultiPort::RunBuffer(u8* buffer, int request_length)
     case EBufferCommands::CMD_DIRECT:
     case EBufferCommands::CMD_ORIGIN:
     case EBufferCommands::CMD_RECALIBRATE:
-      return m_controller->RunBuffer(buffer, request_length);
+    {
+      // The pad's own pop, as the plain controller's RunBuffer does it, and any command on it.
+      const Sample sample = PopSynced();
+      ApplyCtl(sample, now);
+      if (sample.reset)
+        ApplyGbaInput(sample, /*keys_active=*/false);
+      if (m_mode == Mode::Unplug)
+        return -1;
+      if (m_mode == Mode::Gba)
+        return RunGba(buffer, request_length, now);
+      if (static_cast<EBufferCommands>(cmd) == EBufferCommands::CMD_DIRECT)
+      {
+        // One pop per command: the data comes from this sample, not from a second pop.
+        u32 high = 0;
+        u32 low = 0;
+        if (!sample.pad.isConnected)
+          return -1;
+        m_controller->GetDataFromStatus(sample.pad, high, low);
+        for (int i = 0; i < 4; i++)
+        {
+          buffer[i + 0] = (high >> (24 - (i * 8))) & 0xff;
+          buffer[i + 4] = (low >> (24 - (i * 8))) & 0xff;
+        }
+        return sizeof(high) + sizeof(low);
+      }
+      return m_controller->RunBufferWithStatus(buffer, request_length, sample.pad);
+    }
     default:
       // GBA link traffic (0x14/0x15/0x1D...) finds no GBA here.
       ++m_diag_pad_rejects;
@@ -661,7 +866,13 @@ int CSIDevice_XDMultiPort::RunBuffer(u8* buffer, int request_length)
     break;
   }
 
-  if (now < m_silent_until && !m_gba_pending)
+  return RunGba(buffer, request_length, now);
+}
+
+int CSIDevice_XDMultiPort::RunGba(u8* buffer, int request_length, u64 now)
+{
+  const u8 cmd = buffer[0];
+  if (m_silent_pops > 0 && !m_gba_pending)
   {
     ++m_diag_silent_rejects;
     return -1;
@@ -697,8 +908,7 @@ int CSIDevice_XDMultiPort::TransferInterval()
 {
   if (!m_gba)
     return m_controller->TransferInterval();
-  const u64 now = m_system.GetCoreTiming().GetTicks();
-  const bool silent = now < m_silent_until && !m_gba_pending;
+  const bool silent = m_silent_pops > 0 && !m_gba_pending;
   if (m_gba_pending || (m_mode == Mode::Gba && !silent))
     return m_gba->TransferInterval();
   return m_controller->TransferInterval();
@@ -753,12 +963,15 @@ void CSIDevice_XDMultiPort::DoState(PointerWrap& p)
   p.Do(m_want_pad);
   p.Do(m_want_reason);
   p.Do(m_cond_since);
-  p.Do(m_silent_until);
   p.Do(m_replug6_done);
   p.Do(m_last_buttons);
   p.Do(m_combo_since);
   p.Do(m_combo_released);
   p.Do(m_link_lost_since);
+  p.DoMarker("XDMultiPort2");
+  p.Do(m_silent_pops);
+  p.Do(m_pops);
+  p.Do(m_s1_base);
 
   m_controller->DoState(p);
   if (m_gba)
@@ -837,7 +1050,7 @@ std::string CSIDevice_XDMultiPort::Snapshot(u64 now) const
                      sisr & 0x38383838u);
   const u64 quiet_base = std::max(m_last_data_tick, m_mode_tick);
   out += fmt::format(" pend={} silent={} quiet_ms={} pfs={} linkdiag(racy)={}",
-                     m_gba_pending ? 1 : 0, now < m_silent_until ? 1 : 0,
+                     m_gba_pending ? 1 : 0, m_silent_pops,
                      Since(now, quiet_base) / ms, m_probe_fail_streak,
                      (m_gba && m_gba->IsLinkUpForDiag()) ? 1 : 0);
   return out;
@@ -855,8 +1068,8 @@ void CSIDevice_XDMultiPort::LogDiagnostics(const XdRam& ram, bool en0, u64 now)
   }
 
   if (m_mode == Mode::Gba && ram.is_xd && m_diag_have_prev && m_diag_ctx_lines < 64 &&
-      (ram.ctx != m_ctx_prev || ram.ctx28 != m_diag_prev_ctx28 ||
-       ram.errflag != m_errflag_prev))
+      (ram.ctx != m_diag_prev_ctx || ram.ctx28 != m_diag_prev_ctx28 ||
+       ram.errflag != m_diag_prev_errflag))
   {
     ++m_diag_ctx_lines;
     Log(now, fmt::format("ctx {:08x},{:08x},{:08x},{:08x} ch={} c28={} cmode={} ef={} bflag={}",
@@ -914,6 +1127,8 @@ void CSIDevice_XDMultiPort::LogDiagnostics(const XdRam& ram, bool en0, u64 now)
 
   m_diag_prev_en0 = en0;
   m_diag_prev_ctx28 = ram.ctx28;
+  m_diag_prev_ctx = ram.ctx;
+  m_diag_prev_errflag = ram.errflag;
   m_diag_have_prev = true;
 }
 }  // namespace SerialInterface

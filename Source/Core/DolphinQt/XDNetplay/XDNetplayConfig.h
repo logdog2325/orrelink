@@ -66,10 +66,19 @@ std::string MakeOpenSessionName(const std::string& nickname, int format_key_valu
 bool LooksLikeXdSession(const std::string& published_game_name);
 
 // Force the local settings an XD link battle expects: GBA ROM paths for ports
-// 2/3 (re-asserted only while the imported dump still exists), SI devices
+// 1-4 (re-asserted only while the imported dump still exists), SI devices
 // (pad, GBA, GBA), cheats on for the $XD OU Fixes code, and netplay tuned to
-// fixed-delay with a small buffer and no UPnP. Saves the config.
-bool EnsureGbaConfig();
+// fixed-delay with a small buffer and no UPnP. Saves the config. With Multi
+// enabled, port 1 stays a Wii U adapter when it is one (a multi battle reads
+// the host's controller from it).
+// multi_solo (IsSoloMultiLaunch): keep port 1 on the XD Multi device and make
+// port 4 a GBA too, for a solo Multi boot.
+bool EnsureGbaConfig(bool multi_solo = false);
+
+// A solo boot that should play XD's four-player multi battle: Multi is enabled,
+// the format is Multi and SI port 1 is set to the XD Multi device. Read before
+// EnsureGbaConfig, which otherwise resets port 1 to a controller.
+bool IsSoloMultiLaunch();
 
 // Mirror of the Android nativeStartGame forcing: fixed two-player pad map
 // (host pad + host GBA + opponent's GBA), GBA slots 2/3 enabled, save sync,

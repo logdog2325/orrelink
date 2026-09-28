@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "Common/Event.h"
 #include "Common/QoSSession.h"
@@ -44,6 +45,19 @@ struct XdStartClaim
   // host's spare team (false). slot_owner_name is that opponent's name when true.
   bool slot_is_guest = false;
   std::string slot_owner_name;
+  // A Multi room's Start (the room format is Multi). opponent stays 0 and the slot fields unused;
+  // seats[i] is SI port i+2: its holder, that connection's serial (which names its stage file),
+  // name, and whether a team is in. With MultiFillSeats an empty Seat 2 is the host (serial 0)
+  // and an empty Seat 4 repeats Seat 3.
+  bool multi = false;
+  struct Seat
+  {
+    PlayerId pid = 0;
+    u32 serial = 0;
+    std::string name;
+    bool team_in = false;
+  };
+  std::array<Seat, 3> seats{};
 };
 
 // XD Netplay: whose team the GBA 2 slot holds when the room's format changes. Spare: the host's
@@ -135,6 +149,15 @@ public:
   // it clears pending, so a caller testing pending first never sees neither during the switch.
   bool IsStartPending() const { return m_start_pending.load(); }
   bool IsGameRunning() const { return m_is_running.load(); }
+  // XD Netplay: the room's format is Multi (four seats). Any thread.
+  bool IsXdMultiRoom() const { return m_xd_room_format.load() == XD_FORMAT_MULTI; }
+  // Host UI thread.
+  bool IsHostInputAuthority() const { return m_host_input_authority; }
+  // A Multi start needs the recompilers kept (single core, XD clock in a mixed room); the
+  // "safest" mixed-room override would force the Cached Interpreter instead. Takes m_crit.players.
+  bool XdMultiNeedsNormalCore();
+  // Every connection's serial (the key of its Multi stage file). Takes m_crit.players.
+  std::vector<u32> XdRoomSerials();
 
   // XD Netplay seats, host UI thread only (Qt GUI thread, or the Android main thread under
   // s_host_write_mutex). ClaimXdStart picks the opponent by GetXdOpponentLocked, resets the GBA 2
@@ -222,6 +245,10 @@ private:
     u32 xd_serial = 0;
     u32 xd_queue = 0;
     bool xd_watching = false;
+    // The SI port this player holds (3 in 1v1; 2, 3 or 4 in Multi), 0 for none, and in Multi
+    // whether a team of theirs is staged. NETPLAY thread only, under m_crit.players.
+    u8 xd_seat = 0;
+    bool xd_stage = false;
 
     bool operator==(const Client& other) const { return this == &other; }
     bool IsHost() const { return pid == 1; }
@@ -290,7 +317,15 @@ private:
   PlayerId GetXdOpponentLocked() const;
   bool XdSlotStaleLocked(PlayerId opponent) const;
   bool ResetXdSlotLocked(bool announce);
-  bool XdStartOpponentLeft();
+  bool XdStartPlayerLeft();
+  // The ports a room seats joiners on: {3} in 1v1, {2, 3, 4} in Multi. Caller holds
+  // m_crit.players, or is the NETPLAY thread.
+  std::vector<u8> XdSeatPorts() const;
+  PlayerId XdSeatHolderLocked(u8 port) const;
+  // ---NETPLAY--- thread, under m_crit.players: unseat watchers and players on ports the room no
+  // longer uses, then fill each open port with the earliest in line. In a Multi room nothing moves
+  // while a start is claimed or a game runs; the fill runs when it ends.
+  void FillXdSeatsLocked();
   // ---NETPLAY--- thread only.
   void SendXdSeats();
 
@@ -365,6 +400,8 @@ private:
   std::map<PlayerId, PadHealthState> m_pad_health;
   u32 m_auto_buffer_cushion_streak = 0;
   bool m_auto_buffer_veto_logged = false;
+  // Multi: the "input delay is at its limit" chat line went out for this game.
+  std::atomic<bool> m_auto_buffer_limit_warned{false};
 
   // XD Netplay state check (OnStateDigest), all ---NETPLAY--- thread, indexed by report kind
   // (0 inputs, 1-4 XD state at GBA port kind-1). m_sd_game is the game the rest belongs to.
@@ -407,7 +444,7 @@ private:
   std::atomic<bool> m_xd_frozen{false};
   // Under m_xd_seat_mutex: the serial whose TeamData last reached the GBA 2 slot, 0 when only the
   // host's own data is there, and that player's name for the "cleared" line.
-  u32 m_xd_slot_owner = 0;
+  std::atomic<u32> m_xd_slot_owner{0};
   std::string m_xd_slot_owner_name;
   // The room's battle format (GetXdRoomFormat). Written only by SetXdFormat under
   // m_xd_seat_mutex; read anywhere. OnConnect sends it to each joiner, and SetXdFormat's broadcast
@@ -416,6 +453,18 @@ private:
   // The pid ClaimXdStart seated for the start it froze; 0 for a start that is not an XD Start.
   // Checked just before the game starts, since a leave before m_start_pending rises aborts nothing.
   std::atomic<PlayerId> m_xd_start_opponent{0};
+  // The same for a Multi Start: Seats 2-4 (0 = none).
+  std::array<std::atomic<PlayerId>, 3> m_xd_start_seats{};
+  // Set by every XD claim: the claimed start is a Multi start. SetupNetSettings copies it into
+  // xd_multi_p1.
+  std::atomic<bool> m_xd_multi_start{false};
+  // The running game's xd_multi_p1, for the pad relays on the NETPLAY thread (the only field of
+  // m_settings they read, so they never race SetupNetSettings on the GUI thread).
+  std::atomic<bool> m_xd_multi_wire{false};
+  // A seat fill is due (a format change, a Multi fill deferred by a start or a game). NETPLAY
+  // thread runs it; m_xd_was_busy (NETPLAY thread only) spots the end of a start or a game.
+  std::atomic<bool> m_xd_seats_dirty{false};
+  bool m_xd_was_busy = false;
 
   std::unordered_map<u32, std::vector<std::pair<PlayerId, u64>>> m_timebase_by_frame;
   bool m_desync_detected = false;

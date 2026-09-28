@@ -12,7 +12,10 @@
 #include <jni.h>
 
 #include "Common/CommonTypes.h"
+#include "Common/Config/Config.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/HW/GBACore.h"
+#include "Core/HW/SI/SI_Device.h"
 #include "Core/NetPlayProto.h"
 #ifdef HAS_LIBMGBA
 #include "Core/HW/SI/SI_DeviceGBAEmu.h"
@@ -166,6 +169,31 @@ Java_org_dolphinemu_dolphinemu_features_dualscreen_GbaHostBridge_setVisibleDevic
     JNIEnv*, jclass, jint device_number)
 {
   s_visible_device.store(static_cast<int>(device_number), std::memory_order_relaxed);
+}
+
+// The GBA controller (local pad) whose input drives this machine's GBA on SI channel
+// device_number: in a netplay game the channel's local pad (a joiner's own GBA is its pad 0,
+// whatever channel it is on), -1 for a GBA this player does not own; outside netplay the channel
+// itself. Lock-free: the touch overlay resolves it once per visible-device change.
+JNIEXPORT jint JNICALL
+Java_org_dolphinemu_dolphinemu_features_dualscreen_GbaHostBridge_inputPadFor(JNIEnv*, jclass,
+                                                                             jint device_number)
+{
+  return static_cast<jint>(NetPlay::GbaInputPadFor(static_cast<int>(device_number)));
+}
+
+// SI channel device_number is the XD Multi port (the controller that becomes a GBA): its GBA
+// touch input must never block the GameCube controller on the same port.
+JNIEXPORT jboolean JNICALL
+Java_org_dolphinemu_dolphinemu_features_dualscreen_GbaHostBridge_isConvertedPort(
+    JNIEnv*, jclass, jint device_number)
+{
+  if (device_number < 0 || device_number >= 4)
+    return JNI_FALSE;
+  return Config::Get(Config::GetInfoForSIDevice(static_cast<int>(device_number))) ==
+                 SerialInterface::SIDEVICE_GC_GBA_XDMULTI ?
+             JNI_TRUE :
+             JNI_FALSE;
 }
 
 // Packed per-port joybus link diagnostic, for the on-screen readout:

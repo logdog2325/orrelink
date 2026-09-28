@@ -84,6 +84,7 @@
 #include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Data.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
+#include "UICommon/XDNetplay/MultiStart.h"
 #include "UICommon/XDNetplay/PartyBundle.h"
 #include "UICommon/XDNetplay/ShowdownParser.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
@@ -356,17 +357,16 @@ void NetPlayDialog::CreateChatLayout()
   // player in line as the opponent, and the Role column shows who that is.
   // UpdateGUI shows it to joiners in an XD room.
   m_watch_box = new QCheckBox(tr("Watch only"));
-  m_watch_box->setToolTip(tr("Watch without playing. The next player in line becomes the "
-                             "opponent.\nA change made during a battle applies to the next one."));
+  m_watch_box->setToolTip(WatchOnlyToolTip(false));
   m_watch_box->hide();
 
   // XD Netplay, host side: the joiner sets its in-game name in the Submit Team
   // sheet; the host sets its own here (written into the GBA port 2 save the
   // room syncs). Shown only while hosting.
   m_host_name_edit = new QLineEdit;
-  m_host_name_edit->setPlaceholderText(tr("Your trainer name (what your opponent sees)"));
+  m_host_name_edit->setPlaceholderText(tr("Your trainer name (what other players see)"));
   m_host_name_edit->setMaxLength(7);
-  m_host_name_edit->setToolTip(tr("Up to 7 characters. Your opponent sees this name in battle."));
+  m_host_name_edit->setToolTip(tr("Up to 7 characters. Other players see this name in battle."));
   m_host_name_edit->hide();
   m_host_name_button = new QPushButton(tr("Set Name"));
   m_host_name_button->setDefault(false);
@@ -641,6 +641,25 @@ void NetPlayDialog::OnStart()
       DisplayMessage(tr("A battle is starting. Try again after it ends."), "red");
       return;
     }
+    // A Multi room: four seats, staged teams, boot copies (UICommon/XDNetplay/MultiStart.h). The
+    // claim already cleared anything a 1v1 start sets.
+    if (claim.multi)
+    {
+      const XDNetplay::MultiStartOutcome outcome = XDNetplay::PrepareMultiStart(*server, claim);
+      for (const auto& [pid, note] : outcome.notes)
+        server->SendXdNote(pid, note);
+      if (!outcome.refusal.empty())
+      {
+        DisplayMessage(QString::fromStdString(outcome.refusal), "red");
+        return;
+      }
+      server->SendChatMessage(XDNetplay::MultiStartChatLine());
+      if (server->RequestStartGame())
+        SetOptionsEnabled(false);
+      else
+        XDNetplay::AbortMultiStart();
+      return;
+    }
     if (claim.opponent == 0)
     {
       DisplayMessage(tr("Can't start: no opponent yet."), "red");
@@ -692,6 +711,17 @@ void NetPlayDialog::OnStart()
 
   if (Settings::Instance().GetNetPlayServer()->RequestStartGame())
     SetOptionsEnabled(false);
+}
+
+QString NetPlayDialog::WatchOnlyToolTip(bool multi)
+{
+  if (multi)
+  {
+    return tr("Watch without playing. The next player in line takes your seat.\nA change made "
+              "during a battle applies to the next one.");
+  }
+  return tr("Watch without playing. The next player in line becomes the opponent.\nA change made "
+            "during a battle applies to the next one.");
 }
 
 QString NetPlayDialog::JoinerSubmitTeamToolTip()
@@ -909,13 +939,17 @@ void NetPlayDialog::UpdateGUI()
     const QString mapping = QString::fromStdString(NetPlay::GetPlayerMappingString(
         p->pid, client->GetPadMapping(), client->GetGBAConfig(), client->GetWiimoteMapping()));
     QString role;
-    switch (client->GetXdRole(p->pid))
+    const NetPlay::XdSeatInfo seat = client->GetXdSeatInfo(p->pid);
+    switch (seat.role)
     {
     case NetPlay::XdRole::Host:
-      role = tr("Host");
+      role = seat.seat != 0 ? tr("Seat %1").arg(seat.seat) : tr("Host");
       break;
     case NetPlay::XdRole::Opponent:
       role = tr("Opponent");
+      break;
+    case NetPlay::XdRole::Seated:
+      role = tr("Seat %1").arg(seat.seat);
       break;
     case NetPlay::XdRole::Waiting:
       role = tr("Waiting");
@@ -967,21 +1001,26 @@ void NetPlayDialog::UpdateGUI()
   }
   m_format_button->setVisible(server && is_xd);
 
+  const bool multi_seats = client->IsXdMultiSeats();
   if (!server)
   {
-    // Only the opponent can submit a team; the server refuses anyone else.
-    // Unknown (no seat broadcast yet) stays allowed, as before.
+    // Only the opponent (a seated player in Multi) can submit a team; the server refuses anyone
+    // else. Unknown (no seat broadcast yet) stays allowed, as before.
     m_watch_box->setVisible(is_xd);
+    m_watch_box->setToolTip(WatchOnlyToolTip(multi_seats));
     // Watch only means nothing outside XD, but the server would still leave this player out of
     // the index count and the lobby buffer. Unticking sends the change.
     if (!is_xd && m_watch_box->isChecked())
       m_watch_box->setChecked(false);
     const NetPlay::XdRole local_role = client->GetXdRole(client->GetLocalPlayerId());
-    const bool may_submit =
-        local_role == NetPlay::XdRole::Opponent || local_role == NetPlay::XdRole::Unknown;
+    const bool may_submit = local_role == NetPlay::XdRole::Opponent ||
+                            local_role == NetPlay::XdRole::Seated ||
+                            local_role == NetPlay::XdRole::Unknown;
     m_submit_team_button->setEnabled(may_submit);
-    m_submit_team_button->setToolTip(may_submit ? JoinerSubmitTeamToolTip() :
-                                                  tr("Only the opponent can submit a team."));
+    m_submit_team_button->setToolTip(
+        may_submit  ? JoinerSubmitTeamToolTip() :
+        multi_seats ? tr("Only seated players can submit a team.") :
+                      tr("Only the opponent can submit a team."));
     return;
   }
 
@@ -1118,40 +1157,15 @@ void NetPlayDialog::AppendChatQuiet(const std::string& msg)
   });
 }
 
-std::string NetPlayDialog::OnTeamSubmission(const std::string& player, const std::string& text)
+NetPlay::XdTeamResult NetPlayDialog::OnTeamSubmission(const std::string& player,
+                                                      const std::string& text,
+                                                      const NetPlay::XdTeamTarget& target)
 {
-  // Host side, NETPLAY thread. The write must finish before we return: the
-  // caller acks only afterwards, so the file is on disk before any Start can
-  // read it. Touches no widgets -- the caller relays the text into chat.
-  //
-  // The payload may carry an in-game trainer name ahead of the team; a client
-  // that predates that just sends the bare team (TeamInjector.h documents the
-  // grammar and both compatibility directions).
-  const XDNetplay::TeamSubmission submission = XDNetplay::ParseTeamSubmissionPayload(text);
-
-  // The submission may also carry the guest's cosmetic "Model:" pick. Stash it
-  // (every submission overwrites the stash; absent or invalid means "no
-  // preference" and the host's Guest-model fallback dropdown wins) and rebuild
-  // the "$OrreLink Battle Style" block right away, so a model submitted any
-  // time before Start is already in the file SyncCodes reads. The server
-  // rejects TeamData while a battle runs, so this cannot race a synced set.
-  XDNetplay::BattleCustomizer::SetGuestModel(submission.model);
-  XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
-
-  // A payload is EITHER a party bundle (the guest's own save's team and
-  // trainer identity, validated strictly before anything is written) OR
-  // Showdown text; the Name header is ignored for bundles -- the bundle's
-  // real trainer name wins (TeamInjector.h).
-  std::string status;
-  const bool applied =
-      submission.save_bundle ?
-          XDNetplay::InjectGuestBundle(*submission.save_bundle, 2, &status,
-                                       submission.raise_to_level_100) :
-          XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status,
-                                     submission.raise_to_level_100);
-  if (!applied)
-    return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
-  return status;
+  // Host side, NETPLAY thread, under the server's seat mutex. The write must finish before we
+  // return: the caller acks only afterwards, so the file is on disk before any Start can read it.
+  // Touches no widgets: the caller relays the line into chat. Shared with Android
+  // (UICommon/XDNetplay/MultiStart.h).
+  return XDNetplay::HandleTeamSubmission(player, text, target);
 }
 
 bool NetPlayDialog::OnXdGuestSlotReset()
@@ -1168,6 +1182,11 @@ void NetPlayDialog::OnRoomClosed()
   // saves). May defer itself until emulation has fully stopped -- the mGBA
   // core rewrites the save at teardown, so anything done sooner is undone.
   XDNetplay::RestoreHostTeam(2);
+  // Multi: every seat's staged team, and the boot copies now if no game runs (otherwise the purge
+  // armed at Start takes them once the cores have stopped).
+  XDNetplay::DropAllMultiStages();
+  if (Core::IsUninitialized(Core::System::GetInstance()))
+    XDNetplay::ScrubMultiBootSaves();
   // And retire the session's cosmetic battle-style state: drop the guest's
   // stashed model, strip the generated "$OrreLink Battle Style" block from the
   // local GXXE01.ini, and give the cheats flag back if the pre-start hook
@@ -1981,8 +2000,11 @@ void NetPlayDialog::OnChangeFormat()
   const NetPlay::XdFormatChange change = server->SetXdFormat(
       format,
       [&check, format](const NetPlay::XdSlotView& slot) {
-        // A departed player's team is reset before any Start reads it: not judged.
-        check = XDNetplay::CheckRoomTeams(format, slot.state != NetPlay::XdSlotState::Orphan);
+        // A departed player's team is reset before any Start reads it: not judged. Multi judges
+        // only the host's team here: the seats' teams are staged per player and judged at Start.
+        check = XDNetplay::CheckRoomTeams(format,
+                                          slot.state != NetPlay::XdSlotState::Orphan &&
+                                              format != XDNetplay::FormatRules::FORMAT_MULTI);
       },
       std::string("Format: ") + XDNetplay::FormatRules::FormatDisplayName(format) + ".");
   if (change.busy)
@@ -2242,6 +2264,8 @@ void NetPlayDialog::OnTraversalStateChanged(Common::TraversalClient::State state
 
 void NetPlayDialog::OnGameStartAborted()
 {
+  // A Multi start's boot copies (touches no widgets).
+  XDNetplay::OnStartAborted();
   QueueOnObject(this, [this] { SetOptionsEnabled(true); });
 }
 

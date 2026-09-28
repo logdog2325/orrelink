@@ -307,7 +307,7 @@ fun NetplayScreen(
                         supportingText = {
                             Text(
                                 if (useMySave) stringResource(R.string.xd_submit_name_ignored)
-                                else "Shown to your opponent in the battle."
+                                else "Other players see this name in battle."
                             )
                         },
                         modifier = Modifier.fillMaxWidth()
@@ -576,13 +576,15 @@ fun NetplayScreen(
                 ExtendedFloatingActionButton(onClick = onStartGame) {
                     Text(stringResource(R.string.netplay_start))
                 }
-            } else if (localRole == Player.ROLE_OPPONENT || localRole == Player.ROLE_UNKNOWN) {
+            } else if (localRole == Player.ROLE_OPPONENT || localRole == Player.ROLE_SEATED ||
+                localRole == Player.ROLE_UNKNOWN
+            ) {
                 // XD Netplay: a joiner hands their own team to the host, which
                 // writes it into the save it syncs at start. Sits where the
                 // host's Start button is, since only one of them ever shows.
-                // Only the opponent may submit (the server refuses anyone
-                // else), and a FAB has no disabled state, so a watcher or a
-                // player waiting for the seat does not get one.
+                // Only the opponent (a seated player in Multi) may submit (the
+                // server refuses anyone else), and a FAB has no disabled state,
+                // so a watcher or a player waiting for a seat does not get one.
                 ExtendedFloatingActionButton(onClick = { showSubmitTeam = true }) {
                     Text("Submit Team")
                 }
@@ -1246,10 +1248,13 @@ private fun PlayersAndSettings(
             val roleOpponent = stringResource(R.string.xd_role_opponent)
             val roleWaiting = stringResource(R.string.xd_role_waiting)
             val roleWatching = stringResource(R.string.xd_role_watching)
-            val roleLabel = { role: Int ->
-                when (role) {
-                    Player.ROLE_HOST -> roleHost
+            // "Seat %1$d": a Multi room's seats, the host's (Seat 1) included.
+            val roleSeat = stringResource(R.string.xd_role_seat)
+            val roleLabel = { player: Player ->
+                when (player.role) {
+                    Player.ROLE_HOST -> if (player.seat > 0) roleSeat.format(player.seat) else roleHost
                     Player.ROLE_OPPONENT -> roleOpponent
+                    Player.ROLE_SEATED -> roleSeat.format(player.seat)
                     Player.ROLE_WAITING -> roleWaiting
                     Player.ROLE_WATCHING -> roleWatching
                     else -> ""
@@ -1264,7 +1269,7 @@ private fun PlayersAndSettings(
                             stringResource(R.string.netplay_players_role),
                         )
                     )
-                    addAll(players.map { listOf(it.name, it.ping.toString(), roleLabel(it.role)) })
+                    addAll(players.map { listOf(it.name, it.ping.toString(), roleLabel(it)) })
                     repeat(4 - players.size) { add(listOf("", "", "")) }
                 },
                 modifier = Modifier

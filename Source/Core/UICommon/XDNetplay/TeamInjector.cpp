@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <atomic>
 #include <charconv>
+#include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -20,6 +22,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
+#include "Common/Hash.h"
 #include "Common/HookableEvent.h"
 #include "Common/IOFile.h"
 #include "Common/StringUtil.h"
@@ -180,16 +183,29 @@ bool ScrubAndDelete(const std::string& path)
 // ever deletes them on the way IN to the next session, so without this they
 // outlive the room by however long the user goes without playing again.
 //
-// Format must stay in step with NetPlayClient.cpp (GetGBASavePath and
-// OnSyncSaveDataGBA both build this name).
+// The one name netplay builds (NetPlay::GetGBANetplayTempPath: GetGBASavePath, OnSyncSaveDataGBA
+// and the server's Multi save sync all use it).
 std::string NetPlayTempSavePath(int slot)
 {
-  return fmt::format("{}{}{}.sav", File::GetUserPath(D_GBAUSER_IDX), GBA_SAVE_NETPLAY, slot + 1);
+  return NetPlay::GetGBANetplayTempPath(slot);
 }
 
 std::mutex s_purge_mutex;
 // Device awaiting a purge once emulation is fully down; -1 when none is armed.
 std::atomic<int> s_pending_device{-1};
+// A Multi game boots from NetPlayTemp1..4: scrub them once it has stopped.
+std::atomic<bool> s_temp_purge_armed{false};
+
+// Caller holds s_purge_mutex. The removed slots are appended to notes.
+void ScrubNetplayTempSaves(std::vector<std::string>* notes)
+{
+  for (int slot = 0; slot < 4; ++slot)
+  {
+    if (ScrubAndDelete(NetPlayTempSavePath(slot)) && notes)
+      notes->emplace_back(fmt::format("removed=netplaytemp{}", slot + 1));
+    ScrubAndDelete(NetPlayTempSavePath(slot) + TMP_SUFFIX);
+  }
+}
 // Registered once, kept for the life of the process. Destroying it from inside
 // its own callback would be legal (HookableEvent defers removal), but there is
 // nothing to gain from unregistering and re-registering per room.
@@ -270,12 +286,8 @@ void PurgeNow(int device)
   }
 
   // Runs on hosts too: a player who joined someone's room earlier still has
-  // that host's party in NetPlayTemp2.sav.
-  for (int slot = 0; slot < 4; ++slot)
-  {
-    if (ScrubAndDelete(NetPlayTempSavePath(slot)))
-      notes.emplace_back(fmt::format("removed=netplaytemp{}", slot + 1));
-  }
+  // that host's party in NetPlayTemp2.sav, and a Multi host its boot copies.
+  ScrubNetplayTempSaves(&notes);
 
 #ifdef HAS_LIBMGBA
   // GBADetectLog is compiled only when USE_MGBA is on; the purge itself is not,
@@ -293,6 +305,40 @@ void RunPendingPurge()
     return;
   std::lock_guard lock(s_purge_mutex);
   PurgeNow(device);
+}
+
+void RunTempPurge()
+{
+  if (!s_temp_purge_armed.exchange(false, std::memory_order_acq_rel))
+    return;
+  std::vector<std::string> notes;
+  {
+    std::lock_guard lock(s_purge_mutex);
+    ScrubNetplayTempSaves(&notes);
+  }
+#ifdef HAS_LIBMGBA
+  GBADetectLog::LogPostSession(fmt::format(
+      "multi boot-copies scrubbed {}",
+      notes.empty() ? std::string{"none"} : fmt::format("{}", fmt::join(notes, " "))));
+#endif
+}
+
+// The Core-state hook behind every deferred cleanup here, registered once for the life of the
+// process. Registered outside s_purge_mutex on purpose: Register() takes the event's own lock,
+// and the callback takes s_purge_mutex while that lock is held, so acquiring them in the other
+// order here could deadlock.
+void EnsureStateHook()
+{
+  static std::once_flag hook_once;
+  std::call_once(hook_once, [] {
+    s_state_hook = Core::AddOnStateChangedCallback([](Core::State state) {
+      if (state == Core::State::Uninitialized)
+      {
+        RunPendingPurge();
+        RunTempPurge();
+      }
+    });
+  });
 }
 }  // namespace
 
@@ -1025,7 +1071,9 @@ RoomTeamCheck CheckRoomTeams(int format, bool judge_slot)
 bool ValidateHostPartiesForFormat(std::string* reason)
 {
   const int format = Config::Get(Config::MAIN_XD_FORMAT);
-  const RoomTeamCheck check = CheckRoomTeams(format, /*judge_slot=*/true);
+  // A Multi room plays no spare team: its seats' teams are staged and judged at Start.
+  const RoomTeamCheck check =
+      CheckRoomTeams(format, /*judge_slot=*/format != FormatRules::FORMAT_MULTI);
   if (check.host.ok && check.slot.ok)
     return true;
   if (reason)
@@ -1109,16 +1157,7 @@ void RestoreHostTeam(int device)
   // after HW::Shutdown() has destroyed the SI devices and the GBA cores have
   // flushed. If emulation is already down (the common case -- stop the game,
   // then close the room) it runs inline and the hook has nothing left to do.
-  static std::once_flag hook_once;
-  std::call_once(hook_once, [] {
-    // Registered outside s_purge_mutex on purpose: Register() takes the event's
-    // own lock, and the callback takes s_purge_mutex while that lock is held,
-    // so acquiring them in the other order here could deadlock.
-    s_state_hook = Core::AddOnStateChangedCallback([](Core::State state) {
-      if (state == Core::State::Uninitialized)
-        RunPendingPurge();
-    });
-  });
+  EnsureStateHook();
 
   s_pending_device.store(device, std::memory_order_release);
 
@@ -1153,6 +1192,10 @@ void HealLeftoverGuestState()
   if (BattleCustomizer::IsNetplaySessionActive() || NetPlay::IsNetPlayRunning() ||
       !Core::IsUninitialized(Core::System::GetInstance()))
     return;
+
+  // A killed Multi room: its stages (every seat's team). Its boot copies are NetPlayTemp1..4,
+  // which both branches below scrub.
+  DropAllMultiStages();
 
   bool purged = false;
   for (const int device : {1, 2})
@@ -1189,5 +1232,379 @@ void HealLeftoverGuestState()
     GBADetectLog::LogPostSession(
         fmt::format("boot-heal teamcleanup {}", fmt::format("{}", fmt::join(notes, " "))));
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// XD multi battles: stages and boot copies (TeamInjector.h)
+// ---------------------------------------------------------------------------
+
+namespace
+{
+constexpr std::string_view STAGE_PREFIX = "stage-";
+constexpr std::string_view STAGE_SUFFIX = ".sav";
+
+std::string MultiStageDir()
+{
+  return File::GetUserPath(D_USER_IDX) + "XDNetplay/Multi/";
+}
+
+// Registry: serial -> the model its latest submission asked for. A leaf lock.
+std::mutex s_stage_mutex;
+std::map<u32, std::optional<int>> s_stages;
+
+// The serial a file in the stage folder belongs to, or nullopt for anything else in it.
+std::optional<u32> StageSerialOf(std::string_view file_name)
+{
+  if (!file_name.starts_with(STAGE_PREFIX))
+    return std::nullopt;
+  file_name.remove_prefix(STAGE_PREFIX.size());
+  const size_t end = file_name.find('.');
+  if (end == std::string_view::npos || end == 0)
+    return std::nullopt;
+  u32 serial = 0;
+  const auto [ptr, ec] = std::from_chars(file_name.data(), file_name.data() + end, serial);
+  if (ec != std::errc{} || ptr != file_name.data() + end)
+    return std::nullopt;
+  return serial;
+}
+
+// Every stage file (and its .bak/.tmp) whose serial fails keep; keep == nullptr drops all.
+void DropStagesIf(const std::function<bool(u32)>& keep)
+{
+  std::vector<std::string> dropped;
+  {
+    std::lock_guard lock(s_stage_mutex);
+    const std::string dir = MultiStageDir();
+    if (File::IsDirectory(dir))
+    {
+      const File::FSTEntry entry = File::ScanDirectoryTree(dir, false);
+      for (const File::FSTEntry& child : entry.children)
+      {
+        if (child.isDirectory)
+          continue;
+        const std::optional<u32> serial = StageSerialOf(child.virtualName);
+        if (!serial || (keep && keep(*serial)))
+          continue;
+        if (ScrubAndDelete(child.physicalName))
+          dropped.push_back(child.virtualName);
+      }
+    }
+    std::erase_if(s_stages, [&keep](const auto& stage) { return !keep || !keep(stage.first); });
+  }
+#ifdef HAS_LIBMGBA
+  if (!dropped.empty())
+  {
+    GBADetectLog::LogPostSession(
+        fmt::format("multi stages dropped {}", fmt::join(dropped, " ")));
+  }
+#endif
+}
+
+#ifdef HAS_LIBMGBA
+// A written stage has no undo copy: VerifiedWriteSaveFile's .bak is the previous team of the same
+// player, and nothing would ever read it.
+void FinishStageWrite(const std::string& stage_path)
+{
+  ScrubAndDelete(stage_path + BACKUP_SUFFIX);
+  ScrubAndDelete(stage_path + TMP_SUFFIX);
+}
+
+std::string StageDestination(int device)
+{
+  return fmt::format("your Seat {} team", device + 1);
+}
+
+std::optional<FormatRules::Verdict> ValidatePartyFile(int format, const std::string& path,
+                                                      const Gen3Data& data)
+{
+  if (path.empty() || !File::Exists(path))
+    return std::nullopt;
+  std::vector<u8> bytes;
+  if (!ReadFileBytes(path, &bytes))
+    return std::nullopt;
+  const auto save = EmeraldSave::Create(std::move(bytes));
+  if (!save || EmeraldSave::DetectGame(*save) == Gen3Game::FireRedLeafGreen)
+    return std::nullopt;
+  const auto party = save->ReadParty();
+  if (!party || party->empty())
+    return std::nullopt;
+  return FormatRules::ValidateParty(format, *party, data);
+}
+#endif
+}  // namespace
+
+std::string MultiStagePath(u32 serial)
+{
+  return fmt::format("{}{}{}{}", MultiStageDir(), STAGE_PREFIX, serial, STAGE_SUFFIX);
+}
+
+bool InjectGuestTeamToStage(const std::string& showdown_text, const std::string& trainer_name,
+                            int device, u32 serial, std::string* status, bool raise_to_level_100)
+{
+  const auto fail = [status](std::string message) {
+    if (status)
+      *status = std::move(message);
+    return false;
+  };
+#ifndef HAS_LIBMGBA
+  return fail("this build has no GBA support");
+#else
+  std::string error;
+  const auto data = Gen3Data::LoadBundled(&error);
+  if (!data)
+    return fail(fmt::format("game data unavailable ({})", error));
+
+  // The same FORMAT gate as InjectGuestTeam (the host's format governs), before anything is
+  // written.
+  const std::vector<ShowdownSet> sets = ShowdownParser::ParseTeam(showdown_text);
+  if (const int format = Config::Get(Config::MAIN_XD_FORMAT); FormatRules::HasTeamRules(format))
+  {
+    const FormatRules::Verdict verdict = FormatRules::ValidateSets(format, sets, *data);
+    if (!verdict.ok)
+      return fail(std::string(FormatRules::FormatDisplayName(format)) + ": " + verdict.reason);
+  }
+  if (sets.empty())
+    return fail("nothing recognizable in that paste");
+
+  std::vector<u8> bytes;
+  if (!ReadFileBytes(GuestTemplatePath(device), &bytes))
+    return fail("bundled template missing on the host");
+  auto save = EmeraldSave::Create(std::move(bytes), &error);
+  if (!save)
+    return fail(fmt::format("bundled template unreadable ({})", error));
+
+  const std::string stage_path = MultiStagePath(serial);
+  File::CreateFullPath(stage_path);
+  if (!WriteSetsToSave(*save, stage_path, sets, *data, trainer_name, raise_to_level_100,
+                       StageDestination(device), status))
+  {
+    FinishStageWrite(stage_path);
+    return false;
+  }
+  FinishStageWrite(stage_path);
+  return true;
+#endif
+}
+
+bool InjectGuestBundleToStage(const std::vector<u8>& bundle, int device, u32 serial,
+                              std::string* status, bool raise_to_level_100)
+{
+  const auto fail = [status](std::string message) {
+    if (status)
+      *status = std::move(message);
+    return false;
+  };
+#ifndef HAS_LIBMGBA
+  return fail("this build has no GBA support");
+#else
+  // Strict validation first, exactly as InjectGuestBundle.
+  std::string error;
+  const auto decoded = PartyBundle::Validate(bundle, &error);
+  if (!decoded)
+    return fail(fmt::format("save bundle rejected ({})", error));
+
+  std::vector<u8> bundle_to_write = bundle;
+  int raised = 0;
+  if (raise_to_level_100 &&
+      FormatRules::FormatFixedLevel(Config::Get(Config::MAIN_XD_FORMAT)) == 100)
+  {
+    if (const auto raise_data = Gen3Data::LoadBundled())
+    {
+      std::vector<Gen3Mon> mons = decoded->mons;
+      raised = MonFactory::RaisePartyToLevel100(mons, *raise_data);
+      for (size_t i = 0; i < mons.size() && PartyBundle::PARTY_OFFSET + (i + 1) * Gen3Mon::SIZE <=
+                                                bundle_to_write.size();
+           i++)
+      {
+        const auto encoded = mons[i].Encode();
+        std::copy(encoded.begin(), encoded.end(),
+                  bundle_to_write.begin() + PartyBundle::PARTY_OFFSET + i * Gen3Mon::SIZE);
+      }
+    }
+  }
+
+  if (const int format = Config::Get(Config::MAIN_XD_FORMAT); FormatRules::HasTeamRules(format))
+  {
+    std::string data_error;
+    const auto data = Gen3Data::LoadBundled(&data_error);
+    if (!data)
+    {
+      return fail(fmt::format("{}: cannot validate the party (game data unavailable: {})",
+                              FormatRules::FormatDisplayName(format), data_error));
+    }
+    const FormatRules::Verdict verdict = FormatRules::ValidateParty(format, decoded->mons, *data);
+    if (!verdict.ok)
+      return fail(std::string(FormatRules::FormatDisplayName(format)) + ": " + verdict.reason);
+  }
+
+  std::vector<u8> template_bytes;
+  if (!ReadFileBytes(GuestTemplatePath(device), &template_bytes))
+    return fail("bundled template missing on the host");
+  const auto save = PartyBundle::BuildSave(std::move(template_bytes), bundle_to_write, &error);
+  if (!save)
+    return fail(fmt::format("save bundle rejected ({})", error));
+
+  const std::string stage_path = MultiStagePath(serial);
+  File::CreateFullPath(stage_path);
+  const bool written = VerifiedWriteSaveFile(stage_path, *save, &error);
+  FinishStageWrite(stage_path);
+  if (!written)
+    return fail(fmt::format("save NOT written ({})", error));
+
+  if (status)
+  {
+    *status = fmt::format("{} Pokemon from the player's own save written to {}, playing as {}",
+                          decoded->mons.size(), StageDestination(device), decoded->trainer_name);
+    if (raised > 0)
+      *status += fmt::format(", {} raised to Lv. 100", raised);
+  }
+  return true;
+#endif
+}
+
+void RecordMultiStage(u32 serial, std::optional<int> model)
+{
+  std::lock_guard lock(s_stage_mutex);
+  s_stages[serial] = model;
+}
+
+std::optional<int> MultiStageModel(u32 serial)
+{
+  std::lock_guard lock(s_stage_mutex);
+  const auto it = s_stages.find(serial);
+  return it != s_stages.end() ? it->second : std::nullopt;
+}
+
+void DropMultiStages(std::span<const u32> keep)
+{
+  const std::vector<u32> kept(keep.begin(), keep.end());
+  DropStagesIf([&kept](u32 serial) { return std::ranges::find(kept, serial) != kept.end(); });
+}
+
+void DropAllMultiStages()
+{
+  DropStagesIf(nullptr);
+}
+
+bool WriteMultiBootSaves(const std::array<u32, 3>& seat_serials, bool host_fills_seat2,
+                         std::span<const u32> room_serials, std::string* error)
+{
+  const auto fail = [error](std::string message) {
+    if (error)
+      *error = std::move(message);
+    return false;
+  };
+#ifndef HAS_LIBMGBA
+  (void)seat_serials;
+  (void)host_fills_seat2;
+  (void)room_serials;
+  return fail("this build has no GBA support");
+#else
+  // The previous game's cores write their saves back as they shut down.
+  if (!Core::IsUninitialized(Core::System::GetInstance()))
+    return fail("the last battle is still closing");
+
+  {
+    std::lock_guard lock(s_purge_mutex);
+    const std::string host_path = SavePathForDevice(1);
+    if (host_path.empty() || !File::Exists(host_path))
+      return fail("no save on GBA port 2");
+    // Read only. A port-2 save marked as holding a guest's team is not the host's.
+    if (File::Exists(host_path + GUEST_MARK_SUFFIX))
+      return fail("the GBA port 2 save holds a guest's team");
+    std::vector<u8> host_bytes;
+    if (!ReadFileBytes(host_path, &host_bytes) || host_bytes.empty())
+      return fail("the GBA port 2 save could not be read");
+
+    std::vector<std::string> lines;
+    for (int slot = 0; slot < 4; ++slot)
+    {
+      std::vector<u8> stage_bytes;
+      const std::vector<u8>* bytes = &host_bytes;
+      std::string source = "host";
+      if (slot > 0 && !(slot == 1 && host_fills_seat2))
+      {
+        const u32 serial = seat_serials[slot - 1];
+        const std::string stage_path = MultiStagePath(serial);
+        if (serial == 0 || !ReadFileBytes(stage_path, &stage_bytes) || stage_bytes.empty())
+          return fail(fmt::format("no team for Seat {}", slot + 1));
+        bytes = &stage_bytes;
+        source = fmt::format("stage-{}", serial);
+      }
+      const std::string dest = NetPlay::GetGBANetplayTempPath(slot);
+      const std::string tmp = dest + TMP_SUFFIX;
+      File::CreateFullPath(dest);
+      {
+        File::IOFile file(tmp, "wb");
+        if (!file || !file.WriteBytes(bytes->data(), bytes->size()) || !file.Flush())
+          return fail(fmt::format("could not write {}", tmp));
+      }
+      if (!File::Rename(tmp, dest))
+        return fail(fmt::format("could not write {}", dest));
+      lines.push_back(fmt::format("multi boot sock={} src={} size={} crc={:08x}", slot, source,
+                                  bytes->size(), Common::ComputeCRC32(bytes->data(),
+                                                                      bytes->size())));
+    }
+    for (const std::string& line : lines)
+      GBADetectLog::NoteBoot(line);
+  }
+
+  // Their stages have served; a player who left does not get theirs back.
+  DropMultiStages(room_serials);
+  return true;
+#endif
+}
+
+void ScrubMultiBootSaves()
+{
+  std::lock_guard lock(s_purge_mutex);
+  ScrubNetplayTempSaves(nullptr);
+}
+
+void ArmTempPurgeOnStop()
+{
+  EnsureStateHook();
+  s_temp_purge_armed.store(true, std::memory_order_release);
+}
+
+void DisarmTempPurge()
+{
+  s_temp_purge_armed.store(false, std::memory_order_release);
+}
+
+bool IsTempPurgeArmed()
+{
+  return s_temp_purge_armed.load(std::memory_order_acquire);
+}
+
+MultiTeamCheck CheckMultiTeams(int format, const std::array<u32, 3>& seat_serials,
+                               bool host_fills_seat2)
+{
+  MultiTeamCheck check;
+  if (!FormatRules::HasTeamRules(format))
+    return check;
+#ifdef HAS_LIBMGBA
+  const auto data = Gen3Data::LoadBundled();
+  if (!data)
+    return check;
+  if (auto verdict = ValidatePartyFile(format, SavePathForDevice(1), *data))
+    check.host = std::move(*verdict);
+  for (size_t i = 0; i < seat_serials.size(); ++i)
+  {
+    if (i == 0 && host_fills_seat2)
+    {
+      check.seats[i] = check.host;
+      continue;
+    }
+    if (seat_serials[i] == 0)
+      continue;
+    if (auto verdict = ValidatePartyFile(format, MultiStagePath(seat_serials[i]), *data))
+      check.seats[i] = std::move(*verdict);
+  }
+#else
+  (void)seat_serials;
+  (void)host_fills_seat2;
+#endif
+  return check;
 }
 }  // namespace XDNetplay

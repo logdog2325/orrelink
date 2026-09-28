@@ -60,6 +60,18 @@ object GbaHostBridge {
     external fun setVisibleDevice(deviceNumber: Int)
 
     /**
+     * The GBA controller index whose input drives this player's GBA on SI channel [deviceNumber]:
+     * in netplay the local pad of that channel (-1 for a GBA this player does not own), outside
+     * netplay the channel itself. Lock-free; resolve it once per visible-device change.
+     */
+    @JvmStatic
+    external fun inputPadFor(deviceNumber: Int): Int
+
+    /** True when SI channel [deviceNumber] is the XD Multi port (a controller that becomes a GBA). */
+    @JvmStatic
+    external fun isConvertedPort(deviceNumber: Int): Boolean
+
+    /**
      * Packed joybus link diagnostic for one SI channel, or 0 for a device that
      * has none. See the bit layout in AndroidGBAHost.cpp; decode with the
      * `LinkDiag*` helpers below.
