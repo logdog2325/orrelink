@@ -65,10 +65,14 @@ object GbaLinkSettings {
         getGbaPhysicalDevice(deviceNumber) != null &&
                 getGameCubePortsSharingPhysicalController(deviceNumber).isEmpty()
 
+    // In a netplay game a GameCube pad this machine does not play there (every pad of a joiner's)
+    // shares nothing: blocking it would change nothing, and counting it would gate the GBA's
+    // physical buttons behind touch focus.
     fun getGameCubePortsSharingPhysicalController(deviceNumber: Int): IntArray {
         val gbaDevice = getGbaPhysicalDevice(deviceNumber) ?: return IntArray(0)
         return GBA_DEVICE_RANGE.filter { controllerIndex ->
             siDeviceSettings[controllerIndex].int in GAMECUBE_PAD_DEVICE_TYPES &&
+                    GbaHostBridge.localGcPadPlays(controllerIndex) &&
                     getPhysicalDevice(EmulatedController.getGcPad(controllerIndex)) == gbaDevice
         }.toIntArray()
     }

@@ -642,8 +642,8 @@ private:
   // XD multi battles (m_net_settings.xd_multi_p1), CPU thread only, reset in OnStartGame.
   // m_xdm_reset_pending: the port-1 GBA window's Reset, read by a poll that pushed nothing yet.
   // Edge-safe lower: the depth each pad's pushes keep (a raise applies at once, a lower steps by
-  // one only on a poll whose sample repeats the last one pushed, so no press or release is ever
-  // dropped) and that last sample (without the control bits). Chase re-anchor: which of the last
+  // one only on a poll whose sample repeats the last one pushed, sticks and triggers within 2, so
+  // no press or release is ever dropped) and that last sample (without the control bits). Chase re-anchor: which of the last
   // 120 pops of other machines' pads waited, and when the throttle was last re-anchored for it.
   bool m_xdm_reset_pending = false;
   std::array<u32, 4> m_push_target{};

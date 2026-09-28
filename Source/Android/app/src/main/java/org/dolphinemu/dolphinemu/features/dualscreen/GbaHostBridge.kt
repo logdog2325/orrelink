@@ -67,9 +67,12 @@ object GbaHostBridge {
     @JvmStatic
     external fun inputPadFor(deviceNumber: Int): Int
 
-    /** True when SI channel [deviceNumber] is the XD Multi port (a controller that becomes a GBA). */
+    /**
+     * Whether local GameCube pad [localPad] plays a GameCube port in the running netplay game
+     * (a joiner's never does: its only ports are GBAs); true outside netplay. Lock-free.
+     */
     @JvmStatic
-    external fun isConvertedPort(deviceNumber: Int): Boolean
+    external fun localGcPadPlays(localPad: Int): Boolean
 
     /**
      * Packed joybus link diagnostic for one SI channel, or 0 for a device that

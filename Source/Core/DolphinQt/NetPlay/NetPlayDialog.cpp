@@ -718,7 +718,7 @@ QString NetPlayDialog::WatchOnlyToolTip(bool multi)
   if (multi)
   {
     return tr("Watch without playing. The next player in line takes your seat.\nA change made "
-              "during a battle applies to the next one.");
+              "in a game applies after the host stops it.");
   }
   return tr("Watch without playing. The next player in line becomes the opponent.\nA change made "
             "during a battle applies to the next one.");
@@ -1459,6 +1459,13 @@ void NetPlayDialog::OnSubmitTeam()
   }
   const int stored_model_index = model_combo->findData(Config::Get(Config::MAIN_XD_SUBMIT_MODEL));
   model_combo->setCurrentIndex(stored_model_index >= 0 ? stored_model_index : 0);
+  // A Multi battle emits no model lines: every seat wears its own save's model.
+  if (const auto client = Settings::Instance().GetNetPlayClient();
+      client && client->IsXdMultiSeats())
+  {
+    model_combo->setEnabled(false);
+    model_combo->setToolTip(tr("Multi uses each save's own model."));
+  }
   use_save_check->setChecked(Config::Get(Config::MAIN_XD_SUBMIT_USE_SAVE));
 #ifndef HAS_LIBMGBA
   // Extracting a bundle means reading the local GBA save, and everything that
