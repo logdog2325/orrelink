@@ -13,6 +13,17 @@
 
 namespace XDNetplay::BattleCustomizer
 {
+// Which kind of battle a generated block is for. There is no global Multi flag: every generate
+// call says it. Multi only for a Multi netplay Start (MultiStart.h PrepareMultiStart) and for a
+// solo boot with SI port 1 set to the XD Multi device and the Multi format; everything else,
+// including every TeamData regeneration and every room close, is OneVsOne, so no Multi line can
+// reach a 1v1 boot.
+enum class StartKind
+{
+  OneVsOne,
+  Multi,
+};
+
 // ---------------------------------------------------------------------------
 // Cosmetic battle selectors ("$OrreLink Battle Style")
 // ---------------------------------------------------------------------------
@@ -166,7 +177,13 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
 // and Start gates -- but the battle-time clauses (Sleep, Freeze, Self-KO,
 // Species, Item) ARE covered here: the pinned stock clause bytes have them
 // all ON, so the game itself enforces them in battle.
-std::string FormatRuleLines();
+//
+// Multi (StartKind::Multi with the Multi format): layout 3 (GBA + GBA VS GBA +
+// GBA), pairing 0, rules Custom 1 holding the Lv100 tournament preset with
+// pick 3 (FormatRules::MULTI_PICK; the exactly-three fallback keeps the stock
+// "all battle" entry mode), the stock clauses and the timer word. No battle
+// type pin. The Multi format with OneVsOne emits nothing.
+std::string FormatRuleLines(StartKind kind = StartKind::OneVsOne);
 
 // The host's four launcher selections. 0 (the config default) = game default.
 struct Selection
@@ -227,15 +244,20 @@ bool IsNetplaySessionActive();
 // and end-of-session cleanup use it -- without it, a picked format would
 // leave its rules block at rest in the file between sessions, where any
 // cheats-on GXXE01 boot outside our flows would load it.
+//
+// kind = Multi (phase 1 of the multi battles): no trainer-model lines at all,
+// each seat wears its own save's model; the class-0 bust is always hidden and
+// the preview drawer always skipped; music and venue as usual; plus the
+// Multi rules pin (FormatRuleLines).
 bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
-                   bool include_format_rules = true);
+                   bool include_format_rules = true, StartKind kind = StartKind::OneVsOne);
 
 // RegenerateIni driven entirely by config: selection from the MAIN_XD_STYLE_*
 // keys, ou_enabled from MAIN_XD_FORMAT == FORMAT_OU (the Format dropdown is
 // the OU choice now; the flag PrepareForStart reconciles cannot distort it).
 // This is the call for the host's TeamData handlers: regenerate on every
 // submission arrival so a model submitted any time before Start is honored.
-bool RegenerateFromConfig(std::string* status);
+bool RegenerateFromConfig(std::string* status, StartKind kind = StartKind::OneVsOne);
 
 // The pre-start hook, host side, strictly before RequestStartGame (desktop:
 // ApplyStartForcing; Android: nativeStartGame): regenerates the block once
@@ -245,7 +267,7 @@ bool RegenerateFromConfig(std::string* status);
 // removed OU toggle from silently shipping OU patches under "Free").
 // A submission that arrives after this point is rejected by the server while
 // the battle runs, so the synced set can never diverge mid-session.
-void PrepareForStart();
+void PrepareForStart(StartKind kind = StartKind::OneVsOne);
 
 // A music and location change for a game that is already running (the room's Music & Location
 // while XD is open). The netplay client installs these lines at the same emulated moment on

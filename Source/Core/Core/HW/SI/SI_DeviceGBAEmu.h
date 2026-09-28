@@ -92,6 +92,8 @@ public:
   void ReleaseLinkLatches(const char* reason);
   // Tick-anchored reset decided from synced state.
   void RequestSyncedReset(u64 tick, const char* reason);
+  // The tick of the last command sent to the core: the anchor the X-button reset uses.
+  u64 GetTimestampSent() const { return m_timestamp_sent; }
 
 private:
   enum class NextAction
