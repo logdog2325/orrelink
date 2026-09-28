@@ -114,7 +114,8 @@ bool EnsureGbaConfig(bool multi_solo)
   // Port 1 pad, ports 2/3 integrated GBAs -- the fixed XD link layout. With
   // Multi enabled a Wii U adapter on port 1 stays (a multi battle reads the
   // host's controller from it); a solo multi battle keeps the XD Multi device
-  // and a fourth GBA.
+  // and a fourth GBA. Any other launch takes back the fourth GBA a solo multi
+  // battle left on port 4.
   const SerialInterface::SIDevices port1 = Config::Get(Config::GetInfoForSIDevice(0));
   const bool keep_adapter = port1 == SerialInterface::SIDEVICE_WIIU_ADAPTER &&
                             Config::Get(Config::MAIN_XD_MULTI_ENABLED);
@@ -123,10 +124,15 @@ bool EnsureGbaConfig(bool multi_solo)
     Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(3),
                              SerialInterface::SIDEVICE_GC_GBA_EMULATED);
   }
-  else if (!keep_adapter)
+  else
   {
-    Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(0),
-                             SerialInterface::SIDEVICE_GC_CONTROLLER);
+    if (!keep_adapter)
+    {
+      Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(0),
+                               SerialInterface::SIDEVICE_GC_CONTROLLER);
+    }
+    if (Config::Get(Config::GetInfoForSIDevice(3)) == SerialInterface::SIDEVICE_GC_GBA_EMULATED)
+      Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(3), SerialInterface::SIDEVICE_NONE);
   }
   Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(1),
                            SerialInterface::SIDEVICE_GC_GBA_EMULATED);

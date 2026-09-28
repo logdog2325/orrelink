@@ -45,6 +45,7 @@ fun BattleStyleDropdown(
     onSelected: (Int) -> Unit,
     modifier: Modifier = Modifier,
     supportingText: String? = null,
+    enabled: Boolean = true,
 ) {
     var expanded by remember { mutableStateOf(false) }
     val selectedName = options.firstOrNull { it.id == selectedId }?.let { optionLabel(it) }
@@ -52,13 +53,14 @@ fun BattleStyleDropdown(
 
     ExposedDropdownMenuBox(
         expanded = expanded,
-        onExpandedChange = { expanded = it },
+        onExpandedChange = { expanded = enabled && it },
         modifier = modifier,
     ) {
         OutlinedTextField(
             value = selectedName,
             onValueChange = {},
             readOnly = true,
+            enabled = enabled,
             singleLine = true,
             label = { Text(label) },
             supportingText = supportingText?.let { { Text(it) } },

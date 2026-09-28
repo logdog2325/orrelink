@@ -12,6 +12,7 @@
 #include <ctime>
 #include <array>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <iterator>
@@ -97,9 +98,21 @@ static NetPlayClient* netplay_client = nullptr;
 static bool s_si_poll_batching = false;
 // GbaInputPadFor: per SI channel, the local pad whose GBA input drives this machine's GBA there in
 // the running game, -1 for a GBA this machine does not play. Written on the NETPLAY thread at
-// OnStartGame and cleared at StopGame; read lock-free from UI threads.
+// OnStartGame and cleared by every stop (InvokeStop) and by ~NetPlayClient; read lock-free from UI
+// threads.
+// LocalGcPadPlays reads s_gc_pad_plays the same way.
 static std::array<std::atomic<s8>, 4> s_gba_input_pad{};
+static std::array<std::atomic<bool>, 4> s_gc_pad_plays{};
 static std::atomic<bool> s_gba_input_active{false};
+
+static void ClearGbaInputPads()
+{
+  s_gba_input_active.store(false, std::memory_order_release);
+  for (auto& pad : s_gba_input_pad)
+    pad.store(-1, std::memory_order_relaxed);
+  for (auto& plays : s_gc_pad_plays)
+    plays.store(false, std::memory_order_relaxed);
+}
 
 // XD netplay peer-vanish watchdog -- see WaitOnRemote() for the full story.
 //
@@ -195,6 +208,8 @@ NetPlayClient::~NetPlayClient()
   // not perfect
   if (m_is_running.IsSet())
     StopGame();
+  // A Stop whose answer never came back (m_is_running already clear) skipped StopGame.
+  ClearGbaInputPads();
 
   if (m_is_connected)
   {
@@ -803,6 +818,10 @@ void NetPlayClient::OnXdNotice(sf::Packet& packet)
     tag = "gba-start-failed-watcher";
     line = fmt::format("{}'s GBA on port {} failed to start. They stopped watching.", name,
                        arg + 1);
+    break;
+  case XdNoticeKind::DelayAtLimit:
+    tag = "delay-at-limit";
+    line = "Input delay is at its limit for this room. Expect slowdown.";
     break;
   default:
     return;
@@ -1425,12 +1444,22 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
   // map is final here.
   if (m_local_player)
   {
+    for (auto& plays : s_gc_pad_plays)
+      plays.store(false, std::memory_order_relaxed);
     for (int ch = 0; ch < 4; ++ch)
     {
-      const bool mine = m_net_settings.gba_config[ch].enabled &&
-                        m_net_settings.pad_map[ch] == m_local_player->pid;
+      const bool owned = m_net_settings.pad_map[ch] == m_local_player->pid;
+      const bool mine = m_net_settings.gba_config[ch].enabled && owned;
       s_gba_input_pad[ch].store(mine ? static_cast<s8>(InGamePadToLocalPad(ch)) : s8{-1},
                                 std::memory_order_relaxed);
+      // A GameCube port of this machine's (the XD Multi port counts: it is a controller too).
+      const int local = InGamePadToLocalPad(ch);
+      if (owned && local >= 0 && local < 4 &&
+          !PadTravelsAsGba(m_net_settings.gba_config, m_net_settings.xd_multi_p1,
+                           static_cast<size_t>(ch)))
+      {
+        s_gc_pad_plays[local].store(true, std::memory_order_relaxed);
+      }
     }
     s_gba_input_active.store(true, std::memory_order_release);
   }
@@ -3994,7 +4023,9 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
 
     // XD multi battles: edge-safe lower. A raise applies at once; a lower gives back one entry
     // only on a poll whose sample repeats the last one pushed, so skipping this poll's push drops
-    // no press and no release.
+    // no press and no release. Buttons and the port-1 GBA keys (analogA, analogB) must match
+    // exactly; sticks and triggers within 2, since a real controller's analog bytes
+    // (a Wii U adapter's especially) jitter by one and would otherwise never repeat.
     u32 target = m_target_buffer_size;
     if (m_net_settings.xd_multi_p1)
     {
@@ -4006,17 +4037,19 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
       }
       else
       {
+        const auto axis_close = [](u8 a, u8 b) { return std::abs(int{a} - int{b}) <= 2; };
         const bool gba_wire =
             PadTravelsAsGba(m_net_settings.gba_config, true, static_cast<size_t>(ingame_pad));
         const bool repeat =
             last && last->button == pad_status.button &&
             (gba_wire ||
              (last->analogA == pad_status.analogA && last->analogB == pad_status.analogB &&
-              last->stickX == pad_status.stickX && last->stickY == pad_status.stickY &&
-              last->substickX == pad_status.substickX &&
-              last->substickY == pad_status.substickY &&
-              last->triggerLeft == pad_status.triggerLeft &&
-              last->triggerRight == pad_status.triggerRight &&
+              axis_close(last->stickX, pad_status.stickX) &&
+              axis_close(last->stickY, pad_status.stickY) &&
+              axis_close(last->substickX, pad_status.substickX) &&
+              axis_close(last->substickY, pad_status.substickY) &&
+              axis_close(last->triggerLeft, pad_status.triggerLeft) &&
+              axis_close(last->triggerRight, pad_status.triggerRight) &&
               last->isConnected == pad_status.isConnected));
         if (repeat)
           --kept;
@@ -4187,6 +4220,9 @@ void NetPlayClient::InvokeStop()
   // had done nothing wrong.
   m_stop_requested_ms.store(0, std::memory_order_relaxed);
 
+  // The touch overlay's pad lookup goes back to "outside a netplay game" on every route too.
+  ClearGbaInputPads();
+
   // stop waiting for input
   m_gc_pad_event.Set();
   m_wii_pad_event.Set();
@@ -4200,7 +4236,6 @@ bool NetPlayClient::StopGame()
   InvokeStop();
 
   NetPlay_Disable();
-  s_gba_input_active.store(false, std::memory_order_release);
 
   // stop game
   m_dialog->StopGame();
@@ -4602,6 +4637,15 @@ int GbaInputPadFor(int channel)
   if (!s_gba_input_active.load(std::memory_order_acquire))
     return channel;
   return s_gba_input_pad[channel].load(std::memory_order_relaxed);
+}
+
+bool LocalGcPadPlays(int local_pad)
+{
+  if (local_pad < 0 || local_pad >= static_cast<int>(s_gc_pad_plays.size()))
+    return false;
+  if (!s_gba_input_active.load(std::memory_order_acquire))
+    return true;
+  return s_gc_pad_plays[local_pad].load(std::memory_order_relaxed);
 }
 
 std::string GetGBASavePath(int pad_num)

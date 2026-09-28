@@ -315,7 +315,10 @@ fun NetplayScreen(
                     Spacer(Modifier.height(12.dp))
                     // Host mode: this is the HOST model (the launcher's "Your
                     // model" pick), so its first entry is "Game default" and
-                    // no guest-fallback wording applies.
+                    // no guest-fallback wording applies. A Multi seat's pick
+                    // does nothing (every seat wears its save's own model), so
+                    // it greys out.
+                    val multiSeat = !isHosting && localRole == Player.ROLE_SEATED
                     BattleStyleDropdown(
                         label = stringResource(
                             if (isHosting) R.string.xd_style_your_model
@@ -330,9 +333,13 @@ fun NetplayScreen(
                         onSelected = { modelDraft = it },
                         modifier = Modifier.fillMaxWidth(),
                         supportingText = stringResource(
-                            if (isHosting) R.string.xd_host_submit_model_hint
-                            else R.string.xd_style_submit_model_hint
-                        )
+                            when {
+                                isHosting -> R.string.xd_host_submit_model_hint
+                                multiSeat -> R.string.xd_submit_model_multi
+                                else -> R.string.xd_style_submit_model_hint
+                            }
+                        ),
+                        enabled = !multiSeat
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(
