@@ -546,7 +546,7 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeDisplayName
                                                                                jobject,
                                                                                jint jformat)
 {
-  return ToJString(env, XDNetplay::FormatRules::FormatDisplayName(jformat));
+  return ToJString(env, XDNetplay::FormatRules::FormatListLabel(jformat));
 }
 
 JNIEXPORT jstring JNICALL
