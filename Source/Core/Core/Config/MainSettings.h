@@ -257,7 +257,7 @@ extern const Info<int> MAIN_XD_STYLE_VENUE;
 // Free, never clamped.
 extern const Info<int> MAIN_XD_FORMAT;
 // Shows the Multi format (four players, XD's "GBA + GBA VS GBA + GBA") in the format lists.
-// Off by default: Multi is for testers until its tests pass.
+// On by default and labeled experimental in the lists; False hides it.
 extern const Info<bool> MAIN_XD_MULTI_ENABLED;
 // Tester switch, INI only, honored only with MAIN_XD_MULTI_ENABLED, host only: at a Multi Start a
 // lone guest plays Seats 3 and 4 (whichever seat the lobby gave it) and the host Seat 2, so two

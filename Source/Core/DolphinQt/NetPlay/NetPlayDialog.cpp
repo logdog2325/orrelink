@@ -997,7 +997,7 @@ void NetPlayDialog::UpdateGUI()
   {
     m_format_label->setText(
         tr("Format: %1")
-            .arg(QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(*room_format))));
+            .arg(QString::fromStdString(XDNetplay::FormatRules::FormatListLabel(*room_format))));
   }
   m_format_button->setVisible(server && is_xd);
 
@@ -1972,7 +1972,7 @@ void NetPlayDialog::OnChangeFormat()
   for (const int format : formats)
   {
     auto* item =
-        new QListWidgetItem(QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(format)));
+        new QListWidgetItem(QString::fromStdString(XDNetplay::FormatRules::FormatListLabel(format)));
     item->setData(Qt::UserRole, format);
     list->addItem(item);
     if (format == current)
