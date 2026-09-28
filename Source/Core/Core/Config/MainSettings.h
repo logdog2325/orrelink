@@ -259,9 +259,10 @@ extern const Info<int> MAIN_XD_FORMAT;
 // Shows the Multi format (four players, XD's "GBA + GBA VS GBA + GBA") in the format lists.
 // Off by default: Multi is for testers until its tests pass.
 extern const Info<bool> MAIN_XD_MULTI_ENABLED;
-// Tester switch, INI only, honored only with MAIN_XD_MULTI_ENABLED, host only: at a Multi Start an
-// empty Seat 2 is played by the host and an empty Seat 4 by the Seat 3 player, so two machines
-// can run a Multi battle. Desktop only for the doubled seat (Android shows one local GBA).
+// Tester switch, INI only, honored only with MAIN_XD_MULTI_ENABLED, host only: at a Multi Start a
+// lone guest plays Seats 3 and 4 (whichever seat the lobby gave it) and the host Seat 2, so two
+// machines can run a Multi battle; with more guests an empty Seat 2 is the host and an empty
+// Seat 3 or 4 repeats the other. Desktop only for the doubled seat (Android shows one local GBA).
 extern const Info<bool> MAIN_XD_MULTI_FILL_SEATS;
 // Tester switch, INI only, host only: in a Multi battle only Seat 1's B backs out of the team
 // preview (BattleCustomizer's preview-cancel pin). Off until its solo test passes; while off,
