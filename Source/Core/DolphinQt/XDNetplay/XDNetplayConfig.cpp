@@ -91,20 +91,43 @@ bool LooksLikeXdSession(const std::string& published_game_name)
   return false;
 }
 
-bool EnsureGbaConfig()
+bool IsSoloMultiLaunch()
 {
-  // Rom2/Rom3 point at the Emerald dump the launcher imported. Re-assert both
-  // only while the stored path still exists on disk, so a deleted dump shows
-  // up as a red checklist row instead of being silently re-broken at boot.
+  return Config::Get(Config::MAIN_XD_MULTI_ENABLED) &&
+         Config::Get(Config::MAIN_XD_FORMAT) == FormatRules::FORMAT_MULTI &&
+         Config::Get(Config::GetInfoForSIDevice(0)) == SerialInterface::SIDEVICE_GC_GBA_XDMULTI;
+}
+
+bool EnsureGbaConfig(bool multi_solo)
+{
+  // The GBA ROM paths point at the Emerald dump the launcher imported: ports 2
+  // and 3 for a 1v1 link, all four for a multi battle. Re-assert them only
+  // while the stored path still exists on disk, so a deleted dump shows up as
+  // a red checklist row instead of being silently re-broken at boot.
   const std::string rom_path = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
   if (!rom_path.empty() && File::Exists(rom_path))
   {
-    Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[1], rom_path);
-    Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[2], rom_path);
+    for (int i = 0; i < 4; ++i)
+      Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[i], rom_path);
   }
 
-  // Port 1 pad, ports 2/3 integrated GBAs -- the fixed XD link layout.
-  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(0), SerialInterface::SIDEVICE_GC_CONTROLLER);
+  // Port 1 pad, ports 2/3 integrated GBAs -- the fixed XD link layout. With
+  // Multi enabled a Wii U adapter on port 1 stays (a multi battle reads the
+  // host's controller from it); a solo multi battle keeps the XD Multi device
+  // and a fourth GBA.
+  const SerialInterface::SIDevices port1 = Config::Get(Config::GetInfoForSIDevice(0));
+  const bool keep_adapter = port1 == SerialInterface::SIDEVICE_WIIU_ADAPTER &&
+                            Config::Get(Config::MAIN_XD_MULTI_ENABLED);
+  if (multi_solo)
+  {
+    Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(3),
+                             SerialInterface::SIDEVICE_GC_GBA_EMULATED);
+  }
+  else if (!keep_adapter)
+  {
+    Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(0),
+                             SerialInterface::SIDEVICE_GC_CONTROLLER);
+  }
   Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(1),
                            SerialInterface::SIDEVICE_GC_GBA_EMULATED);
   Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(2),

@@ -187,9 +187,12 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     return@registerForActivityResult
                 }
                 statusMessage = null
-                // Same ROM in both linkable slots, mirroring the desktop XD Netplay config.
+                // Same ROM in every linkable slot (ports 2/3 for 1v1, all four for a multi
+                // battle), mirroring the desktop XD Netplay config.
+                StringSetting.MAIN_GBA_ROM_1.setString(NativeConfig.LAYER_BASE, path)
                 StringSetting.MAIN_GBA_ROM_2.setString(NativeConfig.LAYER_BASE, path)
                 StringSetting.MAIN_GBA_ROM_3.setString(NativeConfig.LAYER_BASE, path)
+                StringSetting.MAIN_GBA_ROM_4.setString(NativeConfig.LAYER_BASE, path)
                 NativeConfig.save(NativeConfig.LAYER_BASE)
                 refreshChecks()
             }
@@ -553,8 +556,10 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
      */
     private fun migrateContentPaths() {
         migrateOne(StringSetting.MAIN_GBA_BIOS_PATH, "gba_bios.bin")
+        migrateOne(StringSetting.MAIN_GBA_ROM_1, "EMERALD.gba")
         migrateOne(StringSetting.MAIN_GBA_ROM_2, "EMERALD.gba")
         migrateOne(StringSetting.MAIN_GBA_ROM_3, "EMERALD.gba")
+        migrateOne(StringSetting.MAIN_GBA_ROM_4, "EMERALD.gba")
     }
 
     private fun migrateOne(setting: StringSetting, destName: String) {
@@ -725,11 +730,14 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         } ?: return false
 
         var changed = false
-        if (StringSetting.MAIN_GBA_ROM_2.string != romPath) {
-            StringSetting.MAIN_GBA_ROM_2.setString(NativeConfig.LAYER_BASE, romPath); changed = true
-        }
-        if (StringSetting.MAIN_GBA_ROM_3.string != romPath) {
-            StringSetting.MAIN_GBA_ROM_3.setString(NativeConfig.LAYER_BASE, romPath); changed = true
+        // Every linkable slot: ports 2/3 for 1v1, all four for a multi battle.
+        for (setting in listOf(
+            StringSetting.MAIN_GBA_ROM_1, StringSetting.MAIN_GBA_ROM_2,
+            StringSetting.MAIN_GBA_ROM_3, StringSetting.MAIN_GBA_ROM_4
+        )) {
+            if (setting.string != romPath) {
+                setting.setString(NativeConfig.LAYER_BASE, romPath); changed = true
+            }
         }
         // XD's GBA-vs-GBA mode is a two-player battle, so it wants a GBA on
         // BOTH socket 2 (SIDevice1) and socket 3 (SIDevice2) — XD is the peer
@@ -742,9 +750,16 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         if (IntSetting.MAIN_SI_DEVICE_2.int != 13) {
             IntSetting.MAIN_SI_DEVICE_2.setInt(NativeConfig.LAYER_BASE, 13); changed = true
         }
-        // The 1v1 link wants a plain pad on port 1, not XD Multi (14).
+        // The 1v1 link wants a plain pad on port 1, not XD Multi (14). A solo multi battle (format
+        // Multi, only offered while Multi is enabled) keeps it, with a GBA on port 4 as well.
         if (IntSetting.MAIN_SI_DEVICE_0.int == 14) {
-            IntSetting.MAIN_SI_DEVICE_0.setInt(NativeConfig.LAYER_BASE, 6); changed = true
+            if (IntSetting.MAIN_XD_FORMAT.int == FormatBridge.FORMAT_MULTI) {
+                if (IntSetting.MAIN_SI_DEVICE_3.int != 13) {
+                    IntSetting.MAIN_SI_DEVICE_3.setInt(NativeConfig.LAYER_BASE, 13); changed = true
+                }
+            } else {
+                IntSetting.MAIN_SI_DEVICE_0.setInt(NativeConfig.LAYER_BASE, 6); changed = true
+            }
         }
         // Cheats are DERIVED state for XD sessions: shared core's
         // PrepareForStart turns MAIN_ENABLE_CHEATS on exactly when the session

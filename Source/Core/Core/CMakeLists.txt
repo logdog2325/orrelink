@@ -292,6 +292,8 @@ add_library(core
   HW/SI/SI_DeviceNull.h
   HW/SI/SI.cpp
   HW/SI/SI.h
+  HW/SI/XDMultiCtl.cpp
+  HW/SI/XDMultiCtl.h
   HW/Sram.cpp
   HW/Sram.h
   HW/StreamADPCM.cpp

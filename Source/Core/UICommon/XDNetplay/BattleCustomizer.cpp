@@ -966,7 +966,25 @@ static std::string TimerSummary()
   return fmt::format("{}s/{}min", *word & 0xFFFFu, *word >> 16);
 }
 
-std::string FormatRuleLines()
+// Multi (layout 3, XD's "GBA + GBA VS GBA + GBA"): the menu globals. Layout 3 is the four-GBA
+// tag layout (>= 2 forces tag at commit); pairing 0 is the seat order the layout table pairs as
+// ports {1,2} vs {3,4}; rules Custom 1 as for the 1v1 formats.
+constexpr u32 MULTI_MENU_GLOBAL_LINES[][2] = {
+    {0x044349EC, 0x00000003},  // player layout = GBA + GBA VS GBA + GBA
+    {0x044349E4, 0x00000000},  // pairing
+    {0x044349FC, 0x00000003},  // rules choice = Custom 1
+};
+// The optional preview-cancel pin (MAIN_XD_MULTI_PREVIEW_CANCEL_PIN): at 0x80079B64..7C the team
+// preview ORs the four slots' pad words and cancels for everyone on B (0x20). mr r0,r3 keeps
+// slot 0's word only and the two nops drop the ORs of the other three, so only Seat 1's B backs
+// out.
+constexpr u32 MULTI_PREVIEW_CANCEL_PIN_LINES[][2] = {
+    {0x04079B70, 0x7C601B78},  // mr r0,r3
+    {0x04079B78, 0x60000000},  // nop
+    {0x04079B7C, 0x60000000},  // nop
+};
+
+std::string FormatRuleLines(StartKind kind)
 {
   // Sleep/Freeze/Self-KO clauses ride the stock clause bytes in the preset
   // words above (all decoded ON -- the game itself enforces them);
@@ -980,6 +998,34 @@ std::string FormatRuleLines()
   // pin exactly what Orre Colosseum pins, Pyrite and Phenac what Orre Limited
   // pins: their differences are all in the app-side legality layer.
   const int format = Config::Get(Config::MAIN_XD_FORMAT);
+  if (format == FormatRules::FORMAT_MULTI)
+  {
+    if (kind != StartKind::Multi)
+      return {};
+    std::string lines;
+    for (const auto& line : MULTI_MENU_GLOBAL_LINES)
+      AppendLine(&lines, line[0], line[1]);
+    const std::optional<u32> timer_word = TimerWord();
+    for (size_t i = 0; i < 36; i++)
+    {
+      u32 word = RULESET_LV100_WORDS[i];
+      if (i == RULESET_ENTRIES_WORD)
+        word = (word & 0xFFFF0000u) | static_cast<u32>(FormatRules::MULTI_PICK);
+      else if (i == RULESET_TIMER_WORD && timer_word)
+        word = *timer_word;
+      else if (FormatRules::MULTI_EXACTLY_THREE && i == RULESET_ENTRY_MODE_WORD)
+        word = STOCK_ENTRY_MODE_WORD;  // three-mon teams, all three battle
+      AppendLine(&lines, ORRE_RULESET_BASE + static_cast<u32>(4 * i), word);
+    }
+    if (Config::Get(Config::MAIN_XD_MULTI_PREVIEW_CANCEL_PIN))
+    {
+      for (const auto& line : MULTI_PREVIEW_CANCEL_PIN_LINES)
+        AppendLine(&lines, line[0], line[1]);
+    }
+    if (timer_word)
+      LogNote(fmt::format("battlestyle timer {} word={:08X}", TimerSummary(), *timer_word));
+    return lines;
+  }
   const u32* words = nullptr;
   u32 entries = 0;
   u32 battle_type = 1;  // Double (Orre shapes); Hoenn shapes override to Single
@@ -1016,7 +1062,7 @@ std::string FormatRuleLines()
     doubles_ou = true;
     break;
   default:
-    return {};  // Free / OU / Multi / unknown: no rules pin, sessions stay stock
+    return {};  // Free / OU / unknown: no rules pin, sessions stay stock
   }
 
   std::string lines;
@@ -1153,38 +1199,46 @@ static int SaveBustClass(int device)
 }
 
 bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
-                   bool include_format_rules)
+                   bool include_format_rules, StartKind kind)
 {
+  const bool multi = kind == StartKind::Multi;
   // Guest stash (already validated) wins over the host's fallback dropdown --
-  // the same precedence the socket-3 team fallback uses.
+  // the same precedence the socket-3 team fallback uses. A Multi block has no
+  // model lines: each seat wears its own save's model.
   std::optional<int> guest_model;
+  if (!multi)
   {
     std::lock_guard lock(s_mutex);
     guest_model = s_guest_model;
   }
   const bool guest_submitted = guest_model.has_value();
-  if (!guest_model)
+  if (!guest_model && !multi)
     guest_model = sel.guest_model_fallback > 0 ? std::optional<int>(sel.guest_model_fallback) :
                                                  std::nullopt;
+  const std::optional<int> host_model =
+      !multi && sel.host_model > 0 ? std::optional<int>(sel.host_model) : std::nullopt;
 
   // Side mapping (host -> "Player" block, guest -> "Opponent" line) is the
   // expected orientation; if the one-time emulator test shows it reversed,
   // swap the first two arguments HERE only.
   // A format rules-pin implies GBA-vs-GBA, where the preview's default
   // protagonist busts are always wrong -- have the block hide them.
+  // A Multi block always hides the class-0 bust and always skips the preview drawer (no side's
+  // TID is pinned, so no preview head can be right).
   const bool format_pinned =
-      include_format_rules && FormatRules::HasTeamRules(Config::Get(Config::MAIN_XD_FORMAT));
+      multi ||
+      (include_format_rules && FormatRules::HasTeamRules(Config::Get(Config::MAIN_XD_FORMAT)) &&
+       Config::Get(Config::MAIN_XD_FORMAT) != FormatRules::FORMAT_MULTI);
   std::string block = GenerateCodeBlock(
-      sel.host_model > 0 ? std::optional<int>(sel.host_model) : std::nullopt, guest_model,
-      sel.music > 0 ? std::optional<int>(sel.music) : std::nullopt,
+      host_model, guest_model, sel.music > 0 ? std::optional<int>(sel.music) : std::nullopt,
       sel.venue > 0 ? std::optional<int>(sel.venue) : std::nullopt,
-      SaveBustClass(1), SaveBustClass(2), format_pinned);
+      multi ? 0 : SaveBustClass(1), multi ? 0 : SaveBustClass(2), format_pinned);
   // FORMAT seam: FormatRuleLines() contributes the picked format's in-game
   // rule pins (menu globals, battle type, Custom-1 ruleset); Free/OU return
   // "" and an all-default session stays byte-for-byte stock.
   if (include_format_rules)
   {
-    if (const std::string format_lines = FormatRuleLines(); !format_lines.empty())
+    if (const std::string format_lines = FormatRuleLines(kind); !format_lines.empty())
     {
       if (!block.empty())
         block.push_back('\n');
@@ -1199,8 +1253,9 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
   {
     const auto id_or = [](std::optional<int> v) { return v ? fmt::format("{:#x}", *v) : std::string{"default"}; };
     LogNote(fmt::format(
-        "battlestyle sel host_model={} guest_model={}{} music={} venue={} -> block={} ou_disable={}",
-        id_or(sel.host_model > 0 ? std::optional<int>(sel.host_model) : std::nullopt),
+        "battlestyle sel{} host_model={} guest_model={}{} music={} venue={} -> block={} "
+        "ou_disable={}",
+        multi ? " multi=1" : "", id_or(host_model),
         id_or(guest_model), guest_submitted ? " (guest pick)" : "",
         // Validity, not just non-zero: a stored pick that left the catalog
         // (curated-out music, say) generates NO lines, and the log claiming it
@@ -1310,7 +1365,7 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
         return std::string(option ? option->name : "default");
       };
       *status = fmt::format("battle style: host model {}, guest model {}{}, music {}, venue {}",
-                            describe(MODELS, sel.host_model), describe(MODELS, guest_model),
+                            describe(MODELS, host_model), describe(MODELS, guest_model),
                             guest_submitted ? " (guest's pick)" : "", describe(MUSICS, sel.music),
                             describe(VENUES, sel.venue));
     }
@@ -1318,14 +1373,14 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
   return saved;
 }
 
-bool RegenerateFromConfig(std::string* status)
+bool RegenerateFromConfig(std::string* status, StartKind kind)
 {
   // The OU choice is the Format dropdown now (the old standalone toggle is
   // gone), so it reads straight from the format key -- PrepareForStart's
   // cheats reconciliation can no longer distort it, however many Starts a
   // room sees.
   const bool ou_enabled = Config::Get(Config::MAIN_XD_FORMAT) == FormatRules::FORMAT_OU;
-  return RegenerateIni(ConfigSelection(), ou_enabled, status);
+  return RegenerateIni(ConfigSelection(), ou_enabled, status, /*include_format_rules=*/true, kind);
 }
 
 // ---------------------------------------------------------------------------
@@ -1423,7 +1478,7 @@ void BeginLiveStyleForStart()
   s_live_venue = -1;
 }
 
-void PrepareForStart()
+void PrepareForStart(StartKind kind)
 {
 
   // Solo boots have no room-closed event, so their cleanup rides the emulation
@@ -1450,7 +1505,7 @@ void PrepareForStart()
     });
   });
 
-  RegenerateFromConfig(nullptr);
+  RegenerateFromConfig(nullptr, kind);
 
   bool active;
   {

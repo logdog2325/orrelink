@@ -35,6 +35,7 @@
 #include "UICommon/XDNetplay/DisposableSave.h"
 #include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
+#include "UICommon/XDNetplay/MultiStart.h"
 #include "UICommon/XDNetplay/PartyBundle.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 
@@ -323,7 +324,9 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeHostFormatN
   if (!server || !s_host_game_is_xd)
     return ToJString(env, "");
   const int format = server->GetXdRoomFormat();
-  const XDNetplay::RoomTeamCheck check = XDNetplay::CheckRoomTeams(format, /*judge_slot=*/true);
+  // A Multi room has no spare team in play: only the host's own team is judged.
+  const XDNetplay::RoomTeamCheck check = XDNetplay::CheckRoomTeams(
+      format, /*judge_slot=*/format != XDNetplay::FormatRules::FORMAT_MULTI);
   const XDNetplay::FormatChangeNotes notes =
       XDNetplay::DescribeFormatChange(format, check, /*slot_is_guest=*/false, "");
   return ToJString(env, notes.host_lines.empty() ? std::string{} : notes.host_lines.front());
@@ -368,8 +371,11 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetRoomForm
   const NetPlay::XdFormatChange change = server->SetXdFormat(
       format,
       [&check, format](const NetPlay::XdSlotView& slot) {
-        // A departed player's team is reset before any Start reads it: not judged.
-        check = XDNetplay::CheckRoomTeams(format, slot.state != NetPlay::XdSlotState::Orphan);
+        // A departed player's team is reset before any Start reads it: not judged. Multi judges
+        // only the host's team here: the seats' teams are staged per player and judged at Start.
+        check = XDNetplay::CheckRoomTeams(format,
+                                          slot.state != NetPlay::XdSlotState::Orphan &&
+                                              format != XDNetplay::FormatRules::FORMAT_MULTI);
       },
       "Format: " + name + ".");
   if (change.busy)
@@ -656,6 +662,21 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
   const NetPlay::XdStartClaim& claim = freeze.Claim();
   if (claim.starting)
     return reply(false, HOST_WRITE_BUSY);
+  // A Multi room: four seats, staged teams, boot copies (UICommon/XDNetplay/MultiStart.h), still
+  // under s_host_write_mutex. The claim already cleared anything a 1v1 start sets.
+  if (claim.multi)
+  {
+    const XDNetplay::MultiStartOutcome outcome = XDNetplay::PrepareMultiStart(*server, claim);
+    for (const auto& [pid, note] : outcome.notes)
+      server->SendXdNote(pid, note);
+    if (!outcome.refusal.empty())
+      return reply(false, outcome.refusal);
+    server->SendChatMessage(XDNetplay::MultiStartChatLine());
+    const bool started = server->RequestStartGame();
+    if (!started)
+      XDNetplay::AbortMultiStart();
+    return reply(started, "");
+  }
   if (claim.opponent == 0)
     return reply(false, "Can't start: no opponent yet.");
   if (claim.slot_busy)

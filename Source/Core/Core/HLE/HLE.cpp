@@ -27,7 +27,7 @@ namespace HLE
 static std::map<u32, u32> s_hooked_addresses;
 
 // clang-format off
-constexpr std::array<Hook, 25> os_patches{{
+constexpr std::array<Hook, 26> os_patches{{
     // Placeholder, os_patches[0] is the "non-existent function" index
     {"FAKE_TO_SKIP_0",               HLE_Misc::UnimplementedFunction,       HookType::Replace, HookFlag::Generic},
 
@@ -64,7 +64,9 @@ constexpr std::array<Hook, 25> os_patches{{
     // OrreLink: Pokemon XD (GXXE01) deterministic clock; installed by HLE_XD::Install from
     // PatchFixedFunctions only when the netplay-synced session flag is on.
     {"XD_OSGetTick",                 HLE_XD::OSGetTick,                     HookType::Replace, HookFlag::Fixed},
-    {"XD_OSGetTime",                 HLE_XD::OSGetTime,                     HookType::Replace, HookFlag::Fixed}
+    {"XD_OSGetTime",                 HLE_XD::OSGetTime,                     HookType::Replace, HookFlag::Fixed},
+    // OrreLink: XD multi battles, the socket-1 controller wait (a counter; HLE_XD.h).
+    {"XD_Socket1Wait",               HLE_XD::Socket1WaitHook,               HookType::Start,   HookFlag::Fixed}
 }};
 // clang-format on
 
@@ -113,6 +115,8 @@ void PatchFixedFunctions(Core::System& system)
 
   // OrreLink v1.5.11: XD deterministic clock (no-op unless SESSION_XD_DETERMINISTIC_CLOCK).
   HLE_XD::Install(system);
+  // XD multi battles (no-op unless SI port 1 is the XD Multi device on the GXXE01 DOL).
+  HLE_XD::InstallMultiHooks(system);
 }
 
 void PatchFunctions(Core::System& system)

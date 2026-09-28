@@ -50,6 +50,13 @@ class GbaScreenView @JvmOverloads constructor(
     private var bitmap: Bitmap? = null
     private var visibleDevice = GbaHostBridge.NO_DEVICE
     private var visibleInfo: GbaHostBridge.CoreInfo? = null
+    // The GBA controller index the visible GBA reads its input from (GbaHostBridge.inputPadFor),
+    // resolved once per visible-device change: in netplay a GBA's input comes from its owner's
+    // local pad, not from the pad with the channel's number. NO_DEVICE: not this player's GBA.
+    private var inputPad = GbaHostBridge.NO_DEVICE
+    // The visible GBA is the XD Multi port: its controller must stay usable, so this view never
+    // takes input focus from it.
+    private var inputConvertedPort = false
     private var title = ""
     private var titleVisible = true
     private var consumingFrames = false
@@ -91,7 +98,7 @@ class GbaScreenView @JvmOverloads constructor(
         cancelSwitchLongPress()
         longPressConsumed = false
         inputFocusRequested = false
-        GbaInputFocusManager.clearFocus(visibleDevice)
+        GbaInputFocusManager.clearFocus(inputPad)
         unregisterVisibleGba()
         GbaHostBridge.removeListener(this)
         super.onDetachedFromWindow()
@@ -259,16 +266,22 @@ class GbaScreenView @JvmOverloads constructor(
 
     override fun onGbaVisibleDeviceChanged(deviceNumber: Int, info: GbaHostBridge.CoreInfo?) {
         clearGbaInput()
-        GbaInputFocusManager.clearFocus(visibleDevice)
+        GbaInputFocusManager.clearFocus(inputPad)
         unregisterVisibleGba()
         visibleDevice = deviceNumber
         visibleInfo = info
+        inputPad = if (deviceNumber in 0..3) {
+            GbaHostBridge.inputPadFor(deviceNumber)
+        } else {
+            GbaHostBridge.NO_DEVICE
+        }
+        inputConvertedPort = deviceNumber in 0..3 && GbaHostBridge.isConvertedPort(deviceNumber)
         title = displayTitle(info)
         resetTitleVisibility()
         bitmap = null
-        if (deviceNumber in 0..3) {
-            InputOverrider.registerGba(deviceNumber)
-            GbaInputFocusManager.onGbaInputRegistered(deviceNumber)
+        if (inputPad in 0..3) {
+            InputOverrider.registerGba(inputPad)
+            GbaInputFocusManager.onGbaInputRegistered(inputPad)
             if (inputFocusRequested) {
                 requestGbaInputFocus()
             }
@@ -281,7 +294,7 @@ class GbaScreenView @JvmOverloads constructor(
         if (enabled) {
             requestGbaInputFocus()
         } else {
-            GbaInputFocusManager.clearFocus(visibleDevice)
+            GbaInputFocusManager.clearFocus(inputPad)
         }
     }
 
@@ -547,11 +560,13 @@ class GbaScreenView @JvmOverloads constructor(
 
         for (control in buttons.keys) {
             val active = activeControls.contains(control)
-            InputOverrider.setControlState(
-                visibleDevice,
-                control,
-                if (active) 1.0 else 0.0
-            )
+            if (inputPad in 0..3) {
+                InputOverrider.setControlState(
+                    inputPad,
+                    control,
+                    if (active) 1.0 else 0.0
+                )
+            }
             drawableButtons[control]?.setPressedState(active)
         }
         updateDpadState(activeControls)
@@ -563,8 +578,10 @@ class GbaScreenView @JvmOverloads constructor(
         // Never steer a GBA this player does not own. Outside netplay isLocal is
         // always true, so solo is unchanged; in netplay the remote player's
         // handheld stays theirs no matter what ends up on screen.
-        if (visibleDevice in 0..3 && visibleInfo?.isLocal != false) {
-            GbaInputFocusManager.requestFocus(visibleDevice)
+        // The XD Multi port is the player's GameCube controller too: focusing its GBA would block
+        // that controller, so it takes touch input without focus.
+        if (inputPad in 0..3 && visibleInfo?.isLocal != false && !inputConvertedPort) {
+            GbaInputFocusManager.requestFocus(inputPad)
         }
     }
 
@@ -574,7 +591,9 @@ class GbaScreenView @JvmOverloads constructor(
         }
 
         return !BooleanSetting.MAIN_GBA_LINK_HIDE_TOUCH_IF_CONTROLLER.boolean ||
-                !GbaLinkSettings.hasConfiguredPhysicalController(visibleDevice)
+                !GbaLinkSettings.hasConfiguredPhysicalController(
+                    if (inputPad in 0..3) inputPad else visibleDevice
+                )
     }
 
     private fun clearGbaInput() {
@@ -582,8 +601,10 @@ class GbaScreenView @JvmOverloads constructor(
             return
         }
 
-        for (control in buttons.keys) {
-            InputOverrider.clearControlState(visibleDevice, control)
+        if (inputPad in 0..3) {
+            for (control in buttons.keys) {
+                InputOverrider.clearControlState(inputPad, control)
+            }
         }
         drawableButtons.values.forEach { it.setPressedState(false) }
         drawableDpad?.setState(InputOverlayDrawableDpad.STATE_DEFAULT)
@@ -591,8 +612,8 @@ class GbaScreenView @JvmOverloads constructor(
     }
 
     private fun unregisterVisibleGba() {
-        if (visibleDevice in 0..3) {
-            InputOverrider.unregisterGba(visibleDevice)
+        if (inputPad in 0..3) {
+            InputOverrider.unregisterGba(inputPad)
         }
     }
 

@@ -76,6 +76,14 @@ public:
 
   virtual GCPadStatus GetPadStatus();
   virtual u32 MapPadStatus(const GCPadStatus& pad_status);
+
+  // The halves of GetData and RunBuffer after the pad sample, for a device that samples the pad
+  // itself (CSIDevice_XDMultiPort). GetData() == GetDataFromStatus(GetPadStatus()), and
+  // RunBuffer() == RunBufferWithStatus(GetPadStatus()), so this class behaves exactly as before.
+  DataResponse GetDataFromStatus(const GCPadStatus& pad_status, u32& hi, u32& low);
+  int RunBufferWithStatus(u8* buffer, int request_length, const GCPadStatus& pad_status);
+  // The PAD_GET_ORIGIN part of GetPadStatus: a newly connected real controller calibrates.
+  void ApplyOriginRequest(const GCPadStatus& pad_status);
   virtual EButtonCombo HandleButtonCombos(const GCPadStatus& pad_status);
 
   // Send and Receive pad input from network

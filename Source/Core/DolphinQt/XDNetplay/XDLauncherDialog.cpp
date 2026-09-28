@@ -1271,11 +1271,16 @@ void XDLauncherDialog::OnBootSolo()
     return;
   }
 
-  XDNetplay::EnsureGbaConfig();
+  // A solo multi battle only when SI port 1 is the XD Multi device and the format is Multi; every
+  // other solo boot resets port 1 to a controller and generates a 1v1 block.
+  const bool multi_solo = XDNetplay::IsSoloMultiLaunch();
+  XDNetplay::EnsureGbaConfig(multi_solo);
   // Battle Style applies to solo boots too -- the generator was originally
   // wired only into the netplay host path, and the first field test ran solo,
   // picked a model and a venue, and correctly concluded nothing worked.
-  XDNetplay::BattleCustomizer::PrepareForStart();
+  XDNetplay::BattleCustomizer::PrepareForStart(
+      multi_solo ? XDNetplay::BattleCustomizer::StartKind::Multi :
+                   XDNetplay::BattleCustomizer::StartKind::OneVsOne);
   emit BootXD(QString::fromStdString(game->GetFilePath()));
 }
 
