@@ -1135,6 +1135,7 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_style_no_portrait_suffix">%1$s (no portrait)</string>
     <string name="xd_style_submit_model_label">Trainer model</string>
     <string name="xd_style_submit_model_hint">How you appear in battle. Your pick here overrides the host\'s Guest model choice.</string>
+    <string name="xd_submit_model_multi">Multi uses each save\'s own model.</string>
 
     <!-- One-tap battle Format pick. The option names and their order come from
          shared core (FormatRules, through FormatBridge) so every picker and
