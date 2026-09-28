@@ -1,0 +1,803 @@
+From 283b0726637baa1bf7542e7905ac30191f6217e7 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 22:41:33 -0700
+Subject: [PATCH 160/161] XD Netplay: netplay multi battles, phase 1 fixes
+ (fill seats, route ping, quiet delay notice, GBA input)
+
+- MultiFillSeats: a lone guest plays Seats 3 and 4 whichever seat the join
+  order gave it (the claim only; lobby seats and the leave check keep the real
+  holder), so a two-machine Multi room can start. With more guests an empty
+  Seat 3 or 4 repeats the other.
+- Multi route ping: a guest's measured 0 ms (LAN) counts as 1; only a guest
+  whose first pong is still out makes the route unknown.
+- A lobby whose pad map a Multi game left behind is sized by seat (host and
+  Seat 3 after a switch back to 1v1), not by the old four-seat map.
+- Edge-safe lower: sticks and triggers repeat within 2, so a jittery
+  controller (Wii U adapter) still lets channel 0 give back entries.
+- "Input delay is at its limit" mid-battle goes as an XdNotice (kind 5) that
+  each client writes to the room chat only; the pre-boot copy is unchanged.
+- Solo launches that are not a solo Multi take back port 4's GBA; Android
+  keeps port 1 on XD Multi only with MultiEnabled on, and migrates only GBA
+  ROM slots 2 and 3 into EMERALD.gba.
+- Android GBA input: the port-1 GBA requests focus again (focus opens the
+  input gate; SI port 1 is device 14, so no GC port is blocked). A GC pad
+  this machine does not play in the running game no longer counts as sharing
+  a GBA's controller, so a joiner's physical GBA buttons stay live after a
+  top-screen tap, as in 1.7.5. The pad lookup clears on every stop and when
+  the client is destroyed.
+- Multi seats: the joiner's model pick is disabled ("Multi uses each save's
+  own model."); the Watch only tooltip says a change applies after the host
+  stops the game; quick match skips "[Multi] " rooms.
+---
+ .../features/dualscreen/GbaHostBridge.kt      |  7 +-
+ .../features/dualscreen/GbaLinkSettings.kt    |  4 ++
+ .../features/dualscreen/GbaScreenView.kt      | 10 +--
+ .../features/netplay/ui/NetplayScreen.kt      | 15 ++--
+ .../features/xdnetplay/FormatBridge.kt        |  3 +
+ .../features/xdnetplay/XdMatchmaker.kt        |  5 +-
+ .../xdnetplay/ui/BattleStyleDropdown.kt       |  4 +-
+ .../xdnetplay/ui/XDLauncherActivity.kt        | 26 ++++---
+ .../app/src/main/res/values/strings.xml       |  1 +
+ Source/Android/jni/GBA/AndroidGBAHost.cpp     | 19 ++----
+ Source/Core/Core/Config/MainSettings.h        |  7 +-
+ Source/Core/Core/NetPlayClient.cpp            | 64 ++++++++++++++---
+ Source/Core/Core/NetPlayClient.h              |  4 +-
+ Source/Core/Core/NetPlayProto.h               |  8 +++
+ Source/Core/Core/NetPlayServer.cpp            | 68 +++++++++++++------
+ Source/Core/Core/NetPlayServer.h              |  7 +-
+ .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  |  9 ++-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  |  6 ++
+ .../DolphinQt/XDNetplay/XDNetplayConfig.cpp   | 14 ++--
+ .../UICommon/XDNetplay/BattleCustomizer.cpp   |  4 +-
+ 20 files changed, 206 insertions(+), 79 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaHostBridge.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaHostBridge.kt
+index 43ca0b3..5c773c7 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaHostBridge.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaHostBridge.kt
+@@ -67,9 +67,12 @@ object GbaHostBridge {
+     @JvmStatic
+     external fun inputPadFor(deviceNumber: Int): Int
+ 
+-    /** True when SI channel [deviceNumber] is the XD Multi port (a controller that becomes a GBA). */
++    /**
++     * Whether local GameCube pad [localPad] plays a GameCube port in the running netplay game
++     * (a joiner's never does: its only ports are GBAs); true outside netplay. Lock-free.
++     */
+     @JvmStatic
+-    external fun isConvertedPort(deviceNumber: Int): Boolean
++    external fun localGcPadPlays(localPad: Int): Boolean
+ 
+     /**
+      * Packed joybus link diagnostic for one SI channel, or 0 for a device that
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaLinkSettings.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaLinkSettings.kt
+index cecf27d..3627c4b 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaLinkSettings.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaLinkSettings.kt
+@@ -65,10 +65,14 @@ object GbaLinkSettings {
+         getGbaPhysicalDevice(deviceNumber) != null &&
+                 getGameCubePortsSharingPhysicalController(deviceNumber).isEmpty()
+ 
++    // In a netplay game a GameCube pad this machine does not play there (every pad of a joiner's)
++    // shares nothing: blocking it would change nothing, and counting it would gate the GBA's
++    // physical buttons behind touch focus.
+     fun getGameCubePortsSharingPhysicalController(deviceNumber: Int): IntArray {
+         val gbaDevice = getGbaPhysicalDevice(deviceNumber) ?: return IntArray(0)
+         return GBA_DEVICE_RANGE.filter { controllerIndex ->
+             siDeviceSettings[controllerIndex].int in GAMECUBE_PAD_DEVICE_TYPES &&
++                    GbaHostBridge.localGcPadPlays(controllerIndex) &&
+                     getPhysicalDevice(EmulatedController.getGcPad(controllerIndex)) == gbaDevice
+         }.toIntArray()
+     }
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaScreenView.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaScreenView.kt
+index bc07565..a7b35d5 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaScreenView.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/dualscreen/GbaScreenView.kt
+@@ -54,9 +54,6 @@ class GbaScreenView @JvmOverloads constructor(
+     // resolved once per visible-device change: in netplay a GBA's input comes from its owner's
+     // local pad, not from the pad with the channel's number. NO_DEVICE: not this player's GBA.
+     private var inputPad = GbaHostBridge.NO_DEVICE
+-    // The visible GBA is the XD Multi port: its controller must stay usable, so this view never
+-    // takes input focus from it.
+-    private var inputConvertedPort = false
+     private var title = ""
+     private var titleVisible = true
+     private var consumingFrames = false
+@@ -275,7 +272,6 @@ class GbaScreenView @JvmOverloads constructor(
+         } else {
+             GbaHostBridge.NO_DEVICE
+         }
+-        inputConvertedPort = deviceNumber in 0..3 && GbaHostBridge.isConvertedPort(deviceNumber)
+         title = displayTitle(info)
+         resetTitleVisibility()
+         bitmap = null
+@@ -578,9 +574,9 @@ class GbaScreenView @JvmOverloads constructor(
+         // Never steer a GBA this player does not own. Outside netplay isLocal is
+         // always true, so solo is unchanged; in netplay the remote player's
+         // handheld stays theirs no matter what ends up on screen.
+-        // The XD Multi port is the player's GameCube controller too: focusing its GBA would block
+-        // that controller, so it takes touch input without focus.
+-        if (inputPad in 0..3 && visibleInfo?.isLocal != false && !inputConvertedPort) {
++        // Focus is also what opens the GBA pad's input gate (InputOverrider), touch included. On the
++        // XD Multi port it blocks no GameCube port: SI port 1 is then device 14, not a GC pad type.
++        if (inputPad in 0..3 && visibleInfo?.isLocal != false) {
+             GbaInputFocusManager.requestFocus(inputPad)
+         }
+     }
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
+index f7ba5a8..5ff0343 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
+@@ -315,7 +315,10 @@ fun NetplayScreen(
+                     Spacer(Modifier.height(12.dp))
+                     // Host mode: this is the HOST model (the launcher's "Your
+                     // model" pick), so its first entry is "Game default" and
+-                    // no guest-fallback wording applies.
++                    // no guest-fallback wording applies. A Multi seat's pick
++                    // does nothing (every seat wears its save's own model), so
++                    // it greys out.
++                    val multiSeat = !isHosting && localRole == Player.ROLE_SEATED
+                     BattleStyleDropdown(
+                         label = stringResource(
+                             if (isHosting) R.string.xd_style_your_model
+@@ -330,9 +333,13 @@ fun NetplayScreen(
+                         onSelected = { modelDraft = it },
+                         modifier = Modifier.fillMaxWidth(),
+                         supportingText = stringResource(
+-                            if (isHosting) R.string.xd_host_submit_model_hint
+-                            else R.string.xd_style_submit_model_hint
+-                        )
++                            when {
++                                isHosting -> R.string.xd_host_submit_model_hint
++                                multiSeat -> R.string.xd_submit_model_multi
++                                else -> R.string.xd_style_submit_model_hint
++                            }
++                        ),
++                        enabled = !multiSeat
+                     )
+                     Spacer(Modifier.height(8.dp))
+                     Row(
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/FormatBridge.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/FormatBridge.kt
+index 1998016..2675085 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/FormatBridge.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/FormatBridge.kt
+@@ -54,6 +54,9 @@ object FormatBridge {
+      *  when enabled, then Free. */
+     fun selectableFormats(): IntArray = nativeSelectableFormats()
+ 
++    /** True while the MultiEnabled flag is on (Multi is then in [selectableFormats]). */
++    fun multiEnabled(): Boolean = selectableFormats().contains(FORMAT_MULTI)
++
+     /** Every known format id, Multi included whatever the flag says. For
+      *  recognizing names built from any format. */
+     fun knownFormats(): IntArray = nativeKnownFormats()
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/XdMatchmaker.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/XdMatchmaker.kt
+index e2a7cfe..7bfd156 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/XdMatchmaker.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/XdMatchmaker.kt
+@@ -92,12 +92,15 @@ object XdMatchmaker {
+      */
+     fun pickMatch(sessions: List<LobbySession>): LobbySession? {
+         val localVersion = NetPlayIndexBridge.localVersion
++        // A Multi room is a tester's, waiting for three more players, not a 1v1 opponent.
++        val multiTag = FormatBridge.sessionTag(FormatBridge.FORMAT_MULTI)
+         return sessions.firstOrNull { session ->
+             session.version == localVersion &&
+                 session.isXdBattle &&
+                 session.playerCount == 1 &&
+                 !session.inGame &&
+-                !session.hasPassword
++                !session.hasPassword &&
++                !session.name.startsWith(multiTag)
+         }
+     }
+ 
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/BattleStyleDropdown.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/BattleStyleDropdown.kt
+index 21cfb86..0fabbd5 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/BattleStyleDropdown.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/BattleStyleDropdown.kt
+@@ -45,6 +45,7 @@ fun BattleStyleDropdown(
+     onSelected: (Int) -> Unit,
+     modifier: Modifier = Modifier,
+     supportingText: String? = null,
++    enabled: Boolean = true,
+ ) {
+     var expanded by remember { mutableStateOf(false) }
+     val selectedName = options.firstOrNull { it.id == selectedId }?.let { optionLabel(it) }
+@@ -52,13 +53,14 @@ fun BattleStyleDropdown(
+ 
+     ExposedDropdownMenuBox(
+         expanded = expanded,
+-        onExpandedChange = { expanded = it },
++        onExpandedChange = { expanded = enabled && it },
+         modifier = modifier,
+     ) {
+         OutlinedTextField(
+             value = selectedName,
+             onValueChange = {},
+             readOnly = true,
++            enabled = enabled,
+             singleLine = true,
+             label = { Text(label) },
+             supportingText = supportingText?.let { { Text(it) } },
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+index edd28d7..ebeea54 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+@@ -556,10 +556,11 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+      */
+     private fun migrateContentPaths() {
+         migrateOne(StringSetting.MAIN_GBA_BIOS_PATH, "gba_bios.bin")
+-        migrateOne(StringSetting.MAIN_GBA_ROM_1, "EMERALD.gba")
++        // Ports 2/3 only: they are where the Emerald dump is picked. Ports 1/4 could hold another
++        // game from the system picker, which must never overwrite EMERALD.gba; ensureGbaConfig
++        // points them at the Emerald copy anyway.
+         migrateOne(StringSetting.MAIN_GBA_ROM_2, "EMERALD.gba")
+         migrateOne(StringSetting.MAIN_GBA_ROM_3, "EMERALD.gba")
+-        migrateOne(StringSetting.MAIN_GBA_ROM_4, "EMERALD.gba")
+     }
+ 
+     private fun migrateOne(setting: StringSetting, destName: String) {
+@@ -751,15 +752,22 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+             IntSetting.MAIN_SI_DEVICE_2.setInt(NativeConfig.LAYER_BASE, 13); changed = true
+         }
+         // The 1v1 link wants a plain pad on port 1, not XD Multi (14). A solo multi battle (format
+-        // Multi, only offered while Multi is enabled) keeps it, with a GBA on port 4 as well.
+-        if (IntSetting.MAIN_SI_DEVICE_0.int == 14) {
+-            if (IntSetting.MAIN_XD_FORMAT.int == FormatBridge.FORMAT_MULTI) {
+-                if (IntSetting.MAIN_SI_DEVICE_3.int != 13) {
+-                    IntSetting.MAIN_SI_DEVICE_3.setInt(NativeConfig.LAYER_BASE, 13); changed = true
+-                }
+-            } else {
++        // Multi while the MultiEnabled flag is on, as the native side requires) keeps it, with a
++        // GBA on port 4 as well. Any other launch takes that fourth GBA back.
++        val multiSolo = IntSetting.MAIN_SI_DEVICE_0.int == 14 &&
++            IntSetting.MAIN_XD_FORMAT.int == FormatBridge.FORMAT_MULTI &&
++            FormatBridge.multiEnabled()
++        if (multiSolo) {
++            if (IntSetting.MAIN_SI_DEVICE_3.int != 13) {
++                IntSetting.MAIN_SI_DEVICE_3.setInt(NativeConfig.LAYER_BASE, 13); changed = true
++            }
++        } else {
++            if (IntSetting.MAIN_SI_DEVICE_0.int == 14) {
+                 IntSetting.MAIN_SI_DEVICE_0.setInt(NativeConfig.LAYER_BASE, 6); changed = true
+             }
++            if (IntSetting.MAIN_SI_DEVICE_3.int == 13) {
++                IntSetting.MAIN_SI_DEVICE_3.setInt(NativeConfig.LAYER_BASE, 0); changed = true
++            }
+         }
+         // Cheats are DERIVED state for XD sessions: shared core's
+         // PrepareForStart turns MAIN_ENABLE_CHEATS on exactly when the session
+diff --git a/Source/Android/app/src/main/res/values/strings.xml b/Source/Android/app/src/main/res/values/strings.xml
+index 14f01d4..0352f42 100644
+--- a/Source/Android/app/src/main/res/values/strings.xml
++++ b/Source/Android/app/src/main/res/values/strings.xml
+@@ -1135,6 +1135,7 @@ It can efficiently compress both junk data and encrypted Wii data.
+     <string name="xd_style_no_portrait_suffix">%1$s (no portrait)</string>
+     <string name="xd_style_submit_model_label">Trainer model</string>
+     <string name="xd_style_submit_model_hint">How you appear in battle. Your pick here overrides the host\'s Guest model choice.</string>
++    <string name="xd_submit_model_multi">Multi uses each save\'s own model.</string>
+ 
+     <!-- One-tap battle Format pick. The option names and their order come from
+          shared core (FormatRules, through FormatBridge) so every picker and
+diff --git a/Source/Android/jni/GBA/AndroidGBAHost.cpp b/Source/Android/jni/GBA/AndroidGBAHost.cpp
+index 3fef643..798a02c 100644
+--- a/Source/Android/jni/GBA/AndroidGBAHost.cpp
++++ b/Source/Android/jni/GBA/AndroidGBAHost.cpp
+@@ -12,10 +12,7 @@
+ #include <jni.h>
+ 
+ #include "Common/CommonTypes.h"
+-#include "Common/Config/Config.h"
+-#include "Core/Config/MainSettings.h"
+ #include "Core/HW/GBACore.h"
+-#include "Core/HW/SI/SI_Device.h"
+ #include "Core/NetPlayProto.h"
+ #ifdef HAS_LIBMGBA
+ #include "Core/HW/SI/SI_DeviceGBAEmu.h"
+@@ -182,18 +179,14 @@ Java_org_dolphinemu_dolphinemu_features_dualscreen_GbaHostBridge_inputPadFor(JNI
+   return static_cast<jint>(NetPlay::GbaInputPadFor(static_cast<int>(device_number)));
+ }
+ 
+-// SI channel device_number is the XD Multi port (the controller that becomes a GBA): its GBA
+-// touch input must never block the GameCube controller on the same port.
++// Whether this machine's local GameCube pad local_pad plays a GameCube port in the running netplay
++// game (never on a joiner); true outside netplay. Lock-free; read at GBA registration and focus
++// changes only.
+ JNIEXPORT jboolean JNICALL
+-Java_org_dolphinemu_dolphinemu_features_dualscreen_GbaHostBridge_isConvertedPort(
+-    JNIEnv*, jclass, jint device_number)
++Java_org_dolphinemu_dolphinemu_features_dualscreen_GbaHostBridge_localGcPadPlays(JNIEnv*, jclass,
++                                                                                 jint local_pad)
+ {
+-  if (device_number < 0 || device_number >= 4)
+-    return JNI_FALSE;
+-  return Config::Get(Config::GetInfoForSIDevice(static_cast<int>(device_number))) ==
+-                 SerialInterface::SIDEVICE_GC_GBA_XDMULTI ?
+-             JNI_TRUE :
+-             JNI_FALSE;
++  return NetPlay::LocalGcPadPlays(static_cast<int>(local_pad)) ? JNI_TRUE : JNI_FALSE;
+ }
+ 
+ // Packed per-port joybus link diagnostic, for the on-screen readout:
+diff --git a/Source/Core/Core/Config/MainSettings.h b/Source/Core/Core/Config/MainSettings.h
+index 0d797b6..362ce03 100644
+--- a/Source/Core/Core/Config/MainSettings.h
++++ b/Source/Core/Core/Config/MainSettings.h
+@@ -259,9 +259,10 @@ extern const Info<int> MAIN_XD_FORMAT;
+ // Shows the Multi format (four players, XD's "GBA + GBA VS GBA + GBA") in the format lists.
+ // Off by default: Multi is for testers until its tests pass.
+ extern const Info<bool> MAIN_XD_MULTI_ENABLED;
+-// Tester switch, INI only, honored only with MAIN_XD_MULTI_ENABLED, host only: at a Multi Start an
+-// empty Seat 2 is played by the host and an empty Seat 4 by the Seat 3 player, so two machines
+-// can run a Multi battle. Desktop only for the doubled seat (Android shows one local GBA).
++// Tester switch, INI only, honored only with MAIN_XD_MULTI_ENABLED, host only: at a Multi Start a
++// lone guest plays Seats 3 and 4 (whichever seat the lobby gave it) and the host Seat 2, so two
++// machines can run a Multi battle; with more guests an empty Seat 2 is the host and an empty
++// Seat 3 or 4 repeats the other. Desktop only for the doubled seat (Android shows one local GBA).
+ extern const Info<bool> MAIN_XD_MULTI_FILL_SEATS;
+ // Tester switch, INI only, host only: in a Multi battle only Seat 1's B backs out of the team
+ // preview (BattleCustomizer's preview-cancel pin). Off until its solo test passes; while off,
+diff --git a/Source/Core/Core/NetPlayClient.cpp b/Source/Core/Core/NetPlayClient.cpp
+index 77af0fa..8b9d238 100644
+--- a/Source/Core/Core/NetPlayClient.cpp
++++ b/Source/Core/Core/NetPlayClient.cpp
+@@ -12,6 +12,7 @@
+ #include <ctime>
+ #include <array>
+ #include <cstddef>
++#include <cstdlib>
+ #include <cstring>
+ #include <functional>
+ #include <iterator>
+@@ -97,10 +98,22 @@ static NetPlayClient* netplay_client = nullptr;
+ static bool s_si_poll_batching = false;
+ // GbaInputPadFor: per SI channel, the local pad whose GBA input drives this machine's GBA there in
+ // the running game, -1 for a GBA this machine does not play. Written on the NETPLAY thread at
+-// OnStartGame and cleared at StopGame; read lock-free from UI threads.
++// OnStartGame and cleared by every stop (InvokeStop) and by ~NetPlayClient; read lock-free from UI
++// threads.
++// LocalGcPadPlays reads s_gc_pad_plays the same way.
+ static std::array<std::atomic<s8>, 4> s_gba_input_pad{};
++static std::array<std::atomic<bool>, 4> s_gc_pad_plays{};
+ static std::atomic<bool> s_gba_input_active{false};
+ 
++static void ClearGbaInputPads()
++{
++  s_gba_input_active.store(false, std::memory_order_release);
++  for (auto& pad : s_gba_input_pad)
++    pad.store(-1, std::memory_order_relaxed);
++  for (auto& plays : s_gc_pad_plays)
++    plays.store(false, std::memory_order_relaxed);
++}
++
+ // XD netplay peer-vanish watchdog -- see WaitOnRemote() for the full story.
+ //
+ // Every number here is about the CONNECTION, never about emulated state. A
+@@ -195,6 +208,8 @@ NetPlayClient::~NetPlayClient()
+   // not perfect
+   if (m_is_running.IsSet())
+     StopGame();
++  // A Stop whose answer never came back (m_is_running already clear) skipped StopGame.
++  ClearGbaInputPads();
+ 
+   if (m_is_connected)
+   {
+@@ -804,6 +819,10 @@ void NetPlayClient::OnXdNotice(sf::Packet& packet)
+     line = fmt::format("{}'s GBA on port {} failed to start. They stopped watching.", name,
+                        arg + 1);
+     break;
++  case XdNoticeKind::DelayAtLimit:
++    tag = "delay-at-limit";
++    line = "Input delay is at its limit for this room. Expect slowdown.";
++    break;
+   default:
+     return;
+   }
+@@ -1425,12 +1444,22 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
+   // map is final here.
+   if (m_local_player)
+   {
++    for (auto& plays : s_gc_pad_plays)
++      plays.store(false, std::memory_order_relaxed);
+     for (int ch = 0; ch < 4; ++ch)
+     {
+-      const bool mine = m_net_settings.gba_config[ch].enabled &&
+-                        m_net_settings.pad_map[ch] == m_local_player->pid;
++      const bool owned = m_net_settings.pad_map[ch] == m_local_player->pid;
++      const bool mine = m_net_settings.gba_config[ch].enabled && owned;
+       s_gba_input_pad[ch].store(mine ? static_cast<s8>(InGamePadToLocalPad(ch)) : s8{-1},
+                                 std::memory_order_relaxed);
++      // A GameCube port of this machine's (the XD Multi port counts: it is a controller too).
++      const int local = InGamePadToLocalPad(ch);
++      if (owned && local >= 0 && local < 4 &&
++          !PadTravelsAsGba(m_net_settings.gba_config, m_net_settings.xd_multi_p1,
++                           static_cast<size_t>(ch)))
++      {
++        s_gc_pad_plays[local].store(true, std::memory_order_relaxed);
++      }
+     }
+     s_gba_input_active.store(true, std::memory_order_release);
+   }
+@@ -3994,7 +4023,9 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
+ 
+     // XD multi battles: edge-safe lower. A raise applies at once; a lower gives back one entry
+     // only on a poll whose sample repeats the last one pushed, so skipping this poll's push drops
+-    // no press and no release.
++    // no press and no release. Buttons and the port-1 GBA keys (analogA, analogB) must match
++    // exactly; sticks and triggers within 2, since a real controller's analog bytes
++    // (a Wii U adapter's especially) jitter by one and would otherwise never repeat.
+     u32 target = m_target_buffer_size;
+     if (m_net_settings.xd_multi_p1)
+     {
+@@ -4006,17 +4037,19 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
+       }
+       else
+       {
++        const auto axis_close = [](u8 a, u8 b) { return std::abs(int{a} - int{b}) <= 2; };
+         const bool gba_wire =
+             PadTravelsAsGba(m_net_settings.gba_config, true, static_cast<size_t>(ingame_pad));
+         const bool repeat =
+             last && last->button == pad_status.button &&
+             (gba_wire ||
+              (last->analogA == pad_status.analogA && last->analogB == pad_status.analogB &&
+-              last->stickX == pad_status.stickX && last->stickY == pad_status.stickY &&
+-              last->substickX == pad_status.substickX &&
+-              last->substickY == pad_status.substickY &&
+-              last->triggerLeft == pad_status.triggerLeft &&
+-              last->triggerRight == pad_status.triggerRight &&
++              axis_close(last->stickX, pad_status.stickX) &&
++              axis_close(last->stickY, pad_status.stickY) &&
++              axis_close(last->substickX, pad_status.substickX) &&
++              axis_close(last->substickY, pad_status.substickY) &&
++              axis_close(last->triggerLeft, pad_status.triggerLeft) &&
++              axis_close(last->triggerRight, pad_status.triggerRight) &&
+               last->isConnected == pad_status.isConnected));
+         if (repeat)
+           --kept;
+@@ -4187,6 +4220,9 @@ void NetPlayClient::InvokeStop()
+   // had done nothing wrong.
+   m_stop_requested_ms.store(0, std::memory_order_relaxed);
+ 
++  // The touch overlay's pad lookup goes back to "outside a netplay game" on every route too.
++  ClearGbaInputPads();
++
+   // stop waiting for input
+   m_gc_pad_event.Set();
+   m_wii_pad_event.Set();
+@@ -4200,7 +4236,6 @@ bool NetPlayClient::StopGame()
+   InvokeStop();
+ 
+   NetPlay_Disable();
+-  s_gba_input_active.store(false, std::memory_order_release);
+ 
+   // stop game
+   m_dialog->StopGame();
+@@ -4604,6 +4639,15 @@ int GbaInputPadFor(int channel)
+   return s_gba_input_pad[channel].load(std::memory_order_relaxed);
+ }
+ 
++bool LocalGcPadPlays(int local_pad)
++{
++  if (local_pad < 0 || local_pad >= static_cast<int>(s_gc_pad_plays.size()))
++    return false;
++  if (!s_gba_input_active.load(std::memory_order_acquire))
++    return true;
++  return s_gc_pad_plays[local_pad].load(std::memory_order_relaxed);
++}
++
+ std::string GetGBASavePath(int pad_num)
+ {
+   std::lock_guard lk(crit_netplay_client);
+diff --git a/Source/Core/Core/NetPlayClient.h b/Source/Core/Core/NetPlayClient.h
+index 9124f86..7261139 100644
+--- a/Source/Core/Core/NetPlayClient.h
++++ b/Source/Core/Core/NetPlayClient.h
+@@ -642,8 +642,8 @@ private:
+   // XD multi battles (m_net_settings.xd_multi_p1), CPU thread only, reset in OnStartGame.
+   // m_xdm_reset_pending: the port-1 GBA window's Reset, read by a poll that pushed nothing yet.
+   // Edge-safe lower: the depth each pad's pushes keep (a raise applies at once, a lower steps by
+-  // one only on a poll whose sample repeats the last one pushed, so no press or release is ever
+-  // dropped) and that last sample (without the control bits). Chase re-anchor: which of the last
++  // one only on a poll whose sample repeats the last one pushed, sticks and triggers within 2, so
++  // no press or release is ever dropped) and that last sample (without the control bits). Chase re-anchor: which of the last
+   // 120 pops of other machines' pads waited, and when the throttle was last re-anchored for it.
+   bool m_xdm_reset_pending = false;
+   std::array<u32, 4> m_push_target{};
+diff --git a/Source/Core/Core/NetPlayProto.h b/Source/Core/Core/NetPlayProto.h
+index 73e8d8c..1b2f4c9 100644
+--- a/Source/Core/Core/NetPlayProto.h
++++ b/Source/Core/Core/NetPlayProto.h
+@@ -294,6 +294,10 @@ enum class XdNoticeKind : u8
+   GbaStartFailed = 2,  // arg: the SI port (0-3) whose GBA core did not start
+   // Server -> clients only: the same, from a player who only watches; the battle goes on.
+   GbaStartFailedWatcher = 3,
++  // 4 is kept for a later per-seat notice.
++  // Server -> clients only, who = 0: a Multi battle's worst route needs more input delay than the
++  // cap (once per game, mid-battle; the copy before the boot goes out as a plain chat line).
++  DelayAtLimit = 5,
+ };
+ 
+ enum class ConnectionError : u8
+@@ -361,6 +365,10 @@ PadDetails GetPadDetails(int pad_num);
+ // netplay game, -1 when that GBA is not this machine's; outside a netplay game, the channel
+ // itself. Lock-free (atomics filled at OnStartGame): safe from a UI thread per input event.
+ int GbaInputPadFor(int channel);
++// Whether this machine's local GameCube pad `local_pad` plays a GameCube port in the running
++// netplay game (a joiner's never does: its only ports are GBAs); outside a netplay game, true.
++// Lock-free, like GbaInputPadFor.
++bool LocalGcPadPlays(int local_pad);
+ // True when netplay is running and the calling core is the one booted for the current game.
+ // Takes crit_netplay_client: never call it from anything NetPlay_GetInput calls.
+ bool IsCurrentGameCore();
+diff --git a/Source/Core/Core/NetPlayServer.cpp b/Source/Core/Core/NetPlayServer.cpp
+index b6b6e63..32b2daf 100644
+--- a/Source/Core/Core/NetPlayServer.cpp
++++ b/Source/Core/Core/NetPlayServer.cpp
+@@ -204,20 +204,27 @@ u32 AutoBufferTargetForPing(u32 ping_ms, u32 max_frames)
+   return std::clamp(AutoBufferFramesForPing(ping_ms), AUTOBUF_MIN_FRAMES, max_frames);
+ }
+ 
+-// Multi: the worst guest-to-guest route, from the pings of the guests that play (host to each):
+-// the two largest summed, plus the relay; one guest alone is just its own ping.
++// A guest's ping as MultiRoutePing takes it: 0 only while its first pong is still out (unknown,
++// not fast); a measured 0 ms (a LAN guest) counts as 1.
++u32 MultiGuestPing(bool has_ping, u32 ping)
++{
++  return has_ping ? std::max<u32>(ping, 1) : 0;
++}
++
++// Multi: the worst guest-to-guest route, from the pings of the guests that play (host to each,
++// through MultiGuestPing): the two largest summed, plus the relay; one guest alone is just its own
++// ping. 0 while any of them is unknown.
+ u32 MultiRoutePing(std::vector<u32> guest_pings)
+ {
+-  std::ranges::sort(guest_pings, std::greater<>());
+-  if (guest_pings.empty())
++  if (guest_pings.empty() || std::ranges::find(guest_pings, 0u) != guest_pings.end())
+     return 0;
++  std::ranges::sort(guest_pings, std::greater<>());
+   if (guest_pings.size() == 1)
+     return guest_pings[0];
+-  if (guest_pings[0] == 0 || guest_pings[1] == 0)
+-    return 0;  // a guest's first pong is still out: unknown, not fast
+   return guest_pings[0] + guest_pings[1] + AUTOBUF_MULTI_RELAY_MS;
+ }
+ 
++// Before the boot only (StartGame); mid-battle it goes as XdNoticeKind::DelayAtLimit.
+ constexpr const char* MULTI_DELAY_LIMIT_LINE =
+     "Input delay is at its limit for this room. Expect slowdown.";
+ }  // namespace
+@@ -1020,8 +1027,11 @@ void NetPlayServer::UpdateAutoPadBuffer()
+   // A Multi room: every machine waits on every other, and the worst route runs guest to guest
+   // through the host, so the need is sized from the two slowest guests' pings summed
+   // (MultiRoutePing). In its lobby the players are the host and the seat holders (the lobby pad
+-  // map is 1v1-shaped); in a game the pad map decides, as below.
++  // map is 1v1-shaped); in a game the pad map decides, as below. The same seat rule sizes a lobby
++  // whose pad map a Multi game left behind ({host, s2, s3, s4} until the next Start maps again),
++  // so a room that goes back to 1v1 is sized for the host and its Seat 3, not the old seats.
+   const bool multi = IsXdMultiRoom();
++  const bool lobby_by_seat = !m_is_running && (multi || m_xd_multi_wire);
+   const u32 max_frames = multi ? AUTOBUF_MAX_FRAMES_MULTI : AUTOBUF_MAX_FRAMES;
+   u32 max_ping = 0;
+   bool any_mapped = false;
+@@ -1031,7 +1041,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
+     // In the lobby a watcher can still hold a pad slot from AssignNewUserAPad, and nobody waits
+     // on it. In a game the pad map decides: a seated player who ticked Watch only during the
+     // save sync still plays this battle.
+-    const bool plays = multi && !m_is_running ?
++    const bool plays = lobby_by_seat ?
+                            (client.IsHost() || client.xd_seat != 0) :
+                            PlayerHasControllerMapped(pid) && !(client.xd_watching && !m_is_running);
+     if (!plays)
+@@ -1039,7 +1049,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
+     any_mapped = true;
+     max_ping = std::max(max_ping, client.ping);
+     if (!client.IsHost())
+-      guest_pings.push_back(client.ping);
++      guest_pings.push_back(MultiGuestPing(client.has_ping, client.ping));
+   }
+   if (!any_mapped)
+   {
+@@ -1047,7 +1057,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
+     {
+       max_ping = std::max(max_ping, client.ping);
+       if (!client.IsHost())
+-        guest_pings.push_back(client.ping);
++        guest_pings.push_back(MultiGuestPing(client.has_ping, client.ping));
+     }
+   }
+   if (multi)
+@@ -1061,11 +1071,13 @@ void NetPlayServer::UpdateAutoPadBuffer()
+   const u32 current = m_target_buffer_size;
+   const char* const multi_field = multi ? " multi=1" : "";
+ 
+-  // Multi: the worst route needs more than the cap. Said once per game, in the room chat.
++  // Multi: the worst route needs more than the cap. Said once per game, in the room chat only:
++  // this is mid-battle, so it goes as a notice each client writes with AppendChatQuiet (a plain
++  // chat line would also be drawn over the game).
+   if (multi && m_is_running && AutoBufferFramesForPing(max_ping) > max_frames &&
+       !m_auto_buffer_limit_warned.exchange(true))
+   {
+-    SendChatMessage(MULTI_DELAY_LIMIT_LINE);
++    SendXdNoticeToAll(XdNoticeKind::DelayAtLimit, 0, 0);
+   }
+ 
+   // Players report PadHealth only while a game runs; in the lobby ping alone decides, as before.
+@@ -1674,6 +1686,7 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
+     if (m_ping_key == ping_key)
+     {
+       player.ping = ping;
++      player.has_ping = true;
+     }
+ 
+     sf::Packet spac;
+@@ -2495,7 +2508,7 @@ bool NetPlayServer::StartGame()
+       for (const auto& [pid, client] : m_players)
+       {
+         if (!client.IsHost() && PlayerHasControllerMapped(pid))
+-          guest_pings.push_back(client.ping);
++          guest_pings.push_back(MultiGuestPing(client.has_ping, client.ping));
+       }
+     }
+     const u32 ping_eff = MultiRoutePing(guest_pings);
+@@ -3430,16 +3443,33 @@ XdStartClaim NetPlayServer::ClaimXdStart()
+       const Client& holder = m_players.at(pid);
+       claim.seats[i] = {holder.pid, holder.xd_serial, holder.name, holder.xd_stage};
+     }
+-    // Tester switch: two machines play all four seats. Only empty seats are filled.
++    // Tester switch: two machines play all four seats. Only the claim changes; the lobby seats
++    // and m_xd_start_seats (the leave check) keep the real holders.
+     if (fill_seats)
+     {
+-      if (claim.seats[0].pid == 0)
++      const auto host = m_players.find(1);
++      const XdStartClaim::Seat host_seat = {
++          1, 0, host != m_players.end() ? host->second.name : std::string{}, true};
++      const auto seated = std::ranges::count_if(
++          claim.seats, [](const XdStartClaim::Seat& seat) { return seat.pid != 0; });
++      if (seated == 1)
++      {
++        // One guest, on whichever seat the join order gave it: the host plays Seat 2 and the
++        // guest plays Seats 3 and 4.
++        const XdStartClaim::Seat guest = *std::ranges::find_if(
++            claim.seats, [](const XdStartClaim::Seat& seat) { return seat.pid != 0; });
++        claim.seats = {host_seat, guest, guest};
++      }
++      else
+       {
+-        const auto host = m_players.find(1);
+-        claim.seats[0] = {1, 0, host != m_players.end() ? host->second.name : std::string{}, true};
++        // Only empty seats are filled: Seat 2 by the host, Seat 3 or 4 by the other opponent.
++        if (claim.seats[0].pid == 0)
++          claim.seats[0] = host_seat;
++        if (claim.seats[2].pid == 0 && claim.seats[1].pid != 0)
++          claim.seats[2] = claim.seats[1];
++        else if (claim.seats[1].pid == 0 && claim.seats[2].pid != 0)
++          claim.seats[1] = claim.seats[2];
+       }
+-      if (claim.seats[2].pid == 0 && claim.seats[1].pid != 0)
+-        claim.seats[2] = claim.seats[1];
+     }
+     // Multi never touches the GBA 2 slot (device 2): its teams are staged per player.
+     m_xd_start_opponent = 0;
+diff --git a/Source/Core/Core/NetPlayServer.h b/Source/Core/Core/NetPlayServer.h
+index 00e14b1..469c5b7 100644
+--- a/Source/Core/Core/NetPlayServer.h
++++ b/Source/Core/Core/NetPlayServer.h
+@@ -47,8 +47,9 @@ struct XdStartClaim
+   std::string slot_owner_name;
+   // A Multi room's Start (the room format is Multi). opponent stays 0 and the slot fields unused;
+   // seats[i] is SI port i+2: its holder, that connection's serial (which names its stage file),
+-  // name, and whether a team is in. With MultiFillSeats an empty Seat 2 is the host (serial 0)
+-  // and an empty Seat 4 repeats Seat 3.
++  // name, and whether a team is in. With MultiFillSeats a lone guest (on any seat) plays Seats 3
++  // and 4 and the host (serial 0) Seat 2; otherwise an empty Seat 2 is the host and an empty
++  // Seat 3 or 4 repeats the other one.
+   bool multi = false;
+   struct Seat
+   {
+@@ -235,6 +236,8 @@ private:
+ 
+     ENetPeer* socket = nullptr;
+     u32 ping = 0;
++    // A pong has come back, so ping is a measurement (a LAN guest can really read 0 ms).
++    bool has_ping = false;
+     u32 current_game = 0;
+ 
+     Common::QoSSession qos_session;
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+index bd2e1e0..52a9a5b 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+@@ -718,7 +718,7 @@ QString NetPlayDialog::WatchOnlyToolTip(bool multi)
+   if (multi)
+   {
+     return tr("Watch without playing. The next player in line takes your seat.\nA change made "
+-              "during a battle applies to the next one.");
++              "in a game applies after the host stops it.");
+   }
+   return tr("Watch without playing. The next player in line becomes the opponent.\nA change made "
+             "during a battle applies to the next one.");
+@@ -1459,6 +1459,13 @@ void NetPlayDialog::OnSubmitTeam()
+   }
+   const int stored_model_index = model_combo->findData(Config::Get(Config::MAIN_XD_SUBMIT_MODEL));
+   model_combo->setCurrentIndex(stored_model_index >= 0 ? stored_model_index : 0);
++  // A Multi battle emits no model lines: every seat wears its own save's model.
++  if (const auto client = Settings::Instance().GetNetPlayClient();
++      client && client->IsXdMultiSeats())
++  {
++    model_combo->setEnabled(false);
++    model_combo->setToolTip(tr("Multi uses each save's own model."));
++  }
+   use_save_check->setChecked(Config::Get(Config::MAIN_XD_SUBMIT_USE_SAVE));
+ #ifndef HAS_LIBMGBA
+   // Extracting a bundle means reading the local GBA save, and everything that
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index a7b5962..12cf12f 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -317,6 +317,12 @@ std::optional<NetPlaySession> PickMatch(const std::vector<NetPlaySession>& sessi
+       continue;
+     if (session.player_count != 1 || session.in_game || session.has_password)
+       continue;
++    // A Multi room is a tester's, waiting for three more players, not a 1v1 opponent.
++    if (session.name.starts_with(
++            XDNetplay::FormatRules::FormatSessionTag(XDNetplay::FormatRules::FORMAT_MULTI)))
++    {
++      continue;
++    }
+     return session;
+   }
+   return std::nullopt;
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
+index 4c56679..3073136 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
+@@ -114,7 +114,8 @@ bool EnsureGbaConfig(bool multi_solo)
+   // Port 1 pad, ports 2/3 integrated GBAs -- the fixed XD link layout. With
+   // Multi enabled a Wii U adapter on port 1 stays (a multi battle reads the
+   // host's controller from it); a solo multi battle keeps the XD Multi device
+-  // and a fourth GBA.
++  // and a fourth GBA. Any other launch takes back the fourth GBA a solo multi
++  // battle left on port 4.
+   const SerialInterface::SIDevices port1 = Config::Get(Config::GetInfoForSIDevice(0));
+   const bool keep_adapter = port1 == SerialInterface::SIDEVICE_WIIU_ADAPTER &&
+                             Config::Get(Config::MAIN_XD_MULTI_ENABLED);
+@@ -123,10 +124,15 @@ bool EnsureGbaConfig(bool multi_solo)
+     Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(3),
+                              SerialInterface::SIDEVICE_GC_GBA_EMULATED);
+   }
+-  else if (!keep_adapter)
++  else
+   {
+-    Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(0),
+-                             SerialInterface::SIDEVICE_GC_CONTROLLER);
++    if (!keep_adapter)
++    {
++      Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(0),
++                               SerialInterface::SIDEVICE_GC_CONTROLLER);
++    }
++    if (Config::Get(Config::GetInfoForSIDevice(3)) == SerialInterface::SIDEVICE_GC_GBA_EMULATED)
++      Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(3), SerialInterface::SIDEVICE_NONE);
+   }
+   Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(1),
+                            SerialInterface::SIDEVICE_GC_GBA_EMULATED);
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+index a99eefc..5fc0c93 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+@@ -968,7 +968,9 @@ static std::string TimerSummary()
+ 
+ // Multi (layout 3, XD's "GBA + GBA VS GBA + GBA"): the menu globals. Layout 3 is the four-GBA
+ // tag layout (>= 2 forces tag at commit); pairing 0 is the seat order the layout table pairs as
+-// ports {1,2} vs {3,4}; rules Custom 1 as for the 1v1 formats.
++// ports {1,2} vs {3,4}; rules Custom 1 as for the 1v1 formats. Like every line here the pairing
++// is written each frame, so in phase 1 the sides are fixed by seat: if XD's post-battle "change
++// combination" edits this word (test S1c), the pin puts it back before the next battle.
+ constexpr u32 MULTI_MENU_GLOBAL_LINES[][2] = {
+     {0x044349EC, 0x00000003},  // player layout = GBA + GBA VS GBA + GBA
+     {0x044349E4, 0x00000000},  // pairing
+-- 
+2.39.5 (Apple Git-154)
+
