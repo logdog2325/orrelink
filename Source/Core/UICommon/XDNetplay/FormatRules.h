@@ -39,9 +39,11 @@
 //                        DOUBLES_OU_BANNED_SPECIES / _MOVES in the .cpp),
 //                        Species Clause, NO Item Clause, no Soul Dew ban. It
 //                        does NOT use the $XD OU Fixes code (only OU does).
-//     9 = Multi          reserved, not built yet: hidden from every list
-//                        unless MAIN_XD_MULTI_ENABLED is on, and until then it
-//                        behaves as Free in every gate.
+//     9 = Multi          XD's four-player "GBA + GBA VS GBA + GBA": Lv 100,
+//                        Orre Colosseum's bans, Species and Item Clause and
+//                        Soul Dew ban, judged per trainer (no clause across
+//                        partners), bring 6 pick 3. Hidden from every list
+//                        unless MAIN_XD_MULTI_ENABLED is on.
 //    10 = Realgam        Orre Colosseum, except up to TWO of the Restricted/
 //                        Mythical ten may be brought (counted over the whole
 //                        party, all six). Lv 100.
@@ -107,9 +109,17 @@ constexpr int FORMAT_HOENN_UNLIMITED = 6;
 constexpr int FORMAT_HOENN_LIMITED = 7;
 // Smogon ADV Doubles OU (see the table above). The next free id after the six.
 constexpr int FORMAT_DOUBLES_OU = 8;
-// Reserved for the multi battle format, which is not built yet. Hidden unless
-// MAIN_XD_MULTI_ENABLED is on; behaves as Free everywhere until designed.
+// XD's four-player multi battle (see the table above). Hidden unless
+// MAIN_XD_MULTI_ENABLED is on. Core knows the id as NetPlay::XD_FORMAT_MULTI
+// (the two are static_asserted equal in FormatRules.cpp).
 constexpr int FORMAT_MULTI = 9;
+// Multi's entry shape. false (the default): bring up to 6, pick 3 at XD's own
+// pick screen, like the Hoenn shapes. true: the fallback if XD's pick-N flow
+// turns out not to run in a multi battle: every team must hold exactly 3, and
+// all three battle (BattleCustomizer then pins the stock "all battle" entry
+// mode). Read by FormatRules (the party check) and BattleCustomizer (the pin).
+constexpr bool MULTI_EXACTLY_THREE = false;
+constexpr int MULTI_PICK = 3;
 // Orre-shaped formats with their own species rules (see the table above).
 constexpr int FORMAT_REALGAM = 10;
 constexpr int FORMAT_REALGAM_CLASSIC = 11;
@@ -148,11 +158,9 @@ int FormatFixedLevel(int format_key_value);
 
 // True for every format that carries a party-legality layer (the six
 // community formats -- Unlimited included, since Species and Item Clause
-// still apply there -- Doubles OU, Realgam, Realgam Classic, Pyrite and
-// Phenac). False for Free, OU, Multi and every
-// unknown value: those
-// validate nothing, so the callers' "one int compare then nothing" contract
-// holds.
+// still apply there -- Doubles OU, Realgam, Realgam Classic, Pyrite, Phenac
+// and Multi). False for Free, OU and every unknown value: those validate
+// nothing, so the callers' "one int compare then nothing" contract holds.
 bool HasTeamRules(int format_key_value);
 
 // The public-lobby session-name tag for a format, brackets and trailing

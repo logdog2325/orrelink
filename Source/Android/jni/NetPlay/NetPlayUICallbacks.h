@@ -32,7 +32,8 @@ public:
   bool IsHosting() const override;
   void Update() override;
   void AppendChat(const std::string& msg) override;
-  std::string OnTeamSubmission(const std::string& player, const std::string& text) override;
+  NetPlay::XdTeamResult OnTeamSubmission(const std::string& player, const std::string& text,
+                                         const NetPlay::XdTeamTarget& target) override;
   bool OnXdGuestSlotReset() override;
   void OnRoomClosed() override;
   void OnMsgChangeGame(const NetPlay::SyncIdentifier& sync_identifier,

@@ -4,6 +4,8 @@ package org.dolphinemu.dolphinemu.features.dualscreen
 
 import org.dolphinemu.dolphinemu.features.input.model.InputOverrider
 
+// Every deviceNumber here is a GBA controller index (GbaHostBridge.inputPadFor, resolved by
+// GbaScreenView), which in netplay is the owner's local pad, not the SI channel.
 object GbaInputFocusManager {
     private var focusedDevice = GbaHostBridge.NO_DEVICE
     private var blockedGameCubePorts = IntArray(0)
