@@ -1,0 +1,126 @@
+From dcf6a8c606d38e9027fbb50a02d0db17f973c1ad Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 23:02:04 -0700
+Subject: [PATCH] XD Netplay v1.7.6: Multi is shown in the format list, labeled
+ experimental
+
+---
+ Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp    | 2 +-
+ Source/Core/Core/Config/MainSettings.cpp             | 2 +-
+ Source/Core/Core/Config/MainSettings.h               | 2 +-
+ Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp      | 4 ++--
+ Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp | 2 +-
+ Source/Core/UICommon/XDNetplay/FormatRules.cpp       | 8 ++++++++
+ Source/Core/UICommon/XDNetplay/FormatRules.h         | 3 +++
+ 7 files changed, 17 insertions(+), 6 deletions(-)
+
+diff --git a/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp b/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
+index 7e964af..06e3210 100644
+--- a/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
++++ b/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
+@@ -546,7 +546,7 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_FormatBridge_nativeDisplayName
+                                                                                jobject,
+                                                                                jint jformat)
+ {
+-  return ToJString(env, XDNetplay::FormatRules::FormatDisplayName(jformat));
++  return ToJString(env, XDNetplay::FormatRules::FormatListLabel(jformat));
+ }
+ 
+ JNIEXPORT jstring JNICALL
+diff --git a/Source/Core/Core/Config/MainSettings.cpp b/Source/Core/Core/Config/MainSettings.cpp
+index b9721cd..7230835 100644
+--- a/Source/Core/Core/Config/MainSettings.cpp
++++ b/Source/Core/Core/Config/MainSettings.cpp
+@@ -428,7 +428,7 @@ const Info<int> MAIN_XD_STYLE_MUSIC{{System::Main, "XDNetplay", "StyleMusic"}, 0
+ const Info<int> MAIN_XD_STYLE_VENUE{{System::Main, "XDNetplay", "StyleVenue"}, 0};
+ const Info<int> MAIN_XD_FORMAT{{System::Main, "XDNetplay", "Format"},
+                               1};  // FormatRules::FORMAT_ORRE_COLOSSEUM
+-const Info<bool> MAIN_XD_MULTI_ENABLED{{System::Main, "XDNetplay", "MultiEnabled"}, false};
++const Info<bool> MAIN_XD_MULTI_ENABLED{{System::Main, "XDNetplay", "MultiEnabled"}, true};
+ const Info<bool> MAIN_XD_MULTI_FILL_SEATS{{System::Main, "XDNetplay", "MultiFillSeats"}, false};
+ const Info<bool> MAIN_XD_MULTI_PREVIEW_CANCEL_PIN{
+     {System::Main, "XDNetplay", "MultiPreviewCancelPin"}, false};
+diff --git a/Source/Core/Core/Config/MainSettings.h b/Source/Core/Core/Config/MainSettings.h
+index 362ce03..3e95cea 100644
+--- a/Source/Core/Core/Config/MainSettings.h
++++ b/Source/Core/Core/Config/MainSettings.h
+@@ -257,7 +257,7 @@ extern const Info<int> MAIN_XD_STYLE_VENUE;
+ // Free, never clamped.
+ extern const Info<int> MAIN_XD_FORMAT;
+ // Shows the Multi format (four players, XD's "GBA + GBA VS GBA + GBA") in the format lists.
+-// Off by default: Multi is for testers until its tests pass.
++// On by default and labeled experimental in the lists; False hides it.
+ extern const Info<bool> MAIN_XD_MULTI_ENABLED;
+ // Tester switch, INI only, honored only with MAIN_XD_MULTI_ENABLED, host only: at a Multi Start a
+ // lone guest plays Seats 3 and 4 (whichever seat the lobby gave it) and the host Seat 2, so two
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+index 52a9a5b..a8165b8 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+@@ -997,7 +997,7 @@ void NetPlayDialog::UpdateGUI()
+   {
+     m_format_label->setText(
+         tr("Format: %1")
+-            .arg(QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(*room_format))));
++            .arg(QString::fromStdString(XDNetplay::FormatRules::FormatListLabel(*room_format))));
+   }
+   m_format_button->setVisible(server && is_xd);
+ 
+@@ -1972,7 +1972,7 @@ void NetPlayDialog::OnChangeFormat()
+   for (const int format : formats)
+   {
+     auto* item =
+-        new QListWidgetItem(QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(format)));
++        new QListWidgetItem(QString::fromStdString(XDNetplay::FormatRules::FormatListLabel(format)));
+     item->setData(Qt::UserRole, format);
+     list->addItem(item);
+     if (format == current)
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 12cf12f..819291a 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -886,7 +886,7 @@ void XDLauncherDialog::RefreshFormatCombo()
+        XDNetplay::FormatRules::SelectableFormats(Config::Get(Config::MAIN_XD_MULTI_ENABLED)))
+   {
+     m_format_combo->addItem(
+-        QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(format_id)), format_id);
++        QString::fromStdString(XDNetplay::FormatRules::FormatListLabel(format_id)), format_id);
+   }
+   // A value the list does not carry (an unknown id, or Multi while it is
+   // hidden) shows as Free, which is how FormatRules treats it: no
+diff --git a/Source/Core/UICommon/XDNetplay/FormatRules.cpp b/Source/Core/UICommon/XDNetplay/FormatRules.cpp
+index 3148476..e810865 100644
+--- a/Source/Core/UICommon/XDNetplay/FormatRules.cpp
++++ b/Source/Core/UICommon/XDNetplay/FormatRules.cpp
+@@ -639,6 +639,14 @@ const char* FormatDisplayName(int format_key_value)
+   }
+ }
+ 
++std::string FormatListLabel(int format_key_value)
++{
++  std::string label = FormatDisplayName(format_key_value);
++  if (format_key_value == FORMAT_MULTI)
++    label += " (experimental)";
++  return label;
++}
++
+ const char* FormatSessionTag(int format_key_value)
+ {
+   switch (format_key_value)
+diff --git a/Source/Core/UICommon/XDNetplay/FormatRules.h b/Source/Core/UICommon/XDNetplay/FormatRules.h
+index 204858c..763d6ba 100644
+--- a/Source/Core/UICommon/XDNetplay/FormatRules.h
++++ b/Source/Core/UICommon/XDNetplay/FormatRules.h
+@@ -172,6 +172,9 @@ const char* FormatSessionTag(int format_key_value);
+ // Short display name for a format key value ("Free" / "Orre Colosseum" /
+ // "Doubles OU" / ...), shared by both platforms' UI so the dropdowns and messages agree.
+ const char* FormatDisplayName(int format_key_value);
++// The name shown in format lists and the room's format line: the display name, with
++// "(experimental)" after Multi. Messages keep the plain name.
++std::string FormatListLabel(int format_key_value);
+ 
+ // Validation outcome. When !ok, reason is one specific human sentence naming
+ // the offending mon or item, e.g.:
+-- 
+2.39.5 (Apple Git-154)
+
