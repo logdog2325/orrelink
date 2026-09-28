@@ -317,6 +317,12 @@ std::optional<NetPlaySession> PickMatch(const std::vector<NetPlaySession>& sessi
       continue;
     if (session.player_count != 1 || session.in_game || session.has_password)
       continue;
+    // A Multi room is a tester's, waiting for three more players, not a 1v1 opponent.
+    if (session.name.starts_with(
+            XDNetplay::FormatRules::FormatSessionTag(XDNetplay::FormatRules::FORMAT_MULTI)))
+    {
+      continue;
+    }
     return session;
   }
   return std::nullopt;

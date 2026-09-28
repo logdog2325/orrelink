@@ -47,8 +47,9 @@ struct XdStartClaim
   std::string slot_owner_name;
   // A Multi room's Start (the room format is Multi). opponent stays 0 and the slot fields unused;
   // seats[i] is SI port i+2: its holder, that connection's serial (which names its stage file),
-  // name, and whether a team is in. With MultiFillSeats an empty Seat 2 is the host (serial 0)
-  // and an empty Seat 4 repeats Seat 3.
+  // name, and whether a team is in. With MultiFillSeats a lone guest (on any seat) plays Seats 3
+  // and 4 and the host (serial 0) Seat 2; otherwise an empty Seat 2 is the host and an empty
+  // Seat 3 or 4 repeats the other one.
   bool multi = false;
   struct Seat
   {
@@ -235,6 +236,8 @@ private:
 
     ENetPeer* socket = nullptr;
     u32 ping = 0;
+    // A pong has come back, so ping is a measurement (a LAN guest can really read 0 ms).
+    bool has_ping = false;
     u32 current_game = 0;
 
     Common::QoSSession qos_session;

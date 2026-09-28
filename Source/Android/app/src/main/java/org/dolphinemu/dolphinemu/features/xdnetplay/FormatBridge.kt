@@ -54,6 +54,9 @@ object FormatBridge {
      *  when enabled, then Free. */
     fun selectableFormats(): IntArray = nativeSelectableFormats()
 
+    /** True while the MultiEnabled flag is on (Multi is then in [selectableFormats]). */
+    fun multiEnabled(): Boolean = selectableFormats().contains(FORMAT_MULTI)
+
     /** Every known format id, Multi included whatever the flag says. For
      *  recognizing names built from any format. */
     fun knownFormats(): IntArray = nativeKnownFormats()
