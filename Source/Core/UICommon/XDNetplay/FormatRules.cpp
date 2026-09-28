@@ -639,6 +639,14 @@ const char* FormatDisplayName(int format_key_value)
   }
 }
 
+std::string FormatListLabel(int format_key_value)
+{
+  std::string label = FormatDisplayName(format_key_value);
+  if (format_key_value == FORMAT_MULTI)
+    label += " (experimental)";
+  return label;
+}
+
 const char* FormatSessionTag(int format_key_value)
 {
   switch (format_key_value)
