@@ -67,6 +67,7 @@
 #include "Core/HW/SI/SI_Device.h"
 #include "Core/HW/SI/SI_DeviceAMBaseboard.h"
 #include "Core/HW/SI/SI_DeviceGCController.h"
+#include "Core/HW/SI/XDMultiCtl.h"
 #include "Core/HW/Sram.h"
 #include "Core/HW/WiiSave.h"
 #include "Core/HW/WiiSaveStructs.h"
@@ -94,6 +95,11 @@ using namespace WiimoteCommon;
 static std::mutex crit_netplay_client;
 static NetPlayClient* netplay_client = nullptr;
 static bool s_si_poll_batching = false;
+// GbaInputPadFor: per SI channel, the local pad whose GBA input drives this machine's GBA there in
+// the running game, -1 for a GBA this machine does not play. Written on the NETPLAY thread at
+// OnStartGame and cleared at StopGame; read lock-free from UI threads.
+static std::array<std::atomic<s8>, 4> s_gba_input_pad{};
+static std::atomic<bool> s_gba_input_active{false};
 
 // XD netplay peer-vanish watchdog -- see WaitOnRemote() for the full story.
 //
@@ -721,9 +727,14 @@ void NetPlayClient::OnChatMessage(sf::Packet& packet)
 
 void NetPlayClient::OnXdSeats(sf::Packet& packet)
 {
-  PlayerId opponent = 0;
+  u8 mode = 0;
+  std::array<PlayerId, 3> seats{};
+  u8 team_bits = 0;
   u8 count = 0;
-  packet >> opponent;
+  packet >> mode;
+  for (PlayerId& seat : seats)
+    packet >> seat;
+  packet >> team_bits;
   packet >> count;
   std::vector<PlayerId> watchers(count);
   for (PlayerId& pid : watchers)
@@ -735,7 +746,9 @@ void NetPlayClient::OnXdSeats(sf::Packet& packet)
     // flag from the broadcast that follows it.
     for (auto& [pid, player] : m_players)
       player.xd_watching = std::ranges::find(watchers, pid) != watchers.end();
-    m_xd_opponent = opponent;
+    m_xd_seats = seats;
+    m_xd_multi = mode == 1;
+    m_xd_team_bits = team_bits;
     m_xd_seats_known = true;
   }
 
@@ -1007,7 +1020,8 @@ void NetPlayClient::OnPadData(sf::Packet& packet)
     GCPadStatus pad;
     packet >> pad.button;
     if (static_cast<size_t>(map) < m_net_settings.gba_config.size() &&
-        !m_net_settings.gba_config.at(map).enabled)
+        !PadTravelsAsGba(m_net_settings.gba_config, m_net_settings.xd_multi_p1,
+                         static_cast<size_t>(map)))
     {
       packet >> pad.analogA >> pad.analogB >> pad.stickX >> pad.stickY >> pad.substickX >>
           pad.substickY >> pad.triggerLeft >> pad.triggerRight >> pad.isConnected;
@@ -1031,7 +1045,8 @@ void NetPlayClient::OnPadHostData(sf::Packet& packet)
     GCPadStatus pad;
     packet >> pad.button;
     if (static_cast<size_t>(map) < m_net_settings.gba_config.size() &&
-        !m_net_settings.gba_config.at(map).enabled)
+        !PadTravelsAsGba(m_net_settings.gba_config, m_net_settings.xd_multi_p1,
+                         static_cast<size_t>(map)))
     {
       packet >> pad.analogA >> pad.analogB >> pad.stickX >> pad.stickY >> pad.substickX >>
           pad.substickY >> pad.triggerLeft >> pad.triggerRight >> pad.isConnected;
@@ -1274,6 +1289,8 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     packet >> m_net_settings.xd_deterministic_clock;
     packet >> m_net_settings.xd_clock_salt;
     packet >> m_net_settings.xd_rng_seed;
+    // XD multi battles: after xd_rng_seed, last of all (NetPlayServer::StartGame).
+    packet >> m_net_settings.xd_multi_p1;
 
     // Never let PowerPC.cpp's silent fallback pick a core nobody announced. A host on the
     // other architecture names a JIT this build cannot construct: with the XD clock on that
@@ -1395,6 +1412,38 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
   m_health_starve_pops = 0;
   m_health_pops = 0;
   m_health_min_depth = 0xFFFFFFFF;
+  // XD multi battles: the CPU-thread state of the channel-0 control and the Multi-only pacing,
+  // restarted with the queues for the reason the live counters are.
+  m_xdm_reset_pending = false;
+  m_push_target.fill(UINT32_MAX);
+  m_last_pushed.fill(std::nullopt);
+  m_chase_waited.fill(false);
+  m_chase_next = 0;
+  m_chase_count = 0;
+  m_chase_last_reanchor = {};
+  // Which local pad drives each of this machine's GBAs, for the Android touch overlay. The pad
+  // map is final here.
+  if (m_local_player)
+  {
+    for (int ch = 0; ch < 4; ++ch)
+    {
+      const bool mine = m_net_settings.gba_config[ch].enabled &&
+                        m_net_settings.pad_map[ch] == m_local_player->pid;
+      s_gba_input_pad[ch].store(mine ? static_cast<s8>(InGamePadToLocalPad(ch)) : s8{-1},
+                                std::memory_order_relaxed);
+    }
+    s_gba_input_active.store(true, std::memory_order_release);
+  }
+#ifdef HAS_LIBMGBA
+  if (m_net_settings.xd_multi_p1)
+  {
+    // Under the banner of the session this game opens, on every machine.
+    GBADetectLog::NoteBoot(fmt::format("netplay xd_multi_p1=1 pad_map={},{},{},{} local={}",
+                                       m_net_settings.pad_map[0], m_net_settings.pad_map[1],
+                                       m_net_settings.pad_map[2], m_net_settings.pad_map[3],
+                                       m_local_player ? m_local_player->pid : 0));
+  }
+#endif
   {
     std::lock_guard lk(m_live_mutex);
     m_live_request.reset();
@@ -1878,8 +1927,7 @@ void NetPlayClient::OnSyncSaveDataGBA(sf::Packet& packet)
 
   INFO_LOG_FMT(NETPLAY, "Received GBA save for slot {}.", slot);
 
-  const std::string path =
-      fmt::format("{}{}{}.sav", File::GetUserPath(D_GBAUSER_IDX), GBA_SAVE_NETPLAY, slot + 1);
+  const std::string path = GetGBANetplayTempPath(slot);
   if (File::Exists(path) && !File::Delete(path))
   {
     PanicAlertFmtT("Failed to delete NetPlay GBA{0} save file. Verify your write permissions.",
@@ -2378,15 +2426,41 @@ void NetPlayClient::SendXdWatch(bool watching)
 
 XdRole NetPlayClient::GetXdRole(PlayerId pid)
 {
+  return GetXdSeatInfo(pid).role;
+}
+
+XdSeatInfo NetPlayClient::GetXdSeatInfo(PlayerId pid)
+{
   std::lock_guard lkp(m_crit.players);
+  XdSeatInfo info;
   if (pid == 1)
-    return XdRole::Host;
+  {
+    info.role = XdRole::Host;
+    info.seat = m_xd_seats_known && m_xd_multi ? 1 : 0;
+    info.team_in = true;
+    return info;
+  }
   if (!m_xd_seats_known)
-    return XdRole::Unknown;
-  if (pid == m_xd_opponent)
-    return XdRole::Opponent;
+    return info;
+  for (size_t i = 0; i < m_xd_seats.size(); ++i)
+  {
+    if (m_xd_seats[i] == 0 || m_xd_seats[i] != pid)
+      continue;
+    info.role = m_xd_multi ? XdRole::Seated : XdRole::Opponent;
+    info.seat = static_cast<u8>(i + 2);
+    info.team_in = ((m_xd_team_bits >> i) & 1) != 0;
+    return info;
+  }
   const auto it = m_players.find(pid);
-  return it != m_players.end() && it->second.xd_watching ? XdRole::Watching : XdRole::Waiting;
+  info.role =
+      it != m_players.end() && it->second.xd_watching ? XdRole::Watching : XdRole::Waiting;
+  return info;
+}
+
+bool NetPlayClient::IsXdMultiSeats()
+{
+  std::lock_guard lkp(m_crit.players);
+  return m_xd_seats_known && m_xd_multi;
 }
 
 std::optional<int> NetPlayClient::GetXdRoomFormat()
@@ -2401,7 +2475,8 @@ void NetPlayClient::AddPadStateToPacket(const int in_game_pad, const GCPadStatus
 {
   packet << static_cast<PadIndex>(in_game_pad);
   packet << pad.button;
-  if (!m_net_settings.gba_config[in_game_pad].enabled)
+  if (!PadTravelsAsGba(m_net_settings.gba_config, m_net_settings.xd_multi_p1,
+                       static_cast<size_t>(in_game_pad)))
   {
     packet << pad.analogA << pad.analogB << pad.stickX << pad.stickY << pad.substickX
            << pad.substickY << pad.triggerLeft << pad.triggerRight << pad.isConnected;
@@ -3344,6 +3419,41 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
           std::min<u32>(m_health_min_depth, static_cast<u32>(std::min<size_t>(pre_depth, 0xFFFE)));
     }
 
+    // XD multi battles, players only: chase re-anchor. Four machines split the slack by phase,
+    // and one that keeps waiting on another's entries sits behind its throttle deadline and would
+    // spend any slack it is given at once. A pop that waited 50 ms or more, or waits on half of
+    // the last 120 pops of other machines' pads, re-anchors the throttle, at most once per 2 s.
+    // Wall-clock pacing only, like the re-anchor above: which entries are used is unchanged.
+    if (m_net_settings.xd_multi_p1 && !m_spec_active && !m_host_input_authority &&
+        m_local_player && pad_nb >= 0 &&
+        static_cast<size_t>(pad_nb) < m_net_settings.pad_map.size() &&
+        m_net_settings.pad_map[pad_nb] != m_local_player->pid)
+    {
+      const bool waited = wait_us > 1000;
+      if (m_chase_waited[m_chase_next])
+        --m_chase_count;
+      m_chase_waited[m_chase_next] = waited;
+      if (waited)
+        ++m_chase_count;
+      m_chase_next = (m_chase_next + 1) % static_cast<u32>(m_chase_waited.size());
+      const auto now_tp = std::chrono::steady_clock::now();
+      if ((wait_us >= 50000 || m_chase_count >= 60) &&
+          now_tp - m_chase_last_reanchor >= std::chrono::seconds(2))
+      {
+        m_chase_last_reanchor = now_tp;
+        Core::System::GetInstance().GetCoreTiming().ResetThrottleToNow();
+#ifdef HAS_LIBMGBA
+        GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(),
+                               "autobuf",
+                               fmt::format("throttle re-anchor why=chase wait={}ms waited={}/{} "
+                                           "buf={} pad={} wall={}",
+                                           wait_us / 1000, m_chase_count, m_chase_waited.size(),
+                                           m_target_buffer_size, pad_nb, WallClockHHMMSS()),
+                               false);  // never flush under crit_netplay_client
+#endif
+      }
+    }
+
     const u64 now_us = static_cast<u64>(
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
@@ -3487,7 +3597,9 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
     if (const int sd_marker = m_sd_marker_pad.load(std::memory_order_relaxed); sd_marker >= 0)
     {
       m_sd_inputs = MixPadEntry(m_sd_inputs, pad_nb, *pad_status,
-                                m_net_settings.gba_config[pad_nb].enabled);
+                                PadTravelsAsGba(m_net_settings.gba_config,
+                                                m_net_settings.xd_multi_p1,
+                                                static_cast<size_t>(pad_nb)));
       if (pad_nb == sd_marker && m_live_pop_count[pad_nb] % STATE_SAMPLE_POPS == 0)
       {
         m_sd_due = StateSample{m_live_pop_count[pad_nb], m_sd_inputs};
@@ -3775,8 +3887,30 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
   const int ingame_pad = LocalPadToInGamePad(local_pad);
   bool data_added = false;
   GCPadStatus pad_status;
+  const bool xd_multi_port1 = m_net_settings.xd_multi_p1 && ingame_pad == 0;
 
-  if (m_net_settings.gba_config[ingame_pad].enabled)
+  if (xd_multi_port1)
+  {
+    // XD multi battles, the host's port 1: the controller XD sees (a Wii U adapter on port 1 is
+    // read as the user configured it: the netplay layer has replaced SIDevice0 with the XD Multi
+    // device), plus the GBA it becomes, read from the GBA profile of the same local pad. The GBA
+    // keys ride in the analog bytes (HW/SI/XDMultiCtl.h); the push below adds the control bits.
+    const bool adapter = Config::Get(Config::LayerType::Base,
+                                     Config::GetInfoForSIDevice(local_pad)) ==
+                         SerialInterface::SIDEVICE_WIIU_ADAPTER;
+    pad_status = adapter ? GCAdapter::Input(local_pad) : Pad::GetStatus(local_pad);
+    const GCPadStatus gl = Pad::GetGBAStatus(local_pad);  // consumes the window's Reset (X)
+#ifdef HAS_LIBMGBA
+    LogLocalGbaKeys(ingame_pad, local_pad, gl);
+    const u16 keys = SerialInterface::CSIDevice_GBAEmu::GbaKeysFromPad(gl) & 0x3FF;
+#else
+    const u16 keys = 0;
+#endif
+    m_xdm_reset_pending |= (gl.button & PAD_BUTTON_X) != 0;
+    pad_status.analogA = static_cast<u8>(keys & 0xFF);
+    pad_status.analogB = static_cast<u8>((keys >> 8) << XDMultiCtl::WIRE_KEYS_HI_SHIFT);
+  }
+  else if (m_net_settings.gba_config[ingame_pad].enabled)
   {
     pad_status = Pad::GetGBAStatus(local_pad);
 #ifdef HAS_LIBMGBA
@@ -3858,18 +3992,79 @@ bool NetPlayClient::PollLocalPad(const int local_pad, sf::Packet& packet)
       }
     }
 
+    // XD multi battles: edge-safe lower. A raise applies at once; a lower gives back one entry
+    // only on a poll whose sample repeats the last one pushed, so skipping this poll's push drops
+    // no press and no release.
+    u32 target = m_target_buffer_size;
+    if (m_net_settings.xd_multi_p1)
+    {
+      u32& kept = m_push_target[ingame_pad];
+      const std::optional<GCPadStatus>& last = m_last_pushed[ingame_pad];
+      if (kept == UINT32_MAX || target >= kept)
+      {
+        kept = target;
+      }
+      else
+      {
+        const bool gba_wire =
+            PadTravelsAsGba(m_net_settings.gba_config, true, static_cast<size_t>(ingame_pad));
+        const bool repeat =
+            last && last->button == pad_status.button &&
+            (gba_wire ||
+             (last->analogA == pad_status.analogA && last->analogB == pad_status.analogB &&
+              last->stickX == pad_status.stickX && last->stickY == pad_status.stickY &&
+              last->substickX == pad_status.substickX &&
+              last->substickY == pad_status.substickY &&
+              last->triggerLeft == pad_status.triggerLeft &&
+              last->triggerRight == pad_status.triggerRight &&
+              last->isConnected == pad_status.isConnected));
+        if (repeat)
+          --kept;
+      }
+      target = kept;
+    }
+
     // adjust the buffer either up or down
     // inserting multiple padstates or dropping states
-    while (m_pad_buffer[ingame_pad].Size() <= m_target_buffer_size)
+    bool first_copy = true;
+    while (m_pad_buffer[ingame_pad].Size() <= target)
     {
+      GCPadStatus entry = pad_status;
+      if (xd_multi_port1 && first_copy)
+      {
+        // Only the first copy of a poll carries the Reset and a command; the copies a raise
+        // adds repeat the held keys. No push on a poll takes nothing.
+        const u8 cmd = XDMultiCtl::Take(Core::GetBootSequence());
+        entry.analogB |= static_cast<u8>((cmd << XDMultiCtl::WIRE_CMD_SHIFT) &
+                                         XDMultiCtl::WIRE_CMD_MASK);
+        if (m_xdm_reset_pending)
+          entry.analogB |= XDMultiCtl::WIRE_RESET;
+        m_xdm_reset_pending = false;
+#ifdef HAS_LIBMGBA
+        if (cmd != XDMultiCtl::CMD_NONE)
+        {
+          // flush false: this runs under crit_netplay_client.
+          GBADetectLog::LogEvent(0, Core::System::GetInstance().GetCoreTiming().GetTicks(),
+                                 "xdmulti",
+                                 fmt::format("take cmd={} push={} buf={}",
+                                             XDMultiCtl::CommandName(cmd),
+                                             m_live_push_count[ingame_pad], target),
+                                 false);
+        }
+#endif
+      }
+      first_copy = false;
+
       // add to buffer
-      m_pad_buffer[ingame_pad].Push(pad_status);
+      m_pad_buffer[ingame_pad].Push(entry);
       ++m_live_push_count[ingame_pad];
 
       // add to packet
-      AddPadStateToPacket(ingame_pad, pad_status, packet);
+      AddPadStateToPacket(ingame_pad, entry, packet);
       data_added = true;
     }
+    if (m_net_settings.xd_multi_p1 && !first_copy)
+      m_last_pushed[ingame_pad] = pad_status;
   }
 
   return data_added;
@@ -4005,6 +4200,7 @@ bool NetPlayClient::StopGame()
   InvokeStop();
 
   NetPlay_Disable();
+  s_gba_input_active.store(false, std::memory_order_release);
 
   // stop game
   m_dialog->StopGame();
@@ -4394,9 +4590,32 @@ void SendPowerButtonEvent()
   netplay_client->SendPowerButtonEvent();
 }
 
+std::string GetGBANetplayTempPath(int slot)
+{
+  return fmt::format("{}{}{}.sav", File::GetUserPath(D_GBAUSER_IDX), GBA_SAVE_NETPLAY, slot + 1);
+}
+
+int GbaInputPadFor(int channel)
+{
+  if (channel < 0 || channel >= static_cast<int>(s_gba_input_pad.size()))
+    return -1;
+  if (!s_gba_input_active.load(std::memory_order_acquire))
+    return channel;
+  return s_gba_input_pad[channel].load(std::memory_order_relaxed);
+}
+
 std::string GetGBASavePath(int pad_num)
 {
   std::lock_guard lk(crit_netplay_client);
+
+  // XD multi battles: the host's cores boot from the same copies the server synced
+  // (UICommon/XDNetplay/TeamInjector.h WriteMultiBootSaves); the host's own saves are never opened.
+  if (netplay_client)
+  {
+    const NetSettings& settings = netplay_client->GetNetSettings();
+    if (settings.is_hosting && settings.xd_multi_p1 && settings.savedata_load)
+      return GetGBANetplayTempPath(pad_num);
+  }
 
   if (!netplay_client || netplay_client->GetNetSettings().is_hosting)
   {
@@ -4411,7 +4630,7 @@ std::string GetGBASavePath(int pad_num)
   if (!netplay_client->GetNetSettings().savedata_load)
     return {};
 
-  return fmt::format("{}{}{}.sav", File::GetUserPath(D_GBAUSER_IDX), GBA_SAVE_NETPLAY, pad_num + 1);
+  return GetGBANetplayTempPath(pad_num);
 }
 
 bool IsCurrentGameCore()

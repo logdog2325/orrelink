@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <array>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -206,9 +208,10 @@ bool SubmitHostTeam(const std::string& showdown_text, const std::string& trainer
 // (its team belongs to a player who left and is reset before any Start reads
 // it).
 //
-// Free, OU, Multi and unknown values return at once: one int compare, no
-// file read. Deliberately lenient about anything that is not a rules
-// violation: no gen3data.json, a port with no save, an unreadable/FRLG save
+// Free, OU and unknown values return at once: one int compare, no file read.
+// (A Multi room judges its teams with CheckMultiTeams instead.) Deliberately
+// lenient about anything that is not a rules violation: no gen3data.json, a
+// port with no save, an unreadable/FRLG save
 // (whose party the Emerald-offset readers cannot decode) or an empty party
 // all pass -- those conditions exist in Free too and have their own
 // handling; this only answers "is a readable party legal".
@@ -315,4 +318,73 @@ bool ResetGuestSlot(int device);
 // existing heal boundary (launcher open, solo boot, host start, save import)
 // gets it automatically.
 void HealLeftoverGuestState();
+
+// ---------------------------------------------------------------------------
+// XD multi battles (four seats)
+// ---------------------------------------------------------------------------
+//
+// A Multi room never writes a guest's team into the host's saves. Each seated
+// joiner's TeamData lands in a private STAGE file keyed by that connection's
+// serial (never reused, so a pid reused by a later joiner never inherits one):
+//
+//   <User>/XDNetplay/Multi/stage-<serial>.sav
+//
+// At Start, frozen and with emulation down, WriteMultiBootSaves copies the
+// host's own port-2 save (read only) and the three seats' stages into the
+// four BOOT COPIES NetPlayTemp1..4.sav. The server syncs exactly those, and
+// the host's own cores boot from them (NetPlay::GetGBASavePath), so every
+// machine boots identical bytes and the host's real saves are never opened
+// for writing. The copies are scrubbed when the game stops (ArmTempPurgeOnStop),
+// at once when a start fails, and by the launch heal; the stages when their
+// player has left at the next Multi Start, when the room closes, and by the
+// launch heal.
+
+std::string MultiStagePath(u32 serial);
+
+// Host side, NETPLAY thread, under the server's seat mutex. The stage
+// counterparts of InjectGuestTeam / InjectGuestBundle: the same format gate
+// and the same validation, built on a fresh copy of the bundled template for
+// SI device `device` (the seat's port - 1). No stash, no mark: the file is
+// the player's alone. *status as for the 1v1 paths.
+bool InjectGuestTeamToStage(const std::string& showdown_text, const std::string& trainer_name,
+                            int device, u32 serial, std::string* status,
+                            bool raise_to_level_100 = false);
+bool InjectGuestBundleToStage(const std::vector<u8>& bundle, int device, u32 serial,
+                              std::string* status, bool raise_to_level_100 = false);
+
+// The stage registry (its own lock; may be taken under the seat mutex): which
+// serials have a stage, and the model each asked for (phase 2 uses it).
+void RecordMultiStage(u32 serial, std::optional<int> model);
+std::optional<int> MultiStageModel(u32 serial);
+// Scrubs and deletes every stage file whose serial is not in keep.
+void DropMultiStages(std::span<const u32> keep);
+void DropAllMultiStages();
+
+// Host UI thread, at a Multi Start: frozen, emulation fully down. Writes
+// NetPlayTemp1..4: slot 0 = the host's port-2 save, slot k (1..3) = the stage
+// of seat_serials[k-1], or the host's save for slot 1 when host_fills_seat2
+// (MultiFillSeats). Then drops the stages of serials not in room_serials.
+// false with *error when a source is missing or unwritable; nothing then
+// boots from a half-written set (the caller scrubs).
+bool WriteMultiBootSaves(const std::array<u32, 3>& seat_serials, bool host_fills_seat2,
+                         std::span<const u32> room_serials, std::string* error);
+// Scrubs and deletes NetPlayTemp1..4.
+void ScrubMultiBootSaves();
+// Scrub the boot copies once emulation next reaches Uninitialized (the game
+// that boots from them has stopped), or not.
+void ArmTempPurgeOnStop();
+void DisarmTempPurge();
+bool IsTempPurgeArmed();
+
+// The legality of a Multi start's four teams under `format`: the host's
+// port-2 save and each seat's stage (the host's save for seat 2 when
+// host_fills_seat2). Lenient like CheckRoomTeams: a missing or unreadable
+// file is not a rules question.
+struct MultiTeamCheck
+{
+  FormatRules::Verdict host;
+  std::array<FormatRules::Verdict, 3> seats;
+};
+MultiTeamCheck CheckMultiTeams(int format, const std::array<u32, 3>& seat_serials,
+                               bool host_fills_seat2);
 }  // namespace XDNetplay

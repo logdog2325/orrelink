@@ -38,7 +38,7 @@ object FormatBridge {
     const val FORMAT_HOENN_UNLIMITED = 6
     const val FORMAT_HOENN_LIMITED = 7
     const val FORMAT_DOUBLES_OU = 8
-    /** Reserved, not built yet: only listed while the MultiEnabled flag is on. */
+    /** XD's four-player multi battle: only listed while the MultiEnabled flag is on. */
     const val FORMAT_MULTI = 9
     const val FORMAT_REALGAM = 10
     const val FORMAT_REALGAM_CLASSIC = 11

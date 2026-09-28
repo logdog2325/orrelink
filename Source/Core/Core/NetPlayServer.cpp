@@ -153,6 +153,10 @@ constexpr u32 AUTOBUF_SAFETY_FRAMES = 2;
 // 333 ms, past which the added input delay is worse than the stutter it cures.
 constexpr u32 AUTOBUF_MIN_FRAMES = 3;
 constexpr u32 AUTOBUF_MAX_FRAMES = 20;
+// A Multi room's cap (250 ms): its worst route is guest to guest through the host.
+constexpr u32 AUTOBUF_MAX_FRAMES_MULTI = 30;
+// Multi: what the relay through the host adds to a guest-to-guest route.
+constexpr u32 AUTOBUF_MULTI_RELAY_MS = 4;
 // Hysteresis, in 1 Hz samples. Raising is quick (a too-small buffer is felt on
 // every single frame); lowering is deliberately 10x lazier and steps down one
 // frame at a time, because a too-large buffer only costs a little input delay.
@@ -189,11 +193,33 @@ constexpr u32 AUTOBUF_CUSHION_SAMPLES = 3;
 constexpr u32 AUTOBUF_CUSHION_STEP = 4;
 constexpr u32 AUTOBUF_CUSHION_CAP = 12;
 
-u32 AutoBufferTargetForPing(u32 ping_ms)
+u32 AutoBufferFramesForPing(u32 ping_ms)
 {
   const u32 frames = (ping_ms * AUTOBUF_FRAME_NUM + AUTOBUF_FRAME_DEN - 1) / AUTOBUF_FRAME_DEN;
-  return std::clamp(frames + AUTOBUF_SAFETY_FRAMES, AUTOBUF_MIN_FRAMES, AUTOBUF_MAX_FRAMES);
+  return frames + AUTOBUF_SAFETY_FRAMES;
 }
+
+u32 AutoBufferTargetForPing(u32 ping_ms, u32 max_frames)
+{
+  return std::clamp(AutoBufferFramesForPing(ping_ms), AUTOBUF_MIN_FRAMES, max_frames);
+}
+
+// Multi: the worst guest-to-guest route, from the pings of the guests that play (host to each):
+// the two largest summed, plus the relay; one guest alone is just its own ping.
+u32 MultiRoutePing(std::vector<u32> guest_pings)
+{
+  std::ranges::sort(guest_pings, std::greater<>());
+  if (guest_pings.empty())
+    return 0;
+  if (guest_pings.size() == 1)
+    return guest_pings[0];
+  if (guest_pings[0] == 0 || guest_pings[1] == 0)
+    return 0;  // a guest's first pong is still out: unknown, not fast
+  return guest_pings[0] + guest_pings[1] + AUTOBUF_MULTI_RELAY_MS;
+}
+
+constexpr const char* MULTI_DELAY_LIMIT_LINE =
+    "Input delay is at its limit for this room. Expect slowdown.";
 }  // namespace
 
 NetPlayServer::~NetPlayServer()
@@ -440,6 +466,22 @@ void NetPlayServer::ThreadFunc()
       INFO_LOG_FMT(NETPLAY, "Processing async queue event done.");
       m_async_queue.Pop();
     }
+    // XD seats: a fill is due after a format change, and after a start or a game ends (a Multi
+    // room holds its seats while either is on).
+    {
+      const bool busy = IsStartingOrRunning() || m_xd_frozen;
+      if (m_xd_was_busy && !busy)
+        m_xd_seats_dirty = true;
+      m_xd_was_busy = busy;
+      if (!(busy && IsXdMultiRoom()) && m_xd_seats_dirty.exchange(false))
+      {
+        {
+          std::lock_guard lkp(m_crit.players);
+          FillXdSeatsLocked();
+        }
+        SendXdSeats();
+      }
+    }
     if (net > 0)
     {
       switch (netEvent.type)
@@ -656,6 +698,7 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
     std::lock_guard lkp(m_crit.players);
     // add new player to list of players
     m_players.emplace(*PeerPlayerId(new_player.socket), std::move(new_player));
+    FillXdSeatsLocked();
     // sync pad mappings with everyone
     UpdatePadMapping();
     UpdateGBAConfig();
@@ -769,8 +812,10 @@ unsigned int NetPlayServer::OnDisconnect(const Client& player)
 
   // alert other players of disconnect
   SendToClients(spac);
-  // The seat may pass to the next player in line. The slot owner is left alone: staleness is by
-  // serial and is resolved at the next submission or Start.
+  // The seat may pass to the next player in line (in a Multi room, once no start or game is on).
+  // The slot owner is left alone: staleness is by serial and is resolved at the next submission
+  // or Start.
+  FillXdSeatsLocked();
   SendXdSeats();
 
   for (size_t i = 0; i < m_pad_map.size(); ++i)
@@ -972,30 +1017,56 @@ void NetPlayServer::UpdateAutoPadBuffer()
   // Only players whose pads other clients actually block on should drive the
   // buffer; a spectator's bad link stalls nobody but itself. If no mapping
   // exists yet (early lobby), fall back to everyone.
+  // A Multi room: every machine waits on every other, and the worst route runs guest to guest
+  // through the host, so the need is sized from the two slowest guests' pings summed
+  // (MultiRoutePing). In its lobby the players are the host and the seat holders (the lobby pad
+  // map is 1v1-shaped); in a game the pad map decides, as below.
+  const bool multi = IsXdMultiRoom();
+  const u32 max_frames = multi ? AUTOBUF_MAX_FRAMES_MULTI : AUTOBUF_MAX_FRAMES;
   u32 max_ping = 0;
   bool any_mapped = false;
+  std::vector<u32> guest_pings;
   for (const auto& [pid, client] : m_players)
   {
     // In the lobby a watcher can still hold a pad slot from AssignNewUserAPad, and nobody waits
     // on it. In a game the pad map decides: a seated player who ticked Watch only during the
     // save sync still plays this battle.
-    if (!PlayerHasControllerMapped(pid) || (client.xd_watching && !m_is_running))
+    const bool plays = multi && !m_is_running ?
+                           (client.IsHost() || client.xd_seat != 0) :
+                           PlayerHasControllerMapped(pid) && !(client.xd_watching && !m_is_running);
+    if (!plays)
       continue;
     any_mapped = true;
     max_ping = std::max(max_ping, client.ping);
+    if (!client.IsHost())
+      guest_pings.push_back(client.ping);
   }
   if (!any_mapped)
   {
     for (const auto& client : std::views::values(m_players))
+    {
       max_ping = std::max(max_ping, client.ping);
+      if (!client.IsHost())
+        guest_pings.push_back(client.ping);
+    }
   }
+  if (multi)
+    max_ping = MultiRoutePing(std::move(guest_pings));
 
   // No pong has come back yet -- 0 is "unknown", not "instant".
   if (max_ping == 0)
     return;
 
-  const u32 need = AutoBufferTargetForPing(max_ping);
+  const u32 need = AutoBufferTargetForPing(max_ping, max_frames);
   const u32 current = m_target_buffer_size;
+  const char* const multi_field = multi ? " multi=1" : "";
+
+  // Multi: the worst route needs more than the cap. Said once per game, in the room chat.
+  if (multi && m_is_running && AutoBufferFramesForPing(max_ping) > max_frames &&
+      !m_auto_buffer_limit_warned.exchange(true))
+  {
+    SendChatMessage(MULTI_DELAY_LIMIT_LINE);
+  }
 
   // Players report PadHealth only while a game runs; in the lobby ping alone decides, as before.
   const bool use_health = m_is_running;
@@ -1013,7 +1084,7 @@ void NetPlayServer::UpdateAutoPadBuffer()
   if (use_health && m_auto_buffer_cushion_streak >= AUTOBUF_CUSHION_SAMPLES &&
       now_ms - m_auto_buffer_last_change_ms >= AUTOBUF_COOLDOWN_MS)
   {
-    const u32 cap = std::min(std::max(need + AUTOBUF_CUSHION_CAP, current), AUTOBUF_MAX_FRAMES);
+    const u32 cap = std::min(std::max(need + AUTOBUF_CUSHION_CAP, current), max_frames);
     const u32 cushion = std::min(current + AUTOBUF_CUSHION_STEP, cap);
     if (cushion > current)
     {
@@ -1042,8 +1113,8 @@ void NetPlayServer::UpdateAutoPadBuffer()
         {
           m_auto_buffer_veto_logged = true;
           const std::string detail =
-              fmt::format("buf {} kept ping={}ms need={} why=lower-veto {}", current, max_ping,
-                          need, health.detail);
+              fmt::format("buf {} kept ping={}ms need={} why=lower-veto {}{}", current, max_ping,
+                          need, health.detail, multi_field);
           NOTICE_LOG_FMT(NETPLAY, "AutoBuffer {}", detail);
 #ifdef HAS_LIBMGBA
           GBADetectLog::LogEvent(0, 0, "autobuf", detail);
@@ -1096,8 +1167,9 @@ void NetPlayServer::UpdateAutoPadBuffer()
   m_auto_buffer_last_change_ms = now_ms;
 
   const std::string detail =
-      fmt::format("buf {}->{} ping={}ms need={} why={}{} players={} running={}", current, next,
-                  max_ping, need, why, why_detail, m_players.size(), m_is_running ? 1 : 0);
+      fmt::format("buf {}->{} ping={}ms need={} why={}{} players={} running={}{}", current, next,
+                  max_ping, need, why, why_detail, m_players.size(), m_is_running ? 1 : 0,
+                  multi_field);
   NOTICE_LOG_FMT(NETPLAY, "AutoBuffer {}", detail);
 #ifdef HAS_LIBMGBA
   // Same session log and same sock=0 channel as the NetLat lines, so a user's
@@ -1257,6 +1329,48 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
     constexpr size_t MAX_TEAM_TEXT = 16 * 1024;
     std::string result;   // for the room: "<name> submitted a team: <result>"
     std::string refusal;  // for the sender only
+    bool seats_changed = false;
+    if (IsXdMultiRoom())
+    {
+      // Multi: the team goes to this player's own stage file (keyed by connection serial), which
+      // the host copies into their seat's boot save at Start. The GBA 2 slot is never touched.
+      std::lock_guard lk(m_xd_seat_mutex);
+      u8 seat;
+      u32 serial;
+      {
+        std::lock_guard lkp(m_crit.players);
+        seat = player.xd_seat;
+        serial = player.xd_serial;
+      }
+      if (seat < 2)
+      {
+        refusal = "Only seated players can submit a team.";
+      }
+      else if (text.size() > MAX_TEAM_TEXT)
+      {
+        result = "team rejected (too large)";
+      }
+      else if (m_xd_frozen || m_is_running || m_start_pending)
+      {
+        // The boot saves are written at Start from the stages; a stage written now would miss
+        // this battle, and saying it landed would be a lie.
+        result = "not applied - a battle is already running. Back out, then submit "
+                 "before the host starts the next one.";
+      }
+      else if (m_dialog)
+      {
+        const XdTeamResult submitted = m_dialog->OnTeamSubmission(
+            player.name, text, XdTeamTarget{.device = seat - 1, .stage_serial = serial});
+        result = submitted.line;
+        if (submitted.applied)
+        {
+          std::lock_guard lkp(m_crit.players);
+          player.xd_stage = true;
+          seats_changed = true;
+        }
+      }
+    }
+    else
     {
       // Excludes a Start's claim of the seat and the saves (ClaimXdStart). Held across the write,
       // so a Start that arrives now waits for it and then boots with it.
@@ -1307,14 +1421,18 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
       {
         // The write completes synchronously here, before the chat ack below and
         // therefore before any Start can read the file.
-        result = m_dialog ? m_dialog->OnTeamSubmission(player.name, text) : std::string{};
+        result = m_dialog ? m_dialog->OnTeamSubmission(player.name, text, XdTeamTarget{}).line :
+                            std::string{};
         // Recorded even when the injection failed: after the reset above the slot holds only the
         // host's data or this sender's, and OnTeamSubmission already stashed this sender's model.
         m_xd_slot_owner = player.xd_serial;
         m_xd_slot_owner_name = player.name;
+        seats_changed = true;
       }
     }
 
+    if (seats_changed)
+      SendXdSeats();
     if (!refusal.empty())
       SendResponseToPlayer(player, MessageID::ChatMessage, PlayerId{0}, refusal);
     // Every client shows this line, the host's own included, so the host UI is not told directly.
@@ -1335,6 +1453,8 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
       // Back of the line: switching back to playing never takes the seat from anyone.
       if (!watching)
         player.xd_queue = ++m_xd_counter;
+      // Watching gives the seat up (in a Multi room only once no start or game is on).
+      FillXdSeatsLocked();
     }
     // Stored now, used at the next Start or TeamData. The running game's pad map is untouched.
     SendXdSeats();
@@ -1389,7 +1509,7 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
       GCPadStatus pad;
       packet >> pad.button;
       spac << map << pad.button;
-      if (!m_gba_config.at(map).enabled)
+      if (!PadTravelsAsGba(m_gba_config, m_xd_multi_wire, static_cast<size_t>(map)))
       {
         packet >> pad.analogA >> pad.analogB >> pad.stickX >> pad.stickY >> pad.substickX >>
             pad.substickY >> pad.triggerLeft >> pad.triggerRight >> pad.isConnected;
@@ -1435,7 +1555,7 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
       GCPadStatus pad;
       packet >> pad.button;
       spac << map << pad.button;
-      if (!m_gba_config.at(map).enabled)
+      if (!PadTravelsAsGba(m_gba_config, m_xd_multi_wire, static_cast<size_t>(map)))
       {
         packet >> pad.analogA >> pad.analogB >> pad.stickX >> pad.stickY >> pad.substickX >>
             pad.substickY >> pad.triggerLeft >> pad.triggerRight >> pad.isConnected;
@@ -2044,6 +2164,8 @@ bool NetPlayServer::SetupNetSettings()
   settings.xd_deterministic_clock = false;
   settings.xd_clock_salt = 0;
   settings.xd_rng_seed = 0;
+  // XD multi battles: the claim of this start (ClaimXdStart) decides, on every XD Start.
+  settings.xd_multi_p1 = m_xd_multi_start;
   {
     const bool mixed = RoomMixesCpuArchitectures();
     const bool safest = Config::Get(Config::NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH);
@@ -2078,16 +2200,23 @@ bool NetPlayServer::SetupNetSettings()
     // host-synced (NetPlayConfigLoader), so pinning it here covers every client.
     if (settings.xd_deterministic_clock)
       settings.cpu_thread = false;
+    // A Multi battle runs single core in every room: the port-1 device switches at a pad pop
+    // and the GBA links are timed against the emulated CPU, so no GPU thread may shift either.
+    if (settings.xd_multi_p1)
+      settings.cpu_thread = false;
+    // The relays read only this (NETPLAY thread), set before StartGame is sent.
+    m_xd_multi_wire = settings.xd_multi_p1;
     if (!line.empty())
       SendChatMessage(line);  // pid 0 notice; the host's own loopback client shows it too
 #ifdef HAS_LIBMGBA
     GBADetectLog::NoteBoot(fmt::format(
         "netplay corepolicy archs=\"{}\" mixed={} override={} cpu_core={} cpu_thread={} clock={} "
         "salt={:08x} "
-        "seed={:08x}",
+        "seed={:08x} multi={}",
         archs, mixed ? 1 : 0, safest ? 1 : 0, static_cast<int>(settings.cpu_core),
         settings.cpu_thread ? 1 : 0,
-        settings.xd_deterministic_clock ? 1 : 0, settings.xd_clock_salt, settings.xd_rng_seed));
+        settings.xd_deterministic_clock ? 1 : 0, settings.xd_clock_salt, settings.xd_rng_seed,
+        settings.xd_multi_p1 ? 1 : 0));
 #endif
   }
   settings.enable_cheats = Config::AreCheatsEnabled();
@@ -2269,9 +2398,14 @@ bool NetPlayServer::RequestStartGame()
 {
   INFO_LOG_FMT(NETPLAY, "Start Game requested.");
 
-  // Not an XD Start (those hold the freeze): no opponent to check for.
+  // Not an XD Start (those hold the freeze): no opponent or seat to check for, and no Multi.
   if (!m_xd_frozen)
+  {
     m_xd_start_opponent = 0;
+    for (auto& seat : m_xd_start_seats)
+      seat = 0;
+    m_xd_multi_start = false;
+  }
 
   if (!SetupNetSettings())
     return false;
@@ -2330,7 +2464,7 @@ bool NetPlayServer::RequestStartGame()
     // Held across the check and the start, so an opponent leaving now is either caught here or
     // finds the game running and disables it.
     std::lock_guard lkg(m_crit.game);
-    if (XdStartOpponentLeft())
+    if (XdStartPlayerLeft())
       return false;
     return StartGame();
   }
@@ -2349,6 +2483,41 @@ bool NetPlayServer::StartGame()
   std::lock_guard lkg(m_crit.game);
   // only used as an identifier, not time value, so truncation is fine
   m_current_game = static_cast<u32>(Common::Timer::NowMs());
+
+  // A Multi start with the automatic buffer on: begin at what the room's worst route needs
+  // rather than waiting for the sizer's first raise, which comes only after the settle window.
+  m_auto_buffer_limit_warned = false;
+  if (m_settings.xd_multi_p1 && !m_host_input_authority && m_auto_buffer_enabled.load())
+  {
+    std::vector<u32> guest_pings;
+    {
+      std::lock_guard lkp(m_crit.players);
+      for (const auto& [pid, client] : m_players)
+      {
+        if (!client.IsHost() && PlayerHasControllerMapped(pid))
+          guest_pings.push_back(client.ping);
+      }
+    }
+    const u32 ping_eff = MultiRoutePing(guest_pings);
+    if (ping_eff != 0)
+    {
+      const u32 need = AutoBufferTargetForPing(ping_eff, AUTOBUF_MAX_FRAMES_MULTI);
+      const std::string detail = fmt::format(
+          "buf {}->{} ping={}ms need={} why=multi-start multi=1", m_target_buffer_size,
+          std::max(need, m_target_buffer_size), ping_eff, need);
+      NOTICE_LOG_FMT(NETPLAY, "AutoBuffer {}", detail);
+#ifdef HAS_LIBMGBA
+      GBADetectLog::LogEvent(0, 0, "autobuf", detail);
+#endif
+      if (need > m_target_buffer_size)
+        m_target_buffer_size = need;
+      if (AutoBufferFramesForPing(ping_eff) > AUTOBUF_MAX_FRAMES_MULTI)
+      {
+        m_auto_buffer_limit_warned = true;
+        SendChatMessage(MULTI_DELAY_LIMIT_LINE);
+      }
+    }
+  }
 
   // no change, just update with clients
   if (!m_host_input_authority)
@@ -2459,6 +2628,8 @@ bool NetPlayServer::StartGame()
   spac << m_settings.xd_deterministic_clock;
   spac << m_settings.xd_clock_salt;
   spac << m_settings.xd_rng_seed;
+  // XD multi battles: after xd_rng_seed, LAST of all.
+  spac << m_settings.xd_multi_p1;
 
   SendAsyncToClients(std::move(spac));
 
@@ -2803,8 +2974,12 @@ bool NetPlayServer::SyncSaveData(const SaveSyncInfo& sync_info)
 
       std::string path;
 #ifdef HAS_LIBMGBA
-      path = HW::GBA::Core::GetSavePath(Config::Get(Config::MAIN_GBA_ROM_PATHS[i]),
-                                        static_cast<int>(i));
+      // A Multi start sends the boot copies the host's own cores boot from (TeamInjector's
+      // WriteMultiBootSaves); the host's real saves are never read here.
+      path = m_settings.xd_multi_p1 ?
+                 NetPlay::GetGBANetplayTempPath(static_cast<int>(i)) :
+                 HW::GBA::Core::GetSavePath(Config::Get(Config::MAIN_GBA_ROM_PATHS[i]),
+                                            static_cast<int>(i));
 #endif
       if (File::Exists(path))
       {
@@ -2995,7 +3170,7 @@ void NetPlayServer::CheckSyncAndStartGame()
   {
     INFO_LOG_FMT(NETPLAY, "Synchronized, starting game.");
     // A leave after m_start_pending rose was already aborted in OnDisconnect.
-    if (XdStartOpponentLeft())
+    if (XdStartPlayerLeft())
     {
       AbortGameStart();
       return;
@@ -3061,18 +3236,88 @@ int NetPlayServer::PlayingCount()
       std::views::values(m_players), [](const Client& client) { return !client.xd_watching; }));
 }
 
-// The one rule for who plays GBA 2 (SI port 3): the joiner not watching who has been in line the
-// longest. The host is never a candidate. Caller holds m_crit.players, or is the NETPLAY thread
-// (the only writer of m_players and the xd_* fields). 0 = nobody.
+// Who plays GBA 2 (SI port 3) in a 1v1 room: the holder of that seat, which FillXdSeatsLocked
+// gives the joiner not watching who has been in line the longest (so this is the same player the
+// queue rule always picked). Multi rooms have no single opponent: 0. Caller holds
+// m_crit.players, or is the NETPLAY thread (the only writer of m_players and the xd_* fields).
 PlayerId NetPlayServer::GetXdOpponentLocked() const
 {
-  const Client* best = nullptr;
+  return IsXdMultiRoom() ? 0 : XdSeatHolderLocked(3);
+}
+
+std::vector<u8> NetPlayServer::XdSeatPorts() const
+{
+  if (IsXdMultiRoom())
+    return {2, 3, 4};
+  return {3};
+}
+
+PlayerId NetPlayServer::XdSeatHolderLocked(u8 port) const
+{
   for (const Client& client : std::views::values(m_players))
   {
-    if (!client.IsHost() && !client.xd_watching && (!best || client.xd_queue < best->xd_queue))
-      best = &client;
+    if (client.xd_seat == port)
+      return client.pid;
   }
-  return best ? best->pid : 0;
+  return 0;
+}
+
+void NetPlayServer::FillXdSeatsLocked()
+{
+  // A streamed Multi battle never shows a seat change: players who left are gone from m_players
+  // (and so from their seat) already; everything else waits for the end of the start or game.
+  if (IsXdMultiRoom() && (IsStartingOrRunning() || m_xd_frozen))
+  {
+    m_xd_seats_dirty = true;
+    return;
+  }
+
+  const std::vector<u8> ports = XdSeatPorts();
+  for (auto& client : std::views::values(m_players))
+  {
+    if (client.IsHost())
+    {
+      client.xd_seat = 0;
+      continue;
+    }
+    if (client.xd_seat != 0 &&
+        (client.xd_watching || std::ranges::find(ports, client.xd_seat) == ports.end()))
+    {
+      client.xd_seat = 0;
+    }
+  }
+  for (const u8 port : ports)
+  {
+    if (XdSeatHolderLocked(port) != 0)
+      continue;
+    Client* best = nullptr;
+    for (auto& client : std::views::values(m_players))
+    {
+      if (!client.IsHost() && !client.xd_watching && client.xd_seat == 0 &&
+          (!best || client.xd_queue < best->xd_queue))
+      {
+        best = &client;
+      }
+    }
+    if (best == nullptr)
+      break;
+    best->xd_seat = port;
+  }
+}
+
+std::vector<u32> NetPlayServer::XdRoomSerials()
+{
+  std::lock_guard lkp(m_crit.players);
+  std::vector<u32> serials;
+  for (const Client& client : std::views::values(m_players))
+    serials.push_back(client.xd_serial);
+  return serials;
+}
+
+bool NetPlayServer::XdMultiNeedsNormalCore()
+{
+  return RoomMixesCpuArchitectures() &&
+         Config::Get(Config::NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH);
 }
 
 // True when the GBA 2 slot holds a team that is not the seated opponent's. A departed owner's
@@ -3100,21 +3345,41 @@ bool NetPlayServer::ResetXdSlotLocked(bool announce)
   return true;
 }
 
-// Display only: every room UI turns this into Host / Opponent / Waiting / Watching. The pad map is
-// still decided once, by the host, at Start.
+// Display only: every room UI turns this into Host / Opponent / Seat n / Waiting / Watching. The
+// pad map is still decided once, by the host, at Start. Layout: NetPlayProto.h, XdSeats.
 void NetPlayServer::SendXdSeats()
 {
   sf::Packet spac;
   spac << MessageID::XdSeats;
 
   std::lock_guard lkp(m_crit.players);
+  const bool multi = IsXdMultiRoom();
+  std::array<PlayerId, 3> seats{};
+  u8 team_bits = 0;
+  for (u8 i = 0; i < 3; ++i)
+  {
+    const u8 port = i + 2;
+    if (!multi && port != 3)
+      continue;
+    seats[i] = XdSeatHolderLocked(port);
+    if (seats[i] == 0)
+      continue;
+    const Client& holder = m_players.at(seats[i]);
+    const bool team_in = multi ? holder.xd_stage :
+                                 (m_xd_slot_owner != 0 && holder.xd_serial == m_xd_slot_owner);
+    if (team_in)
+      team_bits |= static_cast<u8>(1u << i);
+  }
   std::vector<PlayerId> watchers;
   for (const Client& client : std::views::values(m_players))
   {
     if (client.xd_watching)
       watchers.push_back(client.pid);
   }
-  spac << GetXdOpponentLocked();
+  spac << static_cast<u8>(multi ? 1 : 0);
+  for (const PlayerId pid : seats)
+    spac << pid;
+  spac << team_bits;
   spac << static_cast<u8>(watchers.size());
   for (const PlayerId pid : watchers)
     spac << pid;
@@ -3125,6 +3390,11 @@ void NetPlayServer::SendXdSeats()
 // called from ---GUI--- thread
 XdStartClaim NetPlayServer::ClaimXdStart()
 {
+  // Read before any netplay lock (config stays outside them all). Tester switch, see
+  // MainSettings.h.
+  const bool fill_seats =
+      Config::Get(Config::MAIN_XD_MULTI_ENABLED) && Config::Get(Config::MAIN_XD_MULTI_FILL_SEATS);
+
   // Waits out a TeamData write in progress (milliseconds).
   std::lock_guard lk(m_xd_seat_mutex);
 
@@ -3145,6 +3415,39 @@ XdStartClaim NetPlayServer::ClaimXdStart()
     std::lock_guard lkg(m_crit.game);
   }
 
+  // Every XD claim says what kind of start it is, so a 1v1 claim clears a previous Multi one.
+  claim.multi = IsXdMultiRoom();
+  m_xd_multi_start = claim.multi;
+  if (claim.multi)
+  {
+    std::lock_guard lkp(m_crit.players);
+    for (size_t i = 0; i < claim.seats.size(); ++i)
+    {
+      const PlayerId pid = XdSeatHolderLocked(static_cast<u8>(i + 2));
+      m_xd_start_seats[i] = pid;
+      if (pid == 0)
+        continue;
+      const Client& holder = m_players.at(pid);
+      claim.seats[i] = {holder.pid, holder.xd_serial, holder.name, holder.xd_stage};
+    }
+    // Tester switch: two machines play all four seats. Only empty seats are filled.
+    if (fill_seats)
+    {
+      if (claim.seats[0].pid == 0)
+      {
+        const auto host = m_players.find(1);
+        claim.seats[0] = {1, 0, host != m_players.end() ? host->second.name : std::string{}, true};
+      }
+      if (claim.seats[2].pid == 0 && claim.seats[1].pid != 0)
+        claim.seats[2] = claim.seats[1];
+    }
+    // Multi never touches the GBA 2 slot (device 2): its teams are staged per player.
+    m_xd_start_opponent = 0;
+    return claim;
+  }
+  for (auto& seat : m_xd_start_seats)
+    seat = 0;
+
   bool stale;
   {
     std::lock_guard lkp(m_crit.players);
@@ -3162,16 +3465,28 @@ XdStartClaim NetPlayServer::ClaimXdStart()
   return claim;
 }
 
-// The opponent an XD Start was claimed for has left since the claim, which OnDisconnect cannot
-// abort before m_start_pending is up. Caller holds m_crit.game or is the NETPLAY thread, so this
-// is atomic with OnDisconnect (which runs under m_crit.game) up to the start.
-bool NetPlayServer::XdStartOpponentLeft()
+// A player an XD Start was claimed for (the 1v1 opponent, or a Multi seat) has left since the
+// claim, which OnDisconnect cannot abort before m_start_pending is up. Caller holds m_crit.game or
+// is the NETPLAY thread, so this is atomic with OnDisconnect (which runs under m_crit.game) up to
+// the start.
+bool NetPlayServer::XdStartPlayerLeft()
 {
   const PlayerId opponent = m_xd_start_opponent;
-  if (opponent == 0 || m_players.contains(opponent))
-    return false;
-  m_dialog->AppendChat("Can't start: the opponent left.");
-  return true;
+  if (opponent != 0 && !m_players.contains(opponent))
+  {
+    m_dialog->AppendChat("Can't start: the opponent left.");
+    return true;
+  }
+  for (const auto& seat : m_xd_start_seats)
+  {
+    const PlayerId pid = seat;
+    if (pid != 0 && !m_players.contains(pid))
+    {
+      m_dialog->AppendChat("Can't start: a player left.");
+      return true;
+    }
+  }
+  return false;
 }
 
 // called from ---GUI--- thread (on Android the thread holding s_host_write_mutex)
@@ -3191,6 +3506,9 @@ XdFormatChange NetPlayServer::SetXdFormat(int format,
   }
 
   m_xd_room_format = format >= 0 && format <= 0xFF ? format : 0;
+  // The seats follow the format (1v1 seats port 3 only, Multi ports 2-4): the NETPLAY thread
+  // refills them and sends them, behind the format below.
+  m_xd_seats_dirty = true;
 
   {
     std::lock_guard lkp(m_crit.players);
@@ -3218,7 +3536,7 @@ XdFormatChange NetPlayServer::SetXdFormat(int format,
   sf::Packet spac;
   spac << MessageID::XdFormat;
   spac << static_cast<u8>(m_xd_room_format.load());
-  SendAsyncToClients(std::move(spac));
+  SendAsyncToClients(std::move(spac));  // wakes the NETPLAY thread, which then fills the seats
   if (!announce.empty())
     SendChatMessage(announce);
   return change;
@@ -3487,8 +3805,14 @@ void NetPlayServer::SendXdNote(PlayerId pid, const std::string& msg)
 // room.
 void NetPlayServer::ReleaseXdStart()
 {
-  std::lock_guard lk(m_xd_seat_mutex);
-  m_xd_frozen = false;
+  {
+    std::lock_guard lk(m_xd_seat_mutex);
+    m_xd_frozen = false;
+  }
+  // A seat fill a Multi claim held back runs now, unless the start went ahead (then it waits for
+  // the game's end).
+  if (m_xd_seats_dirty)
+    Common::ENet::WakeupThread(m_server);
 }
 
 void NetPlayServer::AssignNewUserAPad(const Client& player)

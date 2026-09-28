@@ -11,11 +11,13 @@
 #include "Common/Hash.h"
 #include "Common/Logging/Log.h"
 
+#include "Core/Config/MainSettings.h"
 #include "Core/Config/SessionSettings.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HW/Memmap.h"
+#include "Core/HW/SI/SI_Device.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
@@ -333,8 +335,58 @@ void Install(Core::System& system)
                CLOCK_MODEL, s_salt, s_seed, s_period, DEFAULT_INCREMENT);
 }
 
+namespace
+{
+// The socket-1 controller wait (see HLE_XD.h). Its first instruction, stwu r1,-0x20(r1), is the
+// install check.
+constexpr u32 ADDR_SOCKET1_WAIT = 0x801044D4;
+constexpr u32 OP_SOCKET1_WAIT_PROLOGUE = 0x9421FFE0;
+// The callers whose r3 == 1 call is "XD waits for the socket-1 controller": the VS loop and its
+// helper, the menu error paths and the connect flow's exits.
+constexpr std::array<u32, 8> SOCKET1_WAIT_LRS = {0x80045F2C, 0x80046C6C, 0x80081700, 0x8008178C,
+                                                 0x800817D8, 0x80081820, 0x8004F418, 0x8004F66C};
+Socket1Wait s_socket1;
+}  // namespace
+
+void InstallMultiHooks(Core::System& system)
+{
+  auto& memory = system.GetMemory();
+  if (memory.Read_U32(0x80000000) != XD_DISC_ID ||
+      memory.Read_U32(ADDR_SOCKET1_WAIT) != OP_SOCKET1_WAIT_PROLOGUE ||
+      Config::Get(Config::GetInfoForSIDevice(0)) != SerialInterface::SIDEVICE_GC_GBA_XDMULTI)
+  {
+    return;
+  }
+  // HLE::Reload can run again (symbol loads): the counters survive it.
+  if (!s_socket1.installed)
+    s_socket1 = Socket1Wait{.installed = true};
+  HLE::Patch(system, ADDR_SOCKET1_WAIT, "XD_Socket1Wait");
+  INFO_LOG_FMT(OSHLE, "XD multi socket-1 wait hook installed");
+}
+
+void Socket1WaitHook(const Core::CPUThreadGuard& guard)
+{
+  // A Start hook: the function runs on unchanged afterwards. Read only.
+  auto& system = guard.GetSystem();
+  const auto& ppc_state = system.GetPPCState();
+  if (ppc_state.gpr[3] != 1)
+    return;
+  const u32 lr = LR(ppc_state);
+  if (std::find(SOCKET1_WAIT_LRS.begin(), SOCKET1_WAIT_LRS.end(), lr) == SOCKET1_WAIT_LRS.end())
+    return;
+  ++s_socket1.calls;
+  s_socket1.tick = system.GetCoreTiming().GetTicks();
+  s_socket1.lr = lr;
+}
+
+Socket1Wait GetSocket1Wait()
+{
+  return s_socket1;
+}
+
 void Shutdown()
 {
+  s_socket1 = {};
   s_installed = false;
   s_salt = 0;
   s_seed = 0;

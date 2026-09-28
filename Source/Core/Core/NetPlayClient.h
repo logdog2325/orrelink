@@ -55,6 +55,31 @@ enum class XdRole : u8
   Opponent = 2,
   Waiting = 3,
   Watching = 4,
+  // A Multi room: holds Seat 2, 3 or 4 (XdSeatInfo::seat). The host is Seat 1.
+  Seated = 5,
+};
+
+// XD Netplay: a player's seat from the last XdSeats. seat: 1 for the host in a Multi room, 2-4 for
+// a seated joiner there, 3 for the 1v1 opponent, 0 otherwise. team_in: the seat has a team ready.
+struct XdSeatInfo
+{
+  XdRole role = XdRole::Unknown;
+  u8 seat = 0;
+  bool team_in = false;
+};
+
+// XD Netplay, host side: where a joiner's TeamData goes. 1v1: the GBA 2 slot (device 2,
+// stage_serial 0). Multi: a private stage file for that connection (stage_serial), later copied
+// into the boot save of SI port device + 1.
+struct XdTeamTarget
+{
+  int device = 2;
+  u32 stage_serial = 0;
+};
+struct XdTeamResult
+{
+  bool applied = false;
+  std::string line;  // for the room chat: "<name> submitted a team: <line>"
 };
 
 class NetPlayUI
@@ -74,12 +99,15 @@ public:
   // the default.
   virtual void AppendChatQuiet(const std::string& msg) { AppendChat(msg); }
   // XD Netplay, host side: a joiner submitted a Showdown team. The
-  // implementation writes it into the GBA save that will be synced at start
-  // (UICommon/XDNetplay/TeamInjector.h -- Core cannot call uicommon directly,
-  // hence the hop through the UI layer) and returns a one-line result for the
-  // room chat. Called on the NETPLAY thread; must finish before the ack, so
-  // the file is on disk before any Start can read it.
-  virtual std::string OnTeamSubmission(const std::string& player, const std::string& text) = 0;
+  // implementation writes it where target says (the GBA 2 slot in 1v1, the
+  // player's stage file in Multi; UICommon/XDNetplay/MultiStart.h
+  // HandleTeamSubmission -- Core cannot call uicommon directly, hence the hop
+  // through the UI layer) and returns whether it landed plus a one-line result
+  // for the room chat. Called on the NETPLAY thread under the server's seat
+  // mutex; must finish before the ack, so the file is on disk before any Start
+  // can read it.
+  virtual XdTeamResult OnTeamSubmission(const std::string& player, const std::string& text,
+                                        const XdTeamTarget& target) = 0;
   // XD Netplay, host side: the GBA 2 slot holds the team of a player who no longer holds the seat.
   // Put the host's spare team back and forget that player's model pick
   // (UICommon/XDNetplay/TeamInjector.h, ResetGuestSlot). Called on the NETPLAY thread (TeamData)
@@ -186,6 +214,9 @@ public:
   // XD Netplay: pid's part in the next battle, from the last XdSeats. Display only; the pad map
   // is decided by the host at Start. Takes m_crit.players.
   XdRole GetXdRole(PlayerId pid);
+  XdSeatInfo GetXdSeatInfo(PlayerId pid);
+  // The last XdSeats was a Multi room's. Takes m_crit.players.
+  bool IsXdMultiSeats();
   // XD Netplay: the room's battle format (a FormatRules id) from the server's last XdFormat, or
   // nullopt before the first one. Display only. Takes m_crit.players.
   std::optional<int> GetXdRoomFormat();
@@ -515,8 +546,12 @@ private:
   PlayerId m_pid = 0;
   NetSettings m_net_settings{};
   std::map<PlayerId, Player> m_players;
-  // XD Netplay seats from the last XdSeats, guarded by m_crit.players.
-  PlayerId m_xd_opponent = 0;
+  // XD Netplay seats from the last XdSeats, guarded by m_crit.players: the holders of SI ports 2,
+  // 3 and 4 (a 1v1 room uses only port 3), whether the room is a Multi room, and which seats
+  // have a team in.
+  std::array<PlayerId, 3> m_xd_seats{};
+  bool m_xd_multi = false;
+  u8 m_xd_team_bits = 0;
   bool m_xd_seats_known = false;
   // XD Netplay: the room's format from the last XdFormat, guarded by m_crit.players.
   std::optional<int> m_xd_room_format;
@@ -603,6 +638,20 @@ private:
   u32 m_health_starve_pops = 0;
   u32 m_health_pops = 0;
   u32 m_health_min_depth = 0xFFFFFFFF;
+
+  // XD multi battles (m_net_settings.xd_multi_p1), CPU thread only, reset in OnStartGame.
+  // m_xdm_reset_pending: the port-1 GBA window's Reset, read by a poll that pushed nothing yet.
+  // Edge-safe lower: the depth each pad's pushes keep (a raise applies at once, a lower steps by
+  // one only on a poll whose sample repeats the last one pushed, so no press or release is ever
+  // dropped) and that last sample (without the control bits). Chase re-anchor: which of the last
+  // 120 pops of other machines' pads waited, and when the throttle was last re-anchored for it.
+  bool m_xdm_reset_pending = false;
+  std::array<u32, 4> m_push_target{};
+  std::array<std::optional<GCPadStatus>, 4> m_last_pushed{};
+  std::array<bool, 120> m_chase_waited{};
+  u32 m_chase_next = 0;
+  u32 m_chase_count = 0;
+  std::chrono::steady_clock::time_point m_chase_last_reanchor{};
 
   // "Left the game window" notice (UpdateFocusNotice). m_focus_watch: this machine plays a pad in
   // the running XD game. m_focus_gate_off_since_ms: when Dolphin's input gate closed (desktop: the

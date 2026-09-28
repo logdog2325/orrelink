@@ -12,6 +12,10 @@
 
 #include <fmt/format.h>
 
+#include "Core/NetPlayProto.h"
+
+static_assert(XDNetplay::FormatRules::FORMAT_MULTI == NetPlay::XD_FORMAT_MULTI);
+
 namespace XDNetplay::FormatRules
 {
 namespace
@@ -326,6 +330,9 @@ RulesProfile ProfileFor(int format_key_value)
   {
   case FORMAT_ORRE_COLOSSEUM:
   case FORMAT_HOENN_STADIUM:
+  // Multi: Orre Colosseum's rules, applied to each trainer's own party (every caller judges one
+  // party at a time, so no clause ever looks across partners).
+  case FORMAT_MULTI:
     return {.ban_restricted = true, .ban_soul_dew = true};
   case FORMAT_ORRE_UNLIMITED:
   case FORMAT_HOENN_UNLIMITED:
@@ -589,11 +596,27 @@ bool HasTeamRules(int format_key_value)
   case FORMAT_REALGAM_CLASSIC:
   case FORMAT_PYRITE:
   case FORMAT_PHENAC:
+  case FORMAT_MULTI:
     return true;
   default:
     return false;
   }
 }
+
+namespace
+{
+// Multi's exactly-three fallback (MULTI_EXACTLY_THREE): the party size rule, before the shared
+// rules. Off by default, and then nothing here runs.
+Verdict MultiPartySize(int format_key_value, size_t count)
+{
+  if (!MULTI_EXACTLY_THREE || format_key_value != FORMAT_MULTI ||
+      count == static_cast<size_t>(MULTI_PICK))
+  {
+    return {};
+  }
+  return {false, fmt::format("{} Pokemon, Multi teams have exactly {}", count, MULTI_PICK)};
+}
+}  // namespace
 
 const char* FormatDisplayName(int format_key_value)
 {
@@ -678,6 +701,8 @@ Verdict ValidateSets(int format_key_value, const std::vector<ShowdownSet>& sets,
     }
     entries.push_back(std::move(entry));
   }
+  if (Verdict size = MultiPartySize(format_key_value, sets.size()); !size.ok)
+    return size;
   return ValidateEntries(ProfileFor(format_key_value), entries);
 }
 
@@ -753,6 +778,8 @@ Verdict ValidateParty(int format_key_value, std::span<const Gen3Mon> party, cons
     }
     entries.push_back(std::move(entry));
   }
+  if (Verdict size = MultiPartySize(format_key_value, entries.size()); !size.ok)
+    return size;
   return ValidateEntries(ProfileFor(format_key_value), entries);
 }
 }  // namespace XDNetplay::FormatRules

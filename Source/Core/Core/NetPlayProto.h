@@ -47,6 +47,19 @@ using PadIndex = s8;
 using PadMappingArray = std::array<PlayerId, 4>;
 using GBAConfigArray = std::array<GBAConfig, 4>;
 
+// XD Netplay: the room format id of Multi (UICommon/XDNetplay/FormatRules.h FORMAT_MULTI, which
+// static_asserts against this). Core cannot include UICommon.
+constexpr int XD_FORMAT_MULTI = 9;
+
+// Which wire format a pad entry uses: a GBA channel sends only its buttons. Channel 0 of an XD
+// multi battle (xd_multi_p1) is a GBA in the pad map but sends the full GC status, because it is
+// the host's controller until XD asks for a GBA, and its entries carry the GBA keys and the
+// port's control byte in analogA/analogB. Every machine picks the format with this one rule.
+inline bool PadTravelsAsGba(const GBAConfigArray& gba, bool xd_multi_p1, size_t ch)
+{
+  return ch < gba.size() && gba[ch].enabled && !(ch == 0 && xd_multi_p1);
+}
+
 // OrreLink: this build's CPU-architecture class, sent at connect so the host can
 // refuse to hand an x86_64 guest a JITARM64 core enum (or an arm64 guest JIT64):
 // PowerPC.cpp's InitializeCPUCore would otherwise fall back to the platform JIT in
@@ -150,8 +163,9 @@ struct NetSettings
   u32 xd_clock_salt = 0;
   u32 xd_rng_seed = 0;
   // XD multi battles: channel 0 is the port-1 controller that becomes a GBA
-  // (SIDEVICE_GC_GBA_XDMULTI). Not serialized yet; always false until the
-  // multi-battle lobby sends it.
+  // (SIDEVICE_GC_GBA_XDMULTI), and its pad entries travel in GC format with the GBA keys and the
+  // port's control byte in analogA/analogB (see PadTravelsAsGba and HW/SI/XDMultiCtl.h).
+  // Serialized LAST in StartGame, after xd_rng_seed.
   bool xd_multi_p1 = false;
 
   Sram sram;
@@ -228,7 +242,11 @@ enum class MessageID : u8
   PowerButton = 0xA7,
   LiveStyle = 0xA8,  // XD Netplay: host changes the running game's battle style
   XdWatch = 0xA9,    // XD Netplay: client -> server. bool: this player only watches.
-  XdSeats = 0xAA,    // XD Netplay: server -> clients. Who plays GBA 2, who watches. Display only.
+  // XD Netplay: server -> clients. Display only: u8 mode (0 1v1, 1 Multi), PlayerId seat[3] (the
+  // holders of SI ports 2, 3, 4; 0 = open; a 1v1 room uses only seat[1], port 3), u8 team_bits
+  // (bit i: seat[i] has a team in; in 1v1 bit 1 means the slot holds the opponent's team), u8 n,
+  // n x PlayerId watchers. No version field: netplay refuses mismatched builds.
+  XdSeats = 0xAA,
   XdFormat = 0xAB,   // XD Netplay: server -> clients. u8: the room's battle format (FormatRules id).
   // XD Netplay room notice, both ways. Client -> server: u8 XdNoticeKind, u8 arg. Server ->
   // clients: u8 XdNoticeKind, PlayerId who, u8 arg. Each client writes the line itself, into the
@@ -335,7 +353,14 @@ bool IsNetPlayRunning();
 void SetSIPollBatching(bool state);
 void SendPowerButtonEvent();
 std::string GetGBASavePath(int pad_num);
+// <User>/GBA/NetPlayTemp<slot+1>.sav: a joiner's synced copy of the host's GBA save for SI port
+// slot+1, and in an XD multi battle the host's own boot copy of that port's team.
+std::string GetGBANetplayTempPath(int slot);
 PadDetails GetPadDetails(int pad_num);
+// The local pad whose GBA input drives this machine's GBA on SI channel `channel` in the running
+// netplay game, -1 when that GBA is not this machine's; outside a netplay game, the channel
+// itself. Lock-free (atomics filled at OnStartGame): safe from a UI thread per input event.
+int GbaInputPadFor(int channel);
 // True when netplay is running and the calling core is the one booted for the current game.
 // Takes crit_netplay_client: never call it from anything NetPlay_GetInput calls.
 bool IsCurrentGameCore();
