@@ -341,6 +341,7 @@
     <ClInclude Include="Core\HW\SI\SI_DeviceKeyboard.h" />
     <ClInclude Include="Core\HW\SI\SI_DeviceNull.h" />
     <ClInclude Include="Core\HW\SI\SI_DeviceXDMultiPort.h" />
+    <ClInclude Include="Core\HW\SI\XDMultiCtl.h" />
     <ClInclude Include="Core\HW\SI\SI.h" />
     <ClInclude Include="Core\HW\Sram.h" />
     <ClInclude Include="Core\HW\StreamADPCM.h" />
@@ -607,6 +608,7 @@
     <ClInclude Include="UICommon\XDNetplay\Gen3Save.h" />
     <ClInclude Include="UICommon\XDNetplay\Gen3Text.h" />
     <ClInclude Include="UICommon\XDNetplay\MonFactory.h" />
+    <ClInclude Include="UICommon\XDNetplay\MultiStart.h" />
     <ClInclude Include="UICommon\XDNetplay\PartyBundle.h" />
     <ClInclude Include="UICommon\XDNetplay\SaveImport.h" />
     <ClInclude Include="UICommon\XDNetplay\ShowdownParser.h" />
@@ -1070,6 +1072,7 @@
     <ClCompile Include="Core\HW\SI\SI_DeviceKeyboard.cpp" />
     <ClCompile Include="Core\HW\SI\SI_DeviceNull.cpp" />
     <ClCompile Include="Core\HW\SI\SI_DeviceXDMultiPort.cpp" />
+    <ClCompile Include="Core\HW\SI\XDMultiCtl.cpp" />
     <ClCompile Include="Core\HW\SI\SI.cpp" />
     <ClCompile Include="Core\HW\Sram.cpp" />
     <ClCompile Include="Core\HW\StreamADPCM.cpp" />
@@ -1327,6 +1330,7 @@
     <ClCompile Include="UICommon\XDNetplay\Gen3Save.cpp" />
     <ClCompile Include="UICommon\XDNetplay\Gen3Text.cpp" />
     <ClCompile Include="UICommon\XDNetplay\MonFactory.cpp" />
+    <ClCompile Include="UICommon\XDNetplay\MultiStart.cpp" />
     <ClCompile Include="UICommon\XDNetplay\PartyBundle.cpp" />
     <ClCompile Include="UICommon\XDNetplay\SaveImport.cpp" />
     <ClCompile Include="UICommon\XDNetplay\ShowdownParser.cpp" />

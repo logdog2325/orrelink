@@ -16,6 +16,7 @@
 #include "UICommon/UICommon.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/DisposableSave.h"
+#include "UICommon/XDNetplay/MultiStart.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 #include "jni/AndroidCommon/AndroidCommon.h"
 #include "jni/AndroidCommon/IDCache.h"
@@ -154,13 +155,15 @@ void NetPlayUICallbacks::Update()
       const std::string mapping =
           NetPlay::GetPlayerMappingString(player->pid, client->GetPadMapping(),
                                           client->GetGBAConfig(), client->GetWiimoteMapping());
+      const NetPlay::XdSeatInfo seat = client->GetXdSeatInfo(player->pid);
       jobject player_obj =
           env->NewObject(IDCache::GetNetplayPlayerClass(), IDCache::GetNetplayPlayerConstructor(),
                          static_cast<jint>(player->pid), ToJString(env, player->name),
                          ToJString(env, player->revision), static_cast<jint>(player->ping),
                          static_cast<jboolean>(player->IsHost()), ToJString(env, mapping),
-                         static_cast<jint>(client->GetXdRole(player->pid)),
-                         static_cast<jboolean>(client->IsLocalPlayer(player->pid)));
+                         static_cast<jint>(seat.role),
+                         static_cast<jboolean>(client->IsLocalPlayer(player->pid)),
+                         static_cast<jint>(seat.seat), static_cast<jboolean>(seat.team_in));
       env->SetObjectArrayElement(player_array, i, player_obj);
       env->DeleteLocalRef(player_obj);
     }
@@ -182,40 +185,14 @@ void NetPlayUICallbacks::AppendChat(const std::string& message)
   });
 }
 
-std::string NetPlayUICallbacks::OnTeamSubmission(const std::string& player,
-                                                 const std::string& text)
+NetPlay::XdTeamResult NetPlayUICallbacks::OnTeamSubmission(const std::string& player,
+                                                           const std::string& text,
+                                                           const NetPlay::XdTeamTarget& target)
 {
-  // Host side. Writes the joiner's team into the socket-3 save that netplay
-  // syncs at start; the caller relays the returned line into the room chat.
-  //
-  // The payload may carry an in-game trainer name ahead of the team; a client
-  // that predates that just sends the bare team (TeamInjector.h documents the
-  // grammar and both compatibility directions).
-  const XDNetplay::TeamSubmission submission = XDNetplay::ParseTeamSubmissionPayload(text);
-
-  // The submission may also carry the guest's cosmetic "Model:" pick. Stash it
-  // (every submission overwrites the stash; absent or invalid means "no
-  // preference" and the host's Guest-model fallback wins) and rebuild the
-  // "$OrreLink Battle Style" block right away, so a model submitted any time
-  // before Start is already in the file SyncCodes reads. The server rejects
-  // TeamData while a battle runs, so this cannot race a synced set.
-  XDNetplay::BattleCustomizer::SetGuestModel(submission.model);
-  XDNetplay::BattleCustomizer::RegenerateFromConfig(nullptr);
-
-  // A payload is EITHER a party bundle (the guest's own save's team and
-  // trainer identity, validated strictly before anything is written) OR
-  // Showdown text; the Name header is ignored for bundles -- the bundle's
-  // real trainer name wins (TeamInjector.h).
-  std::string status;
-  const bool applied =
-      submission.save_bundle ?
-          XDNetplay::InjectGuestBundle(*submission.save_bundle, 2, &status,
-                                       submission.raise_to_level_100) :
-          XDNetplay::InjectGuestTeam(submission.showdown_text, submission.trainer_name, 2, &status,
-                                     submission.raise_to_level_100);
-  if (!applied)
-    return status.empty() ? std::string{"team not applied"} : "team not applied - " + status;
-  return status;
+  // Host side, NETPLAY thread, under the server's seat mutex: 1v1 writes the joiner's team into
+  // the socket-3 save netplay syncs at start, Multi into that player's stage. The caller relays
+  // the line into the room chat. Shared with desktop (UICommon/XDNetplay/MultiStart.h).
+  return XDNetplay::HandleTeamSubmission(player, text, target);
 }
 
 bool NetPlayUICallbacks::OnXdGuestSlotReset()
@@ -232,6 +209,9 @@ void NetPlayUICallbacks::OnRoomClosed()
   // saves). May defer itself until emulation has fully stopped -- the mGBA
   // core rewrites the save at teardown, so anything done sooner is undone.
   XDNetplay::RestoreHostTeam(2);
+  // Multi: every seat's staged team (the boot copies go with the NetPlayTemp saves above, or with
+  // the purge armed at Start once the cores have stopped).
+  XDNetplay::DropAllMultiStages();
   // And retire the session's cosmetic battle-style state: drop the guest's
   // stashed model, strip the generated "$OrreLink Battle Style" block from the
   // local GXXE01.ini, and give the cheats flag back if the pre-start hook
@@ -376,6 +356,8 @@ void NetPlayUICallbacks::OnTraversalStateChanged(Common::TraversalClient::State 
 
 void NetPlayUICallbacks::OnGameStartAborted()
 {
+  // A Multi start's boot copies.
+  XDNetplay::OnStartAborted();
 }
 void NetPlayUICallbacks::OnGolferChanged(bool, const std::string&)
 {

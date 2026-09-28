@@ -1082,6 +1082,7 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_role_opponent">Opponent</string>
     <string name="xd_role_waiting">Waiting</string>
     <string name="xd_role_watching">Watching</string>
+    <string name="xd_role_seat">Seat %1$d</string>
     <string name="xd_watch_only">Watch only</string>
     <string name="xd_watch_only_description">Watch without playing.</string>
     <string name="netplay_network_mode_label">Input mode</string>
@@ -1147,7 +1148,7 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_format_hint_hoenn_standard">Applies to rooms you host (listed with a [Hoenn] tag): no Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys; no duplicate species; no duplicate held items; Soul Dew banned. Sleep, Freeze, and Self-KO clauses are enforced by the game itself.</string>
     <string name="xd_format_hint_orre">Applies to rooms you host (listed with an [Orre] tag): no Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys; no duplicate species; no duplicate held items; Soul Dew banned. Sleep, Freeze, and Self-KO clauses are enforced by the game itself.</string>
     <string name="xd_format_hint_doubles_ou">Applies to rooms you host (listed with a [DOU] tag): Smogon ADV Doubles OU, Lv 100 doubles, all six battle. No Mewtwo, Mew, Lugia, Ho-Oh, Latias, Latios, Kyogre, Groudon, Rayquaza, Deoxys, or Ninjask; no Double Team, Minimize, Fissure, Guillotine, Horn Drill, Sheer Cold, Self-Destruct, or Explosion; no duplicate species. Items are unrestricted.</string>
-    <string name="xd_format_hint_multi">Not built yet. Plays like Free.</string>
+    <string name="xd_format_hint_multi">For testers: four players, two per side, Lv. 100, bring 6 pick 3. Orre Colosseum rules for each trainer\'s team.</string>
     <string name="xd_format_hint_realgam">Applies to rooms you host (listed with a [Realgam] tag): Orre Colosseum rules, but a team may bring up to two of Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, and Deoxys. No duplicate species; no duplicate held items; Soul Dew banned.</string>
     <string name="xd_format_hint_realgam_classic">Applies to rooms you host (listed with a [Realgam-C] tag): Orre Colosseum rules, but a team may bring one of Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon, Rayquaza, Jirachi, or Deoxys. No duplicate species; no duplicate held items; Soul Dew banned.</string>
     <string name="xd_format_hint_pyrite">Applies to rooms you host (listed with a [Pyrite] tag): LEVEL 50 doubles. Only Pokémon that can evolve within their own generation (Ivysaur yes; Scyther, Onix, and Golbat no). No duplicate species; no duplicate held items; Soul Dew banned.</string>

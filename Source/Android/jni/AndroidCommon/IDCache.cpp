@@ -854,7 +854,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved)
   s_netplay_player_class = reinterpret_cast<jclass>(env->NewGlobalRef(netplay_player_class));
   s_netplay_player_constructor =
       env->GetMethodID(netplay_player_class, "<init>",
-                       "(ILjava/lang/String;Ljava/lang/String;IZLjava/lang/String;IZ)V");
+                       "(ILjava/lang/String;Ljava/lang/String;IZLjava/lang/String;IZIZ)V");
   env->DeleteLocalRef(netplay_player_class);
 
   const jclass analytics_class = env->FindClass("org/dolphinemu/dolphinemu/utils/Analytics");

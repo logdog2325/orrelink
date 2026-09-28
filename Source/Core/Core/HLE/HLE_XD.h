@@ -41,6 +41,23 @@ u32 ClockModel();      // 2 = v1.5.12 field clock; logged so a reader knows what
 void OSGetTick(const Core::CPUThreadGuard& guard);  // hooks 0x800b225c
 void OSGetTime(const Core::CPUThreadGuard& guard);  // hooks 0x800b2244
 
+// XD multi battles: XD's "controller in socket 1" wait (0x801044D4, called with r3 == 1 from the
+// VS loop and the menu error paths). A Start hook that only counts the calls, for the port-1
+// device's planner: while XD waits there, port 1 must be a controller again. It never writes
+// guest state. Installed from PatchFixedFunctions (every HLE::Reload) only on the GXXE01 DOL with
+// SI port 1 set to the XD Multi device (the netplay layer sets it in a Multi battle).
+void InstallMultiHooks(Core::System& system);
+void Socket1WaitHook(const Core::CPUThreadGuard& guard);
+struct Socket1Wait
+{
+  bool installed = false;
+  u64 calls = 0;  // matching calls this emulation session
+  u64 tick = 0;   // CoreTiming ticks at the last one
+  u32 lr = 0;     // its caller
+};
+// CPU thread only.
+Socket1Wait GetSocket1Wait();
+
 // Pokemon XD battle state, read from fixed MEM1 addresses (BAT identity mapping, no MMU) and
 // shared by the gba_detect 'xd' lines and the netplay state check. Every field is game RAM that
 // is identical on every machine running the same instruction stream: no XFB, EFB copy, audio

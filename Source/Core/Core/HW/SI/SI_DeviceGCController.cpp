@@ -46,7 +46,12 @@ int CSIDevice_GCController::RunBuffer(u8* buffer, int request_length)
   // For debug logging only
   ISIDevice::RunBuffer(buffer, request_length);
 
-  const GCPadStatus pad_status = GetPadStatus();
+  return RunBufferWithStatus(buffer, request_length, GetPadStatus());
+}
+
+int CSIDevice_GCController::RunBufferWithStatus(u8* buffer, int request_length,
+                                                const GCPadStatus& pad_status)
+{
   if (!pad_status.isConnected)
     return -1;
 
@@ -156,12 +161,17 @@ GCPadStatus CSIDevice_GCController::GetPadStatus()
 
   HandleMoviePadStatus(m_system.GetMovie(), m_device_number, &pad_status);
 
+  ApplyOriginRequest(pad_status);
+
+  return pad_status;
+}
+
+void CSIDevice_GCController::ApplyOriginRequest(const GCPadStatus& pad_status)
+{
   // Our GCAdapter code sets PAD_GET_ORIGIN when a new device has been connected.
   // Watch for this to calibrate real controllers on connection.
   if (pad_status.button & PAD_GET_ORIGIN)
     SetOrigin(pad_status);
-
-  return pad_status;
 }
 
 // GetData
@@ -172,7 +182,13 @@ GCPadStatus CSIDevice_GCController::GetPadStatus()
 //  |_ ERR_STATUS (error on last GetData or SendCmd?)
 DataResponse CSIDevice_GCController::GetData(u32& hi, u32& low)
 {
-  GCPadStatus pad_status = GetPadStatus();
+  return GetDataFromStatus(GetPadStatus(), hi, low);
+}
+
+DataResponse CSIDevice_GCController::GetDataFromStatus(const GCPadStatus& sampled, u32& hi,
+                                                       u32& low)
+{
+  GCPadStatus pad_status = sampled;
 
   if (!pad_status.isConnected)
     return DataResponse::ErrorNoResponse;

@@ -521,8 +521,15 @@ static void RefreshConfig()
 
   for (int i = 0; i < SerialInterface::MAX_SI_CHANNELS; ++i)
   {
-    is_adapter_wanted |= Config::Get(Config::GetInfoForSIDevice(i)) ==
-                         SerialInterface::SIDevices::SIDEVICE_WIIU_ADAPTER;
+    const SerialInterface::SIDevices device = Config::Get(Config::GetInfoForSIDevice(i));
+    is_adapter_wanted |= device == SerialInterface::SIDevices::SIDEVICE_WIIU_ADAPTER;
+    // XD Multi netplay puts its own device on port 1 in the netplay layer, and the host's port-1
+    // controller is then read from the adapter the user configured there (NetPlayClient
+    // PollLocalPad reads the base layer too).
+    is_adapter_wanted |=
+        device == SerialInterface::SIDevices::SIDEVICE_GC_GBA_XDMULTI &&
+        Config::Get(Config::LayerType::Base, Config::GetInfoForSIDevice(i)) ==
+            SerialInterface::SIDevices::SIDEVICE_WIIU_ADAPTER;
     s_config_rumble_enabled[i].store(Config::Get(Config::GetInfoForAdapterRumble(i)),
                                      std::memory_order_relaxed);
   }

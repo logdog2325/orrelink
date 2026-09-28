@@ -49,6 +49,7 @@
 #include "Common/Version.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
+#include "Core/HW/SI/SI_Device.h"
 #include "Core/System.h"
 #include "UICommon/NetPlayIndex.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
@@ -418,7 +419,15 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativePrepar
   // alone, which in a netplay game could make the two machines run different codes.
   if (!Core::IsUninitialized(Core::System::GetInstance()))
     return;
-  XDNetplay::BattleCustomizer::PrepareForStart();
+  // A solo multi battle only when SI port 1 is the XD Multi device and the format is Multi (the
+  // launcher keeps port 1 on it only then); every other solo boot gets a 1v1 block.
+  const bool multi_solo =
+      Config::Get(Config::MAIN_XD_MULTI_ENABLED) &&
+      Config::Get(Config::MAIN_XD_FORMAT) == XDNetplay::FormatRules::FORMAT_MULTI &&
+      Config::Get(Config::GetInfoForSIDevice(0)) == SerialInterface::SIDEVICE_GC_GBA_XDMULTI;
+  XDNetplay::BattleCustomizer::PrepareForStart(
+      multi_solo ? XDNetplay::BattleCustomizer::StartKind::Multi :
+                   XDNetplay::BattleCustomizer::StartKind::OneVsOne);
 
   // Crash self-heal for the disposable netplay saves (mirrors the desktop
   // EnsureGbaConfig hook): if a crashed hosted session left a

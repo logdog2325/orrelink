@@ -35,6 +35,8 @@ add_library(uicommon
   XDNetplay/Gen3Text.h
   XDNetplay/MonFactory.cpp
   XDNetplay/MonFactory.h
+  XDNetplay/MultiStart.cpp
+  XDNetplay/MultiStart.h
   XDNetplay/PartyBundle.cpp
   XDNetplay/PartyBundle.h
   XDNetplay/SaveImport.cpp

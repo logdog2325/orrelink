@@ -256,8 +256,17 @@ extern const Info<int> MAIN_XD_STYLE_VENUE;
 // room; a joiner's own value only drives local notes. Unknown values behave as
 // Free, never clamped.
 extern const Info<int> MAIN_XD_FORMAT;
-// Shows the Multi format in the format lists. Off: Multi is not built yet.
+// Shows the Multi format (four players, XD's "GBA + GBA VS GBA + GBA") in the format lists.
+// Off by default: Multi is for testers until its tests pass.
 extern const Info<bool> MAIN_XD_MULTI_ENABLED;
+// Tester switch, INI only, honored only with MAIN_XD_MULTI_ENABLED, host only: at a Multi Start an
+// empty Seat 2 is played by the host and an empty Seat 4 by the Seat 3 player, so two machines
+// can run a Multi battle. Desktop only for the doubled seat (Android shows one local GBA).
+extern const Info<bool> MAIN_XD_MULTI_FILL_SEATS;
+// Tester switch, INI only, host only: in a Multi battle only Seat 1's B backs out of the team
+// preview (BattleCustomizer's preview-cancel pin). Off until its solo test passes; while off,
+// any seat's B cancels the preview for everyone, and the Start line in the chat says so.
+extern const Info<bool> MAIN_XD_MULTI_PREVIEW_CANCEL_PIN;
 // Host-side battle timer, folded into the format rules pin: when enabled and
 // the Format pins a rules record, BattleCustomizer emits that record's timer
 // word (+0x14 s16 minutes per game, +0x16 s16 seconds per turn; positive = on)
