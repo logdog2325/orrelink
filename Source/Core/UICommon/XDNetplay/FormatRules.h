@@ -172,6 +172,9 @@ const char* FormatSessionTag(int format_key_value);
 // Short display name for a format key value ("Free" / "Orre Colosseum" /
 // "Doubles OU" / ...), shared by both platforms' UI so the dropdowns and messages agree.
 const char* FormatDisplayName(int format_key_value);
+// The name shown in format lists and the room's format line: the display name, with
+// "(experimental)" after Multi. Messages keep the plain name.
+std::string FormatListLabel(int format_key_value);
 
 // Validation outcome. When !ok, reason is one specific human sentence naming
 // the offending mon or item, e.g.:

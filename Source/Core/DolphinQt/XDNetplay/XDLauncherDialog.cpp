@@ -886,7 +886,7 @@ void XDLauncherDialog::RefreshFormatCombo()
        XDNetplay::FormatRules::SelectableFormats(Config::Get(Config::MAIN_XD_MULTI_ENABLED)))
   {
     m_format_combo->addItem(
-        QString::fromUtf8(XDNetplay::FormatRules::FormatDisplayName(format_id)), format_id);
+        QString::fromStdString(XDNetplay::FormatRules::FormatListLabel(format_id)), format_id);
   }
   // A value the list does not carry (an unknown id, or Multi while it is
   // hidden) shows as Free, which is how FormatRules treats it: no
