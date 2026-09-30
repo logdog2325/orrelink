@@ -14,6 +14,11 @@ normal phone works too), **macOS** (Apple Silicon), **Windows** and **Linux**.
 Every release comes out for all four at once, so any two players can battle
 each other.
 
+Looking for opponents or help? Join the
+[Orre Colosseum Discord](https://discord.gg/R3WDyc8qeP). The format's rules,
+sample teams and tournament results are in the
+[Orre Colosseum thread on Smogon](https://www.smogon.com/forums/threads/adv-orre-colosseum.3698894/).
+
 ## What OrreLink does for you
 
 - **Pick a format and XD's rules are set for you.** Nobody pages through the
