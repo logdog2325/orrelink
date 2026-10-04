@@ -1,0 +1,23 @@
+From 28f0db1e779743872f577c79ed721a2fd2f6d7f3 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 15:46:06 -0700
+Subject: [PATCH 164/164] XD Netplay v1.7.7 (test build)
+
+---
+ Source/Core/UICommon/XDNetplay/Version.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Source/Core/UICommon/XDNetplay/Version.h b/Source/Core/UICommon/XDNetplay/Version.h
+index 886c055..4c01f2b 100644
+--- a/Source/Core/UICommon/XDNetplay/Version.h
++++ b/Source/Core/UICommon/XDNetplay/Version.h
+@@ -11,5 +11,5 @@ namespace XDNetplay
+ // fork's release, so it cannot answer "which XD Netplay am I?" -- this constant is the only thing
+ // that can. It MUST be bumped in the same patch that a release is tagged from: ship a tag ahead of
+ // this string and every user of that release is told they are out of date forever.
+-constexpr char VERSION[] = "1.7.6";
++constexpr char VERSION[] = "1.7.7";
+ }  // namespace XDNetplay
+-- 
+2.39.5 (Apple Git-154)
+

@@ -1,0 +1,2220 @@
+From ca49197118f6e39589f8f546dc15ef60fbc92e62 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 15:46:06 -0700
+Subject: [PATCH 163/164] XD Netplay: desync fix, Multi team combination and
+ trainer models, host Watch only, music names
+
+- CoreTiming: the first slice's downcount uses this boot's overclock factor. It was computed
+  from the previous session's (0 in a freshly opened app), so the first boot after opening
+  OrreLink ran 20000 cycles off every later boot, and a room mixing fresh and reused windows
+  split minutes into a battle. The cpu log line records proc_boot and the first slice.
+- Multi: the team combination is no longer pinned to the first option; each battle logs the
+  slots and the room chat names the teams (XdNoticeKind::MultiSides, port-1 owner only).
+- Multi: every seat wears its own trainer model (staging TID pins and borrowed switch arms,
+  GenerateMultiModelLines); solo Multi boots read MultiSoloModels for ports 2-4.
+- 1v1: the host can watch. The next two players in line play GBA 1 and GBA 2 from staged
+  teams and boot copies (PrepareWatchStart, NetSettings::xd_boot_copies), with their own
+  models; the host keeps XD's menus. Teams reset when the host switches; the buffer is sized
+  for the joiner to host to joiner route.
+- Music named from the game's battle data (Trainer Battle, Cipher Peon Battle, Cipher Admin
+  Battle), Gonzap and Hexagon Bros fixed, XD Battle 0 removed (same track as Battle Sim),
+  Miror B. Theme and Mt. Battle clouds tested; the Krane model is named for what it shows.
+---
+ .../features/netplay/ui/NetplayScreen.kt      |  58 ++-
+ .../app/src/main/res/values/strings.xml       |   6 +-
+ .../jni/NetPlay/NetPlayUICallbacks.cpp        |   3 +-
+ Source/Android/jni/NetPlay/Netplay.cpp        |  25 +-
+ Source/Core/Core/Config/MainSettings.cpp      |   2 +
+ Source/Core/Core/Config/MainSettings.h        |   4 +
+ Source/Core/Core/Core.cpp                     |  15 +-
+ Source/Core/Core/CoreTiming.cpp               |  12 +-
+ Source/Core/Core/CoreTiming.h                 |  27 +-
+ .../Core/Core/HW/SI/SI_DeviceXDMultiPort.cpp  |  38 ++
+ Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.h |   2 +
+ Source/Core/Core/NetPlayClient.cpp            |  73 +++-
+ Source/Core/Core/NetPlayClient.h              |  11 +-
+ Source/Core/Core/NetPlayProto.h               |  11 +
+ Source/Core/Core/NetPlayServer.cpp            | 145 ++++++-
+ Source/Core/Core/NetPlayServer.h              |  18 +-
+ .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  |  89 ++++-
+ Source/Core/DolphinQt/NetPlay/NetPlayDialog.h |   2 +-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  |   2 +-
+ .../UICommon/XDNetplay/BattleCustomizer.cpp   | 378 +++++++++++++++---
+ .../UICommon/XDNetplay/BattleCustomizer.h     |  47 ++-
+ Source/Core/UICommon/XDNetplay/MultiStart.cpp | 143 ++++++-
+ Source/Core/UICommon/XDNetplay/MultiStart.h   |   7 +
+ .../Core/UICommon/XDNetplay/TeamInjector.cpp  |  61 ++-
+ Source/Core/UICommon/XDNetplay/TeamInjector.h |   5 +
+ 25 files changed, 1045 insertions(+), 139 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
+index 5ff0343..266d255 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
+@@ -315,9 +315,9 @@ fun NetplayScreen(
+                     Spacer(Modifier.height(12.dp))
+                     // Host mode: this is the HOST model (the launcher's "Your
+                     // model" pick), so its first entry is "Game default" and
+-                    // no guest-fallback wording applies. A Multi seat's pick
+-                    // does nothing (every seat wears its save's own model), so
+-                    // it greys out.
++                    // no guest-fallback wording applies. A Multi seat's pick is
++                    // its own too (the host has no fallback for it), so it
++                    // reads the same way.
+                     val multiSeat = !isHosting && localRole == Player.ROLE_SEATED
+                     BattleStyleDropdown(
+                         label = stringResource(
+@@ -327,19 +327,15 @@ fun NetplayScreen(
+                         options = modelOptions,
+                         selectedId = modelDraft,
+                         defaultLabel = stringResource(
+-                            if (isHosting) R.string.xd_style_game_default
++                            if (isHosting || multiSeat) R.string.xd_style_game_default
+                             else R.string.xd_style_no_preference
+                         ),
+                         onSelected = { modelDraft = it },
+                         modifier = Modifier.fillMaxWidth(),
+                         supportingText = stringResource(
+-                            when {
+-                                isHosting -> R.string.xd_host_submit_model_hint
+-                                multiSeat -> R.string.xd_submit_model_multi
+-                                else -> R.string.xd_style_submit_model_hint
+-                            }
+-                        ),
+-                        enabled = !multiSeat
++                            if (isHosting || multiSeat) R.string.xd_host_submit_model_hint
++                            else R.string.xd_style_submit_model_hint
++                        )
+                     )
+                     Spacer(Modifier.height(8.dp))
+                     Row(
+@@ -1255,15 +1251,21 @@ private fun PlayersAndSettings(
+             val roleOpponent = stringResource(R.string.xd_role_opponent)
+             val roleWaiting = stringResource(R.string.xd_role_waiting)
+             val roleWatching = stringResource(R.string.xd_role_watching)
++            val roleHostWatching = stringResource(R.string.xd_role_host_watching)
+             // "Seat %1$d": a Multi room's seats, the host's (Seat 1) included.
+             val roleSeat = stringResource(R.string.xd_role_seat)
++            // "GBA %1$d": a 1v1 room whose host watches seats GBA 1 (port 2) and GBA 2 (port 3).
++            val roleGba = stringResource(R.string.xd_role_gba)
++            val hostWatching = players.any { it.isHost && it.role == Player.ROLE_WATCHING }
+             val roleLabel = { player: Player ->
+                 when (player.role) {
+                     Player.ROLE_HOST -> if (player.seat > 0) roleSeat.format(player.seat) else roleHost
+                     Player.ROLE_OPPONENT -> roleOpponent
+-                    Player.ROLE_SEATED -> roleSeat.format(player.seat)
++                    Player.ROLE_SEATED ->
++                        if (hostWatching) roleGba.format(player.seat - 1)
++                        else roleSeat.format(player.seat)
+                     Player.ROLE_WAITING -> roleWaiting
+-                    Player.ROLE_WATCHING -> roleWatching
++                    Player.ROLE_WATCHING -> if (player.isHost) roleHostWatching else roleWatching
+                     else -> ""
+                 }
+             }
+@@ -1284,6 +1286,36 @@ private fun PlayersAndSettings(
+             )
+         }
+ 
++        // XD Netplay, host of a 1v1 room: watch while the next two players in
++        // line play GBA 1 and GBA 2. Not in Multi, where the host is Seat 1
++        // (the server drops the flag there). The switch follows the server's
++        // seat broadcast.
++        val multiRoom = players.any { it.isHost && it.role == Player.ROLE_HOST && it.seat == 1 }
++        if (isHosting && isXdGameName(game) && !multiRoom) {
++            MenuSpacer()
++
++            Row(
++                modifier = Modifier.fillMaxWidth(),
++                verticalAlignment = Alignment.CenterVertically
++            ) {
++                Column(Modifier.weight(1f)) {
++                    Text(
++                        stringResource(R.string.xd_watch_only),
++                        style = MaterialTheme.typography.bodyLarge
++                    )
++                    Text(
++                        stringResource(R.string.xd_watch_only_host_description),
++                        style = MaterialTheme.typography.bodySmall
++                    )
++                }
++                Switch(
++                    checked = players.any { it.isHost && it.role == Player.ROLE_WATCHING },
++                    onCheckedChange = onWatchOnlyChanged,
++                    enabled = !gameRunning
++                )
++            }
++        }
++
+         if (!isHosting && isXdGameName(game)) {
+             MenuSpacer()
+ 
+diff --git a/Source/Android/app/src/main/res/values/strings.xml b/Source/Android/app/src/main/res/values/strings.xml
+index 0352f42..d5b9d65 100644
+--- a/Source/Android/app/src/main/res/values/strings.xml
++++ b/Source/Android/app/src/main/res/values/strings.xml
+@@ -1082,9 +1082,12 @@ It can efficiently compress both junk data and encrypted Wii data.
+     <string name="xd_role_opponent">Opponent</string>
+     <string name="xd_role_waiting">Waiting</string>
+     <string name="xd_role_watching">Watching</string>
++    <string name="xd_role_host_watching">Host, watching</string>
++    <string name="xd_role_gba">GBA %1$d</string>
+     <string name="xd_role_seat">Seat %1$d</string>
+     <string name="xd_watch_only">Watch only</string>
+     <string name="xd_watch_only_description">Watch without playing.</string>
++    <string name="xd_watch_only_host_description">The next two in line play; you keep XD\'s menus.</string>
+     <string name="netplay_network_mode_label">Input mode</string>
+     <string name="netplay_network_mode_fair_input_delay">Fair Input Delay</string>
+     <string name="netplay_network_mode_host_input_authority">Host Input Authority</string>
+@@ -1126,7 +1129,7 @@ It can efficiently compress both junk data and encrypted Wii data.
+     <string name="xd_style_section_hint">The host picks format, music and location. Joiners set team, name and model in Submit Team; hosts set their name in the room or Team Editor.</string>
+     <string name="xd_style_your_model">Your model</string>
+     <string name="xd_style_guest_model">Guest model</string>
+-    <string name="xd_style_guest_model_hint">Used only if they don\'t pick one themselves</string>
++    <string name="xd_style_guest_model_hint">Used only if they don\'t pick one themselves. Not used in Multi or while you watch.</string>
+     <string name="xd_style_music">Battle music</string>
+     <string name="xd_style_venue">Battle location</string>
+     <string name="xd_style_game_default">Game default</string>
+@@ -1135,7 +1138,6 @@ It can efficiently compress both junk data and encrypted Wii data.
+     <string name="xd_style_no_portrait_suffix">%1$s (no portrait)</string>
+     <string name="xd_style_submit_model_label">Trainer model</string>
+     <string name="xd_style_submit_model_hint">How you appear in battle. Your pick here overrides the host\'s Guest model choice.</string>
+-    <string name="xd_submit_model_multi">Multi uses each save\'s own model.</string>
+ 
+     <!-- One-tap battle Format pick. The option names and their order come from
+          shared core (FormatRules, through FormatBridge) so every picker and
+diff --git a/Source/Android/jni/NetPlay/NetPlayUICallbacks.cpp b/Source/Android/jni/NetPlay/NetPlayUICallbacks.cpp
+index 30b31b7..1202b0f 100644
+--- a/Source/Android/jni/NetPlay/NetPlayUICallbacks.cpp
++++ b/Source/Android/jni/NetPlay/NetPlayUICallbacks.cpp
+@@ -161,7 +161,8 @@ void NetPlayUICallbacks::Update()
+                          static_cast<jint>(player->pid), ToJString(env, player->name),
+                          ToJString(env, player->revision), static_cast<jint>(player->ping),
+                          static_cast<jboolean>(player->IsHost()), ToJString(env, mapping),
+-                         static_cast<jint>(seat.role),
++                         // A watching host reads as Watching; Kotlin labels it by isHost.
++                         static_cast<jint>(seat.watching ? NetPlay::XdRole::Watching : seat.role),
+                          static_cast<jboolean>(client->IsLocalPlayer(player->pid)),
+                          static_cast<jint>(seat.seat), static_cast<jboolean>(seat.team_in));
+       env->SetObjectArrayElement(player_array, i, player_obj);
+diff --git a/Source/Android/jni/NetPlay/Netplay.cpp b/Source/Android/jni/NetPlay/Netplay.cpp
+index dc42244..9c21e12 100644
+--- a/Source/Android/jni/NetPlay/Netplay.cpp
++++ b/Source/Android/jni/NetPlay/Netplay.cpp
+@@ -368,9 +368,15 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetRoomForm
+   // is checked against the new format.
+   Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, format);
+   XDNetplay::RoomTeamCheck check;
++  // A watching host's own team and the GBA 2 slot play no part: GBA 1's and GBA 2's staged teams
++  // are judged at Start. (A switch to Multi ends the watching, and judges the host's team.)
++  const bool watching =
++      server->IsXdHostWatching() && format != XDNetplay::FormatRules::FORMAT_MULTI;
+   const NetPlay::XdFormatChange change = server->SetXdFormat(
+       format,
+-      [&check, format](const NetPlay::XdSlotView& slot) {
++      [&check, format, watching](const NetPlay::XdSlotView& slot) {
++        if (watching)
++          return;
+         // A departed player's team is reset before any Start reads it: not judged. Multi judges
+         // only the host's team here: the seats' teams are staged per player and judged at Start.
+         check = XDNetplay::CheckRoomTeams(format,
+@@ -662,6 +668,20 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
+   const NetPlay::XdStartClaim& claim = freeze.Claim();
+   if (claim.starting)
+     return reply(false, HOST_WRITE_BUSY);
++  // A 1v1 room whose host watches: two joiners on GBA 1 and GBA 2, staged teams, boot copies
++  // (UICommon/XDNetplay/MultiStart.h); the host keeps XD's menus. Still under s_host_write_mutex.
++  if (claim.host_watching)
++  {
++    const XDNetplay::MultiStartOutcome outcome = XDNetplay::PrepareWatchStart(*server, claim);
++    for (const auto& [pid, note] : outcome.notes)
++      server->SendXdNote(pid, note);
++    if (!outcome.refusal.empty())
++      return reply(false, outcome.refusal);
++    const bool started = server->RequestStartGame();
++    if (!started)
++      XDNetplay::AbortMultiStart();
++    return reply(started, "");
++  }
+   // A Multi room: four seats, staged teams, boot copies (UICommon/XDNetplay/MultiStart.h), still
+   // under s_host_write_mutex. The claim already cleared anything a 1v1 start sets.
+   if (claim.multi)
+@@ -784,7 +804,8 @@ JNIEXPORT void JNICALL
+ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetWatchOnly(
+     JNIEnv* env, jobject obj, jboolean watching)
+ {
+-  // XD Netplay, joiner: only watch (or play again). Applies from the next Start.
++  // XD Netplay: only watch (or play again). Applies from the next Start. The host may watch a 1v1
++  // room: two joiners then play GBA 1 and GBA 2.
+   if (auto* client = GetClientPointer(env, obj))
+     client->SendXdWatch(watching == JNI_TRUE);
+ }
+diff --git a/Source/Core/Core/Config/MainSettings.cpp b/Source/Core/Core/Config/MainSettings.cpp
+index 7230835..cbc7e20 100644
+--- a/Source/Core/Core/Config/MainSettings.cpp
++++ b/Source/Core/Core/Config/MainSettings.cpp
+@@ -432,6 +432,8 @@ const Info<bool> MAIN_XD_MULTI_ENABLED{{System::Main, "XDNetplay", "MultiEnabled
+ const Info<bool> MAIN_XD_MULTI_FILL_SEATS{{System::Main, "XDNetplay", "MultiFillSeats"}, false};
+ const Info<bool> MAIN_XD_MULTI_PREVIEW_CANCEL_PIN{
+     {System::Main, "XDNetplay", "MultiPreviewCancelPin"}, false};
++const Info<std::string> MAIN_XD_MULTI_SOLO_MODELS{{System::Main, "XDNetplay", "MultiSoloModels"},
++                                                  ""};
+ const Info<bool> MAIN_XD_TIMER_ENABLED{{System::Main, "XDNetplay", "TimerEnabled"}, false};
+ const Info<int> MAIN_XD_TIMER_TURN_SECONDS{{System::Main, "XDNetplay", "TimerTurnSeconds"}, 60};
+ const Info<int> MAIN_XD_TIMER_GAME_MINUTES{{System::Main, "XDNetplay", "TimerGameMinutes"}, 20};
+diff --git a/Source/Core/Core/Config/MainSettings.h b/Source/Core/Core/Config/MainSettings.h
+index 3e95cea..7d2fe2b 100644
+--- a/Source/Core/Core/Config/MainSettings.h
++++ b/Source/Core/Core/Config/MainSettings.h
+@@ -268,6 +268,10 @@ extern const Info<bool> MAIN_XD_MULTI_FILL_SEATS;
+ // preview (BattleCustomizer's preview-cancel pin). Off until its solo test passes; while off,
+ // any seat's B cancels the preview for everyone, and the Start line in the chat says so.
+ extern const Info<bool> MAIN_XD_MULTI_PREVIEW_CANCEL_PIN;
++// Tester key, INI only, solo Multi boots only: the trainer models for GBA ports 2, 3 and 4 as hex
++// model ids, for example "2B,16,41" (empty or 0 = that port's save trainer). Port 1 uses "Your
++// model". Lets one machine check four model picks.
++extern const Info<std::string> MAIN_XD_MULTI_SOLO_MODELS;
+ // Host-side battle timer, folded into the format rules pin: when enabled and
+ // the Format pins a rules record, BattleCustomizer emits that record's timer
+ // word (+0x14 s16 minutes per game, +0x16 s16 seconds per turn; positive = on)
+diff --git a/Source/Core/Core/Core.cpp b/Source/Core/Core/Core.cpp
+index 00a3f92..d93ddb4 100644
+--- a/Source/Core/Core/Core.cpp
++++ b/Source/Core/Core/Core.cpp
+@@ -715,13 +715,23 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
+   if (GBADetectLog::IsSessionOpen())
+   {
+     const auto& ppc = system.GetPowerPC();
++    // proc_boot is 1 on the first boot of this process. ct_* is CoreTiming's first slice: the
++    // 2026-10-04 desync was ct_init_dc=0 ct_first_adv=20000 on a fresh process against 20000 / 0
++    // on a reused one; from 1.7.7 every boot must read ct_init_dc=20000*oc ct_first_adv=0.
++    const CoreTiming::CoreTimingManager::BootTiming boot_timing =
++        system.GetCoreTiming().GetBootTiming();
++    const std::string first_advance =
++        boot_timing.first_advance == CoreTiming::CoreTimingManager::BOOT_ADVANCE_PENDING ?
++            std::string("na") :
++            fmt::format("{}", boot_timing.first_advance);
+     GBADetectLog::NoteBoot(fmt::format(
+         "cpu arch={} core_cfg={} core_eff=\"{}\" dispatch={} hw_fma={} hw_afp={} use_fma={} "
+         "accurate_fmadds={} accurate_nans={} fprf={} float_exc={} div0_exc={} disable_icache={} "
+         "accurate_dcache={} fastmem={} follow_branch={} mmu={} cpu_thread={} oc={} "
+         "sync_on_skip_idle={} cheats={} gpu_det={} dsp_hle={} dsp_thread={} "
+         "debug={} soft_flush={} netplay={} xd_clock={} xd_clock_cfg={} xd_salt={:08x} "
+-        "xd_seed={:08x} xd_period={} xd_inc={} xd_clock_v={} rev={} orrelink={}",
++        "xd_seed={:08x} xd_period={} xd_inc={} xd_clock_v={} rev={} orrelink={} proc_boot={} "
++        "ct_prev_oc={} ct_init_dc={} ct_first_adv={}",
+         NetPlay::LocalCpuArch(), static_cast<int>(Config::Get(Config::MAIN_CPU_CORE)),
+         ppc.GetCPUName(), ppc.GetMode() == PowerPC::CoreMode::JIT ? "jit" : "interp",
+         cpu_info.bFMA ? 1 : 0, cpu_info.bAFP ? 1 : 0, Config::Get(Config::SESSION_USE_FMA) ? 1 : 0,
+@@ -743,7 +753,8 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
+         NetPlay::IsNetPlayRunning() ? 1 : 0, HLE_XD::IsInstalled() ? "on" : "off",
+         Config::Get(Config::SESSION_XD_DETERMINISTIC_CLOCK) ? 1 : 0, HLE_XD::GetSalt(),
+         HLE_XD::GetSeed(), HLE_XD::GetPeriod(), HLE_XD::DefaultIncrement(), HLE_XD::ClockModel(),
+-        Common::GetScmRevGitStr(), XDNetplay::VERSION));
++        Common::GetScmRevGitStr(), XDNetplay::VERSION, GetBootSequence(),
++        boot_timing.prev_oc_factor, boot_timing.init_downcount, first_advance));
+   }
+ #endif
+   UpdateTitle(system);
+diff --git a/Source/Core/Core/CoreTiming.cpp b/Source/Core/Core/CoreTiming.cpp
+index 67d05c4..f1245b9 100644
+--- a/Source/Core/Core/CoreTiming.cpp
++++ b/Source/Core/Core/CoreTiming.cpp
+@@ -84,7 +84,8 @@ void CoreTimingManager::UnregisterAllEvents()
+ 
+ void CoreTimingManager::Init()
+ {
+-  m_system.GetPPCState().downcount = CyclesToDowncount(MAX_SLICE_LENGTH);
++  m_boot_prev_oc_factor = m_last_oc_factor;
++  m_boot_first_advance = BOOT_ADVANCE_PENDING;
+   m_globals.slice_length = MAX_SLICE_LENGTH;
+   m_globals.global_timer = 0;
+   m_idled_cycles = 0;
+@@ -107,6 +108,13 @@ void CoreTimingManager::Init()
+ 
+   m_last_oc_factor = m_config_oc_factor;
+   m_globals.last_OC_factor_inverted = m_config_oc_inv_factor;
++  // OrreLink: the first slice's downcount must come from THIS boot's factor. Upstream computes it
++  // at the top of Init, from the previous session's factor (0 in a fresh process), so the first
++  // Advance credited 20000 cycles no instruction ran on a fresh process's first boot and 0 on any
++  // later boot. Two netplay peers where one had just opened the app then ran the same game with
++  // different timing, and it reached XD's state minutes later (the 2026-10-04 Multi desync).
++  m_system.GetPPCState().downcount = CyclesToDowncount(MAX_SLICE_LENGTH);
++  m_boot_init_downcount = m_system.GetPPCState().downcount;
+ 
+   m_core_state_changed_hook = Core::AddOnStateChangedCallback([this](Core::State state) {
+     if (state == Core::State::Running)
+@@ -354,6 +362,8 @@ void CoreTimingManager::Advance()
+   auto& ppc_state = power_pc.GetPPCState();
+ 
+   int cyclesExecuted = m_globals.slice_length - DowncountToCycles(ppc_state.downcount);
++  if (m_boot_first_advance == BOOT_ADVANCE_PENDING) [[unlikely]]
++    m_boot_first_advance = cyclesExecuted;
+   m_globals.global_timer += cyclesExecuted;
+   m_last_oc_factor = m_config_oc_factor;
+   m_globals.last_OC_factor_inverted = m_config_oc_inv_factor;
+diff --git a/Source/Core/Core/CoreTiming.h b/Source/Core/Core/CoreTiming.h
+index 2d1abd5..83a401f 100644
+--- a/Source/Core/Core/CoreTiming.h
++++ b/Source/Core/Core/CoreTiming.h
+@@ -16,6 +16,7 @@
+ // inside callback:
+ //   ScheduleEvent(periodInCycles - cyclesLate, callback, "whatever")
+ 
++#include <limits>
+ #include <mutex>
+ #include <string>
+ #include <tuple>
+@@ -45,7 +46,7 @@ struct Globals
+   int slice_length = 0;
+   u64 fake_TB_start_value = 0;
+   u64 fake_TB_start_ticks = 0;
+-  float last_OC_factor_inverted = 0.0f;
++  float last_OC_factor_inverted = 1.0f;
+ };
+ 
+ using TimedCallback =
+@@ -175,6 +176,22 @@ public:
+ 
+   bool UseSyncOnSkipIdle() const;
+ 
++  // OrreLink boot diagnostics, read once for the cpu line in gba_detect logs: the factor left over
++  // from the previous session in this process (1 in a fresh process), the
++  // first slice's downcount, and the cycles the first Advance credited (BOOT_ADVANCE_PENDING until
++  // it runs). Every boot must show the same init downcount and first_advance=0.
++  static constexpr s64 BOOT_ADVANCE_PENDING = std::numeric_limits<s64>::min();
++  struct BootTiming
++  {
++    float prev_oc_factor;
++    int init_downcount;
++    s64 first_advance;
++  };
++  BootTiming GetBootTiming() const
++  {
++    return {m_boot_prev_oc_factor, m_boot_init_downcount, m_boot_first_advance};
++  }
++
+ private:
+   Globals m_globals;
+ 
+@@ -197,7 +214,13 @@ private:
+   // The time value of each Event here is a cycles_into_future value.
+   Common::SPSCQueue<Event> m_ts_queue;
+ 
+-  float m_last_oc_factor = 0.0f;
++  float m_last_oc_factor = 1.0f;
++
++  // OrreLink boot diagnostics (the cpu line in gba_detect logs). Not emulation state: never saved
++  // or synced.
++  float m_boot_prev_oc_factor = 1.0f;
++  int m_boot_init_downcount = 0;
++  s64 m_boot_first_advance = BOOT_ADVANCE_PENDING;
+ 
+   s64 m_idled_cycles = 0;
+   u32 m_fake_dec_start_value = 0;
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.cpp b/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.cpp
+index 5a5002c..7e06957 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.cpp
+@@ -47,6 +47,13 @@ constexpr u32 XD_CTX_48 = 0x804354F0;    // u8, log only
+ constexpr u32 XD_ERRFLAG = 0x804EA840;   // u8: set when the link error handler posts
+ constexpr u32 XD_BFLAG = 0x804EA834;     // u32: 1 while the VS battle runner runs
+ constexpr u32 XD_VSROW = 0x804349EC;
++// The team combination index (XD's picker, state 0xAC) and the four battle slots' SI port (u32,
++// 1-based, at +0x24 of each 0x1320 battle record). Battle setup lays the slots out from the
++// picked row, slots 0-1 one side and 2-3 the other.
++constexpr u32 XD_COMBO = 0x804349E4;
++constexpr u32 XD_SLOT_PORT = 0x80429A34;
++constexpr u32 XD_SLOT_STRIDE = 0x1320;
++constexpr u32 XD_LAYOUT_MULTI = 3;
+ constexpr u32 XD_FORMAT = 0x80429A00;
+ constexpr u32 XD_LINK_A = 0x80428338;
+ constexpr u32 XD_LINK_B = 0x80428348;
+@@ -1056,11 +1063,42 @@ std::string CSIDevice_XDMultiPort::Snapshot(u64 now) const
+   return out;
+ }
+ 
++void CSIDevice_XDMultiPort::LogBattleSides(u64 now)
++{
++  const auto& memory = m_system.GetMemory();
++  std::array<u32, 4> ports{};
++  u32 seen = 0;
++  bool valid = memory.Read_U32(XD_VSROW) == XD_LAYOUT_MULTI;
++  for (u32 k = 0; k < 4; ++k)
++  {
++    ports[k] = memory.Read_U32(XD_SLOT_PORT + k * XD_SLOT_STRIDE);
++    if (ports[k] < 1 || ports[k] > 4 || (seen & (1u << ports[k])) != 0)
++      valid = false;
++    else
++      seen |= 1u << ports[k];
++  }
++  valid = valid && ports[0] == 1;
++  Log(now, fmt::format("sides combo={} slots={},{},{},{} valid={}", memory.Read_U32(XD_COMBO),
++                       ports[0], ports[1], ports[2], ports[3], valid ? 1 : 0));
++  if (!valid || !m_netplay || !m_is_local)
++    return;
++  u8 packed = 0;
++  for (u32 k = 0; k < 4; ++k)
++    packed |= static_cast<u8>((ports[k] - 1) << (2 * k));
++  NetPlay::ReportXdMultiSides(packed);
++}
++
+ void CSIDevice_XDMultiPort::LogDiagnostics(const XdRam& ram, bool en0, u64 now)
+ {
+   const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
+   const u64 ms = std::max<u64>(tps / 1000, 1);
+ 
++  // The teams, once per battle (battle again and change combination included), on every machine
++  // at the same poll: reads only. The port-1 owner sends them to the room for the chat line.
++  if (ram.is_xd && ram.bflag != 0 && m_diag_prev_bflag == 0)
++    LogBattleSides(now);
++  m_diag_prev_bflag = ram.bflag;
++
+   if (m_diag_have_prev && en0 != m_diag_prev_en0 && m_diag_en0_lines < 256)
+   {
+     ++m_diag_en0_lines;
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.h b/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.h
+index 28980ee..5bcc410 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.h
++++ b/Source/Core/Core/HW/SI/SI_DeviceXDMultiPort.h
+@@ -101,6 +101,7 @@ private:
+   std::string Snapshot(u64 now) const;
+   void Log(u64 now, const std::string& detail, bool flush = false) const;
+   void LogDiagnostics(const XdRam& ram, bool en0, u64 now);
++  void LogBattleSides(u64 now);
+ 
+   std::unique_ptr<CSIDevice_GCController> m_controller;
+   // Only on channel 0.
+@@ -162,6 +163,7 @@ private:
+   u64 m_diag_padok_start = 0;
+   std::array<u32, 4> m_diag_prev_ctx{};
+   u8 m_diag_prev_errflag = 0;
++  u32 m_diag_prev_bflag = 0;
+ };
+ }  // namespace SerialInterface
+ 
+diff --git a/Source/Core/Core/NetPlayClient.cpp b/Source/Core/Core/NetPlayClient.cpp
+index 8b9d238..1e54069 100644
+--- a/Source/Core/Core/NetPlayClient.cpp
++++ b/Source/Core/Core/NetPlayClient.cpp
+@@ -763,6 +763,7 @@ void NetPlayClient::OnXdSeats(sf::Packet& packet)
+       player.xd_watching = std::ranges::find(watchers, pid) != watchers.end();
+     m_xd_seats = seats;
+     m_xd_multi = mode == 1;
++    m_xd_host_watching = mode == 2;
+     m_xd_team_bits = team_bits;
+     m_xd_seats_known = true;
+   }
+@@ -823,6 +824,27 @@ void NetPlayClient::OnXdNotice(sf::Packet& packet)
+     tag = "delay-at-limit";
+     line = "Input delay is at its limit for this room. Expect slowdown.";
+     break;
++  case XdNoticeKind::MultiSides:
++  {
++    tag = "multi-sides";
++    // Slots 0-1 are one team, 2-3 the other. Seat n plays SI port n.
++    std::array<std::string, 4> seat_text;
++    {
++      std::lock_guard lkp(m_crit.players);
++      for (int slot = 0; slot < 4; ++slot)
++      {
++        const int port = ((arg >> (2 * slot)) & 3) + 1;
++        const PlayerId owner = m_net_settings.pad_map[port - 1];
++        const auto it = m_players.find(owner);
++        seat_text[slot] = owner != 0 && it != m_players.end() ?
++                              fmt::format("{} (Seat {})", it->second.name, port) :
++                              fmt::format("Seat {}", port);
++      }
++    }
++    line = fmt::format("Teams: {} and {} vs {} and {}.", seat_text[0], seat_text[1], seat_text[2],
++                       seat_text[3]);
++    break;
++  }
+   default:
+     return;
+   }
+@@ -1310,6 +1332,7 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
+     packet >> m_net_settings.xd_rng_seed;
+     // XD multi battles: after xd_rng_seed, last of all (NetPlayServer::StartGame).
+     packet >> m_net_settings.xd_multi_p1;
++    packet >> m_net_settings.xd_boot_copies;
+ 
+     // Never let PowerPC.cpp's silent fallback pick a core nobody announced. A host on the
+     // other architecture names a JIT this build cannot construct: with the XD clock on that
+@@ -2466,7 +2489,8 @@ XdSeatInfo NetPlayClient::GetXdSeatInfo(PlayerId pid)
+   {
+     info.role = XdRole::Host;
+     info.seat = m_xd_seats_known && m_xd_multi ? 1 : 0;
+-    info.team_in = true;
++    info.watching = m_xd_seats_known && m_xd_host_watching;
++    info.team_in = !info.watching;
+     return info;
+   }
+   if (!m_xd_seats_known)
+@@ -2475,7 +2499,7 @@ XdSeatInfo NetPlayClient::GetXdSeatInfo(PlayerId pid)
+   {
+     if (m_xd_seats[i] == 0 || m_xd_seats[i] != pid)
+       continue;
+-    info.role = m_xd_multi ? XdRole::Seated : XdRole::Opponent;
++    info.role = m_xd_multi || m_xd_host_watching ? XdRole::Seated : XdRole::Opponent;
+     info.seat = static_cast<u8>(i + 2);
+     info.team_in = ((m_xd_team_bits >> i) & 1) != 0;
+     return info;
+@@ -2492,6 +2516,12 @@ bool NetPlayClient::IsXdMultiSeats()
+   return m_xd_seats_known && m_xd_multi;
+ }
+ 
++bool NetPlayClient::IsXdHostWatching()
++{
++  std::lock_guard lkp(m_crit.players);
++  return m_xd_seats_known && m_xd_host_watching;
++}
++
+ std::optional<int> NetPlayClient::GetXdRoomFormat()
+ {
+   std::lock_guard lkp(m_crit.players);
+@@ -3448,12 +3478,13 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
+           std::min<u32>(m_health_min_depth, static_cast<u32>(std::min<size_t>(pre_depth, 0xFFFE)));
+     }
+ 
+-    // XD multi battles, players only: chase re-anchor. Four machines split the slack by phase,
+-    // and one that keeps waiting on another's entries sits behind its throttle deadline and would
+-    // spend any slack it is given at once. A pop that waited 50 ms or more, or waits on half of
+-    // the last 120 pops of other machines' pads, re-anchors the throttle, at most once per 2 s.
+-    // Wall-clock pacing only, like the re-anchor above: which entries are used is unchanged.
+-    if (m_net_settings.xd_multi_p1 && !m_spec_active && !m_host_input_authority &&
++    // XD multi battles and 1v1 battles the host watches (every route joiner to host to joiner),
++    // players only: chase re-anchor. The machines split the slack by phase, and one that keeps
++    // waiting on another's entries sits behind its throttle deadline and would spend any slack it
++    // is given at once. A pop that waited 50 ms or more, or waits on half of the last 120 pops of
++    // other machines' pads, re-anchors the throttle, at most once per 2 s. Wall-clock pacing only,
++    // like the re-anchor above: which entries are used is unchanged.
++    if (m_net_settings.xd_boot_copies && !m_spec_active && !m_host_input_authority &&
+         m_local_player && pad_nb >= 0 &&
+         static_cast<size_t>(pad_nb) < m_net_settings.pad_map.size() &&
+         m_net_settings.pad_map[pad_nb] != m_local_player->pid)
+@@ -3748,6 +3779,19 @@ void NetPlayClient::OnLocalGbaStartFailed(int port)
+   SendXdNotice(XdNoticeKind::GbaStartFailed, static_cast<u8>(port));
+ }
+ 
++// The emulation thread, under crit_netplay_client (NetPlay::ReportXdMultiSides). The server checks
++// that this player owns port 1 and relays the teams to the room.
++void NetPlayClient::OnLocalMultiSides(u8 packed)
++{
++#ifdef HAS_LIBMGBA
++  GBADetectLog::LogEvent(0, 0, "notice",
++                         fmt::format("multi-sides-sent arg={:02x} wall={}", packed,
++                                     WallClockHHMMSS()),
++                         false);
++#endif
++  SendXdNotice(XdNoticeKind::MultiSides, packed);
++}
++
+ // ---NETPLAY--- thread, once per loop (at least every 250 ms). One line when this player has been
+ // away from the game for FOCUS_AWAY_MS, and one when they are back. Away is either of:
+ // - the input gate closed (the window lost focus with Background Input off: every button reads
+@@ -4652,12 +4696,12 @@ std::string GetGBASavePath(int pad_num)
+ {
+   std::lock_guard lk(crit_netplay_client);
+ 
+-  // XD multi battles: the host's cores boot from the same copies the server synced
+-  // (UICommon/XDNetplay/TeamInjector.h WriteMultiBootSaves); the host's own saves are never opened.
++  // XD multi battles, and 1v1 battles the host watches: the host's cores boot from the same copies
++  // the server synced (UICommon/XDNetplay/TeamInjector.h); the host's own saves are never opened.
+   if (netplay_client)
+   {
+     const NetSettings& settings = netplay_client->GetNetSettings();
+-    if (settings.is_hosting && settings.xd_multi_p1 && settings.savedata_load)
++    if (settings.is_hosting && settings.xd_boot_copies && settings.savedata_load)
+       return GetGBANetplayTempPath(pad_num);
+   }
+ 
+@@ -4690,6 +4734,13 @@ void ReportGbaStartFailure(int port)
+     netplay_client->OnLocalGbaStartFailed(port);
+ }
+ 
++void ReportXdMultiSides(u8 packed)
++{
++  std::lock_guard lk(crit_netplay_client);
++  if (netplay_client && netplay_client->IsCurrentGameCore())
++    netplay_client->OnLocalMultiSides(packed);
++}
++
+ void ReportXdStateSample(int port, u32 write_count, const HLE_XD::XdDigest& digest)
+ {
+   std::lock_guard lk(crit_netplay_client);
+diff --git a/Source/Core/Core/NetPlayClient.h b/Source/Core/Core/NetPlayClient.h
+index 7261139..d3ecbba 100644
+--- a/Source/Core/Core/NetPlayClient.h
++++ b/Source/Core/Core/NetPlayClient.h
+@@ -60,12 +60,15 @@ enum class XdRole : u8
+ };
+ 
+ // XD Netplay: a player's seat from the last XdSeats. seat: 1 for the host in a Multi room, 2-4 for
+-// a seated joiner there, 3 for the 1v1 opponent, 0 otherwise. team_in: the seat has a team ready.
++// a seated joiner there, 3 for the 1v1 opponent, 2 or 3 (SI port; GBA 1 or GBA 2) for a joiner
++// seated in a 1v1 room whose host watches (role Seated), 0 otherwise. team_in: the seat has a team
++// ready. watching: the host of a 1v1 room ticked Watch only.
+ struct XdSeatInfo
+ {
+   XdRole role = XdRole::Unknown;
+   u8 seat = 0;
+   bool team_in = false;
++  bool watching = false;
+ };
+ 
+ // XD Netplay, host side: where a joiner's TeamData goes. 1v1: the GBA 2 slot (device 2,
+@@ -217,6 +220,9 @@ public:
+   XdSeatInfo GetXdSeatInfo(PlayerId pid);
+   // The last XdSeats was a Multi room's. Takes m_crit.players.
+   bool IsXdMultiSeats();
++  // The last XdSeats was a 1v1 room's whose host watches (joiners play GBA 1 and GBA 2). Takes
++  // m_crit.players.
++  bool IsXdHostWatching();
+   // XD Netplay: the room's battle format (a FormatRules id) from the server's last XdFormat, or
+   // nullopt before the first one. Display only. Takes m_crit.players.
+   std::optional<int> GetXdRoomFormat();
+@@ -295,6 +301,8 @@ public:
+   // A GBA core of this game did not start on this machine (SI port 0-3). The emulation thread,
+   // under crit_netplay_client (NetPlay::ReportGbaStartFailure).
+   void OnLocalGbaStartFailed(int port);
++  // A Multi battle started on this machine, the port-1 owner (NetPlay::ReportXdMultiSides).
++  void OnLocalMultiSides(u8 packed);
+ 
+   const PadMappingArray& GetPadMapping() const;
+   const GBAConfigArray& GetGBAConfig() const;
+@@ -551,6 +559,7 @@ private:
+   // have a team in.
+   std::array<PlayerId, 3> m_xd_seats{};
+   bool m_xd_multi = false;
++  bool m_xd_host_watching = false;
+   u8 m_xd_team_bits = 0;
+   bool m_xd_seats_known = false;
+   // XD Netplay: the room's format from the last XdFormat, guarded by m_crit.players.
+diff --git a/Source/Core/Core/NetPlayProto.h b/Source/Core/Core/NetPlayProto.h
+index 1b2f4c9..7549f8e 100644
+--- a/Source/Core/Core/NetPlayProto.h
++++ b/Source/Core/Core/NetPlayProto.h
+@@ -167,6 +167,10 @@ struct NetSettings
+   // port's control byte in analogA/analogB (see PadTravelsAsGba and HW/SI/XDMultiCtl.h).
+   // Serialized LAST in StartGame, after xd_rng_seed.
+   bool xd_multi_p1 = false;
++  // The GBAs boot from the host's boot copies on every machine, the host's included (a Multi
++  // start, or a 1v1 start whose host watches; NetPlay::GetGBASavePath). Serialized LAST in
++  // StartGame, after xd_multi_p1.
++  bool xd_boot_copies = false;
+ 
+   Sram sram;
+ 
+@@ -298,6 +302,10 @@ enum class XdNoticeKind : u8
+   // Server -> clients only, who = 0: a Multi battle's worst route needs more input delay than the
+   // cap (once per game, mid-battle; the copy before the boot goes out as a plain chat line).
+   DelayAtLimit = 5,
++  // A Multi battle started. arg: the four battle slots' SI ports, 2 bits each (port - 1), slot 0
++  // in the low bits; slots 0-1 are one team. Sent only by the port-1 owner; every client names the
++  // teams in its chat.
++  MultiSides = 6,
+ };
+ 
+ enum class ConnectionError : u8
+@@ -379,5 +387,8 @@ void ReportGbaStartFailure(int port);
+ // `port`, a fixed point in the game's own code on every machine. CPU thread, from the GBA device;
+ // takes crit_netplay_client, like IsCurrentGameCore.
+ void ReportXdStateSample(int port, u32 write_count, const HLE_XD::XdDigest& digest);
++// A Multi battle started with these teams (XdNoticeKind::MultiSides packing). CPU thread, from the
++// port-1 device of the machine that owns it; takes crit_netplay_client, like IsCurrentGameCore.
++void ReportXdMultiSides(u8 packed);
+ int NumLocalWiimotes();
+ }  // namespace NetPlay
+diff --git a/Source/Core/Core/NetPlayServer.cpp b/Source/Core/Core/NetPlayServer.cpp
+index 32b2daf..c28eb5f 100644
+--- a/Source/Core/Core/NetPlayServer.cpp
++++ b/Source/Core/Core/NetPlayServer.cpp
+@@ -1030,7 +1030,10 @@ void NetPlayServer::UpdateAutoPadBuffer()
+   // map is 1v1-shaped); in a game the pad map decides, as below. The same seat rule sizes a lobby
+   // whose pad map a Multi game left behind ({host, s2, s3, s4} until the next Start maps again),
+   // so a room that goes back to 1v1 is sized for the host and its Seat 3, not the old seats.
+-  const bool multi = IsXdMultiRoom();
++  // A 1v1 room whose host watches is routed the same way: GBA 1's and GBA 2's inputs both run
++  // through the host to the other joiner (in a game: this start's claim; in the lobby: the flag).
++  const bool multi = IsXdMultiRoom() ||
++                     (m_is_running ? m_xd_watch_start.load() : XdHostWatchingLocked());
+   const bool lobby_by_seat = !m_is_running && (multi || m_xd_multi_wire);
+   const u32 max_frames = multi ? AUTOBUF_MAX_FRAMES_MULTI : AUTOBUF_MAX_FRAMES;
+   u32 max_ping = 0;
+@@ -1342,10 +1345,16 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
+     std::string result;   // for the room: "<name> submitted a team: <result>"
+     std::string refusal;  // for the sender only
+     bool seats_changed = false;
+-    if (IsXdMultiRoom())
++    bool staged;
++    {
++      std::lock_guard lkp(m_crit.players);
++      staged = IsXdMultiRoom() || XdHostWatchingLocked();
++    }
++    if (staged)
+     {
+-      // Multi: the team goes to this player's own stage file (keyed by connection serial), which
+-      // the host copies into their seat's boot save at Start. The GBA 2 slot is never touched.
++      // Multi, or a 1v1 room whose host watches: the team goes to this player's own stage file
++      // (keyed by connection serial), which the host copies into their seat's boot save at Start.
++      // The GBA 2 slot is never touched.
+       std::lock_guard lk(m_xd_seat_mutex);
+       u8 seat;
+       u32 serial;
+@@ -1457,19 +1466,44 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
+   {
+     bool watching = false;
+     packet >> watching;
+-    if (player.IsHost() || player.xd_watching == watching)
++    // The host may watch a 1v1 room (two joiners play GBA 1 and GBA 2); in Multi it is Seat 1.
++    if (player.xd_watching == watching || (player.IsHost() && watching && IsXdMultiRoom()))
+       break;
++    // The host switching between playing and watching changes where teams live (the GBA 2 slot
++    // for a 1v1 opponent, a stage per seat when the host watches): every team in so far is out,
++    // so an older team can never play. The slot is reset before its next use.
++    bool teams_reset = false;
++    std::unique_lock<std::mutex> seat_lock;
++    if (player.IsHost())
++    {
++      seat_lock = std::unique_lock<std::mutex>(m_xd_seat_mutex);
++      if (m_xd_slot_owner != 0)
++      {
++        m_xd_slot_owner = XD_SLOT_OWNER_ORPHANED;
++        teams_reset = true;
++      }
++      std::lock_guard lkp(m_crit.players);
++      for (auto& client : std::views::values(m_players))
++      {
++        teams_reset |= client.xd_stage;
++        client.xd_stage = false;
++      }
++    }
+     {
+       std::lock_guard lkp(m_crit.players);
+       player.xd_watching = watching;
+-      // Back of the line: switching back to playing never takes the seat from anyone.
+-      if (!watching)
++      // Back of the line: switching back to playing never takes the seat from anyone. The host
++      // has no place in line: it never holds a joiner's seat.
++      if (!watching && !player.IsHost())
+         player.xd_queue = ++m_xd_counter;
+       // Watching gives the seat up (in a Multi room only once no start or game is on).
+       FillXdSeatsLocked();
+     }
++    seat_lock = {};
+     // Stored now, used at the next Start or TeamData. The running game's pad map is untouched.
+     SendXdSeats();
++    if (teams_reset)
++      SendChatMessage("The host changed who plays. Submit your team again.");
+   }
+   break;
+ 
+@@ -2179,6 +2213,9 @@ bool NetPlayServer::SetupNetSettings()
+   settings.xd_rng_seed = 0;
+   // XD multi battles: the claim of this start (ClaimXdStart) decides, on every XD Start.
+   settings.xd_multi_p1 = m_xd_multi_start;
++  // Every machine, the host's included, boots the GBAs from the copies the host wrote from the
++  // seats' staged teams: a Multi start, or a 1v1 start whose host watches.
++  settings.xd_boot_copies = m_xd_multi_start || m_xd_watch_start;
+   {
+     const bool mixed = RoomMixesCpuArchitectures();
+     const bool safest = Config::Get(Config::NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH);
+@@ -2418,6 +2455,7 @@ bool NetPlayServer::RequestStartGame()
+     for (auto& seat : m_xd_start_seats)
+       seat = 0;
+     m_xd_multi_start = false;
++    m_xd_watch_start = false;
+   }
+ 
+   if (!SetupNetSettings())
+@@ -2497,10 +2535,11 @@ bool NetPlayServer::StartGame()
+   // only used as an identifier, not time value, so truncation is fine
+   m_current_game = static_cast<u32>(Common::Timer::NowMs());
+ 
+-  // A Multi start with the automatic buffer on: begin at what the room's worst route needs
+-  // rather than waiting for the sizer's first raise, which comes only after the settle window.
++  // A Multi start, or a 1v1 start whose host watches, with the automatic buffer on: begin at what
++  // the room's worst route (joiner to host to joiner) needs rather than waiting for the sizer's
++  // first raise, which comes only after the settle window.
+   m_auto_buffer_limit_warned = false;
+-  if (m_settings.xd_multi_p1 && !m_host_input_authority && m_auto_buffer_enabled.load())
++  if (m_settings.xd_boot_copies && !m_host_input_authority && m_auto_buffer_enabled.load())
+   {
+     std::vector<u32> guest_pings;
+     {
+@@ -2516,8 +2555,8 @@ bool NetPlayServer::StartGame()
+     {
+       const u32 need = AutoBufferTargetForPing(ping_eff, AUTOBUF_MAX_FRAMES_MULTI);
+       const std::string detail = fmt::format(
+-          "buf {}->{} ping={}ms need={} why=multi-start multi=1", m_target_buffer_size,
+-          std::max(need, m_target_buffer_size), ping_eff, need);
++          "buf {}->{} ping={}ms need={} why=routed-start multi={}", m_target_buffer_size,
++          std::max(need, m_target_buffer_size), ping_eff, need, m_settings.xd_multi_p1 ? 1 : 0);
+       NOTICE_LOG_FMT(NETPLAY, "AutoBuffer {}", detail);
+ #ifdef HAS_LIBMGBA
+       GBADetectLog::LogEvent(0, 0, "autobuf", detail);
+@@ -2643,6 +2682,7 @@ bool NetPlayServer::StartGame()
+   spac << m_settings.xd_rng_seed;
+   // XD multi battles: after xd_rng_seed, LAST of all.
+   spac << m_settings.xd_multi_p1;
++  spac << m_settings.xd_boot_copies;
+ 
+   SendAsyncToClients(std::move(spac));
+ 
+@@ -2987,9 +3027,10 @@ bool NetPlayServer::SyncSaveData(const SaveSyncInfo& sync_info)
+ 
+       std::string path;
+ #ifdef HAS_LIBMGBA
+-      // A Multi start sends the boot copies the host's own cores boot from (TeamInjector's
+-      // WriteMultiBootSaves); the host's real saves are never read here.
+-      path = m_settings.xd_multi_p1 ?
++      // A Multi start, or a 1v1 start whose host watches, sends the boot copies the host's own
++      // cores boot from (TeamInjector's WriteMultiBootSaves / WriteWatchBootSaves); the host's
++      // real saves are never read here.
++      path = m_settings.xd_boot_copies ?
+                  NetPlay::GetGBANetplayTempPath(static_cast<int>(i)) :
+                  HW::GBA::Core::GetSavePath(Config::Get(Config::MAIN_GBA_ROM_PATHS[i]),
+                                             static_cast<int>(i));
+@@ -3262,9 +3303,25 @@ std::vector<u8> NetPlayServer::XdSeatPorts() const
+ {
+   if (IsXdMultiRoom())
+     return {2, 3, 4};
++  if (XdHostWatchingLocked())
++    return {2, 3};
+   return {3};
+ }
+ 
++bool NetPlayServer::XdHostWatchingLocked() const
++{
++  if (IsXdMultiRoom())
++    return false;
++  const auto it = m_players.find(1);
++  return it != m_players.end() && it->second.xd_watching;
++}
++
++bool NetPlayServer::IsXdHostWatching()
++{
++  std::lock_guard lkp(m_crit.players);
++  return XdHostWatchingLocked();
++}
++
+ PlayerId NetPlayServer::XdSeatHolderLocked(u8 port) const
+ {
+   for (const Client& client : std::views::values(m_players))
+@@ -3277,6 +3334,13 @@ PlayerId NetPlayServer::XdSeatHolderLocked(u8 port) const
+ 
+ void NetPlayServer::FillXdSeatsLocked()
+ {
++  // The host is Seat 1 in a Multi room: a Watch only it ticked in 1v1 does not carry over.
++  if (IsXdMultiRoom())
++  {
++    if (const auto host = m_players.find(1); host != m_players.end())
++      host->second.xd_watching = false;
++  }
++
+   // A streamed Multi battle never shows a seat change: players who left are gone from m_players
+   // (and so from their seat) already; everything else waits for the end of the start or game.
+   if (IsXdMultiRoom() && (IsStartingOrRunning() || m_xd_frozen))
+@@ -3367,19 +3431,23 @@ void NetPlayServer::SendXdSeats()
+ 
+   std::lock_guard lkp(m_crit.players);
+   const bool multi = IsXdMultiRoom();
++  const bool host_watching = XdHostWatchingLocked();
++  // Staged teams (one per seat holder): Multi and a 1v1 room whose host watches.
++  const bool staged = multi || host_watching;
++  const std::vector<u8> ports = XdSeatPorts();
+   std::array<PlayerId, 3> seats{};
+   u8 team_bits = 0;
+   for (u8 i = 0; i < 3; ++i)
+   {
+     const u8 port = i + 2;
+-    if (!multi && port != 3)
++    if (std::ranges::find(ports, port) == ports.end())
+       continue;
+     seats[i] = XdSeatHolderLocked(port);
+     if (seats[i] == 0)
+       continue;
+     const Client& holder = m_players.at(seats[i]);
+-    const bool team_in = multi ? holder.xd_stage :
+-                                 (m_xd_slot_owner != 0 && holder.xd_serial == m_xd_slot_owner);
++    const bool team_in = staged ? holder.xd_stage :
++                                  (m_xd_slot_owner != 0 && holder.xd_serial == m_xd_slot_owner);
+     if (team_in)
+       team_bits |= static_cast<u8>(1u << i);
+   }
+@@ -3389,7 +3457,8 @@ void NetPlayServer::SendXdSeats()
+     if (client.xd_watching)
+       watchers.push_back(client.pid);
+   }
+-  spac << static_cast<u8>(multi ? 1 : 0);
++  // 0 = 1v1, 1 = Multi, 2 = 1v1 with the host watching.
++  spac << static_cast<u8>(multi ? 1 : host_watching ? 2 : 0);
+   for (const PlayerId pid : seats)
+     spac << pid;
+   spac << team_bits;
+@@ -3431,6 +3500,27 @@ XdStartClaim NetPlayServer::ClaimXdStart()
+   // Every XD claim says what kind of start it is, so a 1v1 claim clears a previous Multi one.
+   claim.multi = IsXdMultiRoom();
+   m_xd_multi_start = claim.multi;
++  {
++    std::lock_guard lkp(m_crit.players);
++    claim.host_watching = !claim.multi && XdHostWatchingLocked();
++  }
++  m_xd_watch_start = claim.host_watching;
++  if (claim.host_watching)
++  {
++    // GBA 1 and GBA 2 are joiners' seats, staged like Multi's; the GBA 2 slot is not used.
++    std::lock_guard lkp(m_crit.players);
++    for (size_t i = 0; i < claim.seats.size(); ++i)
++    {
++      const PlayerId pid = i < 2 ? XdSeatHolderLocked(static_cast<u8>(i + 2)) : 0;
++      m_xd_start_seats[i] = pid;
++      if (pid == 0)
++        continue;
++      const Client& holder = m_players.at(pid);
++      claim.seats[i] = {holder.pid, holder.xd_serial, holder.name, holder.xd_stage};
++    }
++    m_xd_start_opponent = 0;
++    return claim;
++  }
+   if (claim.multi)
+   {
+     std::lock_guard lkp(m_crit.players);
+@@ -3815,6 +3905,23 @@ void NetPlayServer::OnXdNoticeFrom(const Client& player, u8 kind, u8 arg)
+     }
+     break;
+   }
++  case XdNoticeKind::MultiSides:
++  {
++    // Only the port-1 owner's machine reports, once per battle; arg must name every port once,
++    // with port 1 in slot 0 (XD's three combinations all keep it there).
++    if (!in_game || !m_xd_multi_wire || pid != m_pad_map[0])
++      return;
++    u8 seen = 0;
++    for (int slot = 0; slot < 4; ++slot)
++      seen |= static_cast<u8>(1u << ((arg >> (2 * slot)) & 3));
++    if (seen != 0x0F || (arg & 3) != 0)
++      return;
++#ifdef HAS_LIBMGBA
++    GBADetectLog::LogPostSession(fmt::format("multi-sides pid={} arg={:02x}", pid, arg));
++#endif
++    SendXdNoticeToAll(XdNoticeKind::MultiSides, 0, arg);
++    break;
++  }
+   default:
+     break;
+   }
+diff --git a/Source/Core/Core/NetPlayServer.h b/Source/Core/Core/NetPlayServer.h
+index 469c5b7..6cab66c 100644
+--- a/Source/Core/Core/NetPlayServer.h
++++ b/Source/Core/Core/NetPlayServer.h
+@@ -51,6 +51,10 @@ struct XdStartClaim
+   // and 4 and the host (serial 0) Seat 2; otherwise an empty Seat 2 is the host and an empty
+   // Seat 3 or 4 repeats the other one.
+   bool multi = false;
++  // A 1v1 room whose host ticked Watch only: opponent stays 0 and the slot fields unused; seats[0]
++  // and seats[1] are SI ports 2 and 3, filled like a Multi room's (staged teams, boot copies). The
++  // host keeps port 1, XD's menus.
++  bool host_watching = false;
+   struct Seat
+   {
+     PlayerId pid = 0;
+@@ -152,6 +156,9 @@ public:
+   bool IsGameRunning() const { return m_is_running.load(); }
+   // XD Netplay: the room's format is Multi (four seats). Any thread.
+   bool IsXdMultiRoom() const { return m_xd_room_format.load() == XD_FORMAT_MULTI; }
++  // XD Netplay: a 1v1 room whose host ticked Watch only (two joiners play GBA 1 and GBA 2).
++  // Takes m_crit.players.
++  bool IsXdHostWatching();
+   // Host UI thread.
+   bool IsHostInputAuthority() const { return m_host_input_authority; }
+   // A Multi start needs the recompilers kept (single core, XD clock in a mixed room); the
+@@ -321,9 +328,11 @@ private:
+   bool XdSlotStaleLocked(PlayerId opponent) const;
+   bool ResetXdSlotLocked(bool announce);
+   bool XdStartPlayerLeft();
+-  // The ports a room seats joiners on: {3} in 1v1, {2, 3, 4} in Multi. Caller holds
+-  // m_crit.players, or is the NETPLAY thread.
++  // The ports a room seats joiners on: {3} in 1v1, {2, 3} in a 1v1 room whose host watches,
++  // {2, 3, 4} in Multi. Caller holds m_crit.players, or is the NETPLAY thread.
+   std::vector<u8> XdSeatPorts() const;
++  // A 1v1 room whose host ticked Watch only. Same locking as XdSeatPorts.
++  bool XdHostWatchingLocked() const;
+   PlayerId XdSeatHolderLocked(u8 port) const;
+   // ---NETPLAY--- thread, under m_crit.players: unseat watchers and players on ports the room no
+   // longer uses, then fill each open port with the earliest in line. In a Multi room nothing moves
+@@ -449,6 +458,9 @@ private:
+   // host's own data is there, and that player's name for the "cleared" line.
+   std::atomic<u32> m_xd_slot_owner{0};
+   std::string m_xd_slot_owner_name;
++  // An m_xd_slot_owner that matches no connection: the slot holds a team nobody may play (the host
++  // switched between playing and watching), so it reads stale and is reset before its next use.
++  static constexpr u32 XD_SLOT_OWNER_ORPHANED = 0xFFFFFFFF;
+   // The room's battle format (GetXdRoomFormat). Written only by SetXdFormat under
+   // m_xd_seat_mutex; read anywhere. OnConnect sends it to each joiner, and SetXdFormat's broadcast
+   // queues behind that on the NETPLAY thread, so every player ends on the latest value.
+@@ -461,6 +473,8 @@ private:
+   // Set by every XD claim: the claimed start is a Multi start. SetupNetSettings copies it into
+   // xd_multi_p1.
+   std::atomic<bool> m_xd_multi_start{false};
++  // The same for a 1v1 start whose host watches: SetupNetSettings sets xd_boot_copies for it.
++  std::atomic<bool> m_xd_watch_start{false};
+   // The running game's xd_multi_p1, for the pad relays on the NETPLAY thread (the only field of
+   // m_settings they read, so they never race SetupNetSettings on the GUI thread).
+   std::atomic<bool> m_xd_multi_wire{false};
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+index a8165b8..a07e231 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+@@ -357,7 +357,7 @@ void NetPlayDialog::CreateChatLayout()
+   // player in line as the opponent, and the Role column shows who that is.
+   // UpdateGUI shows it to joiners in an XD room.
+   m_watch_box = new QCheckBox(tr("Watch only"));
+-  m_watch_box->setToolTip(WatchOnlyToolTip(false));
++  m_watch_box->setToolTip(WatchOnlyToolTip(false, false));
+   m_watch_box->hide();
+ 
+   // XD Netplay, host side: the joiner sets its in-game name in the Submit Team
+@@ -641,6 +641,24 @@ void NetPlayDialog::OnStart()
+       DisplayMessage(tr("A battle is starting. Try again after it ends."), "red");
+       return;
+     }
++    // A 1v1 room whose host watches: two joiners on GBA 1 and GBA 2, staged teams, boot copies
++    // (UICommon/XDNetplay/MultiStart.h); the host keeps XD's menus.
++    if (claim.host_watching)
++    {
++      const XDNetplay::MultiStartOutcome outcome = XDNetplay::PrepareWatchStart(*server, claim);
++      for (const auto& [pid, note] : outcome.notes)
++        server->SendXdNote(pid, note);
++      if (!outcome.refusal.empty())
++      {
++        DisplayMessage(QString::fromStdString(outcome.refusal), "red");
++        return;
++      }
++      if (server->RequestStartGame())
++        SetOptionsEnabled(false);
++      else
++        XDNetplay::AbortMultiStart();
++      return;
++    }
+     // A Multi room: four seats, staged teams, boot copies (UICommon/XDNetplay/MultiStart.h). The
+     // claim already cleared anything a 1v1 start sets.
+     if (claim.multi)
+@@ -713,13 +731,18 @@ void NetPlayDialog::OnStart()
+     SetOptionsEnabled(false);
+ }
+ 
+-QString NetPlayDialog::WatchOnlyToolTip(bool multi)
++QString NetPlayDialog::WatchOnlyToolTip(bool multi, bool host_watching)
+ {
+   if (multi)
+   {
+     return tr("Watch without playing. The next player in line takes your seat.\nA change made "
+               "in a game applies after the host stops it.");
+   }
++  if (host_watching)
++  {
++    return tr("Watch without playing. The next player in line takes your seat.\nA change made "
++              "during a battle applies to the next one.");
++  }
+   return tr("Watch without playing. The next player in line becomes the opponent.\nA change made "
+             "during a battle applies to the next one.");
+ }
+@@ -899,6 +922,7 @@ void NetPlayDialog::UpdateGUI()
+   // XD rooms show each player's part in the next battle where the port mapping
+   // was; the mapping stays in the cell tooltip.
+   const bool is_xd = XDNetplay::IsXdGameId(m_current_game_identifier.game_id);
++  const bool host_watching = client->IsXdHostWatching();
+ 
+   m_players_list->clear();
+   m_players_list->setHorizontalHeaderLabels({tr("Player"), tr("Game Status"), tr("Ping"),
+@@ -943,13 +967,16 @@ void NetPlayDialog::UpdateGUI()
+     switch (seat.role)
+     {
+     case NetPlay::XdRole::Host:
+-      role = seat.seat != 0 ? tr("Seat %1").arg(seat.seat) : tr("Host");
++      role = seat.watching  ? tr("Host, watching") :
++             seat.seat != 0 ? tr("Seat %1").arg(seat.seat) :
++                              tr("Host");
+       break;
+     case NetPlay::XdRole::Opponent:
+       role = tr("Opponent");
+       break;
+     case NetPlay::XdRole::Seated:
+-      role = tr("Seat %1").arg(seat.seat);
++      // A 1v1 room whose host watches seats GBA 1 (port 2) and GBA 2 (port 3).
++      role = host_watching ? tr("GBA %1").arg(seat.seat - 1) : tr("Seat %1").arg(seat.seat);
+       break;
+     case NetPlay::XdRole::Waiting:
+       role = tr("Waiting");
+@@ -1004,10 +1031,10 @@ void NetPlayDialog::UpdateGUI()
+   const bool multi_seats = client->IsXdMultiSeats();
+   if (!server)
+   {
+-    // Only the opponent (a seated player in Multi) can submit a team; the server refuses anyone
+-    // else. Unknown (no seat broadcast yet) stays allowed, as before.
++    // Only the opponent (a seated player in Multi or a room the host watches) can submit a team;
++    // the server refuses anyone else. Unknown (no seat broadcast yet) stays allowed, as before.
+     m_watch_box->setVisible(is_xd);
+-    m_watch_box->setToolTip(WatchOnlyToolTip(multi_seats));
++    m_watch_box->setToolTip(WatchOnlyToolTip(multi_seats, host_watching));
+     // Watch only means nothing outside XD, but the server would still leave this player out of
+     // the index count and the lobby buffer. Unticking sends the change.
+     if (!is_xd && m_watch_box->isChecked())
+@@ -1018,12 +1045,38 @@ void NetPlayDialog::UpdateGUI()
+                             local_role == NetPlay::XdRole::Unknown;
+     m_submit_team_button->setEnabled(may_submit);
+     m_submit_team_button->setToolTip(
+-        may_submit  ? JoinerSubmitTeamToolTip() :
+-        multi_seats ? tr("Only seated players can submit a team.") :
+-                      tr("Only the opponent can submit a team."));
++        may_submit                    ? JoinerSubmitTeamToolTip() :
++        multi_seats || host_watching ? tr("Only seated players can submit a team.") :
++                                       tr("Only the opponent can submit a team."));
+     return;
+   }
+ 
++  // The host's own Watch only (1v1 rooms): two joiners play GBA 1 and GBA 2 and the host keeps
++  // XD's menus. A Multi room seats the host on Seat 1, so the box is hidden there and the server
++  // drops the flag. The box follows the server's seat broadcast.
++  {
++    const bool host_can_watch = is_xd && !server->IsXdMultiRoom();
++    m_watch_box->setVisible(host_can_watch);
++    m_watch_box->setToolTip(
++        tr("Watch instead of playing: the next two players in line play GBA 1 and GBA 2.\n"
++           "You still start each battle and drive XD's menus."));
++    const bool watching = client->GetXdSeatInfo(client->GetLocalPlayerId()).watching;
++    // Watching means nothing outside XD, but the server would still leave the host out of the
++    // index count. Repeats until the server's broadcast says it took (a duplicate is ignored).
++    if (!is_xd && watching)
++      client->SendXdWatch(false);
++    if (m_watch_box->isChecked() != watching)
++    {
++      const QSignalBlocker blocker(m_watch_box);
++      m_watch_box->setChecked(watching);
++    }
++    // While watching, the host's own team and model play no part.
++    m_submit_team_button->setToolTip(
++        watching ? tr("Not used while you watch: GBA 1 and GBA 2 play their own teams.") :
++                   tr("Set your own team from a Showdown paste. Written to your GBA port 2 save "
++                      "for the next battle you start."));
++  }
++
+   const bool is_local_ip_selected = m_room_box->currentIndex() > (m_use_traversal ? 1 : 0);
+   if (is_local_ip_selected)
+   {
+@@ -1459,12 +1512,12 @@ void NetPlayDialog::OnSubmitTeam()
+   }
+   const int stored_model_index = model_combo->findData(Config::Get(Config::MAIN_XD_SUBMIT_MODEL));
+   model_combo->setCurrentIndex(stored_model_index >= 0 ? stored_model_index : 0);
+-  // A Multi battle emits no model lines: every seat wears its own save's model.
++  // Multi: each seat's own pick (the host has no fallback for it). Unpicked = the save's trainer.
+   if (const auto client = Settings::Instance().GetNetPlayClient();
+-      client && client->IsXdMultiSeats())
++      client && (client->IsXdMultiSeats() || client->IsXdHostWatching()))
+   {
+-    model_combo->setEnabled(false);
+-    model_combo->setToolTip(tr("Multi uses each save's own model."));
++    model_combo->setItemText(0, tr("Game default"));
++    model_combo->setToolTip(tr("How you appear in battle."));
+   }
+   use_save_check->setChecked(Config::Get(Config::MAIN_XD_SUBMIT_USE_SAVE));
+ #ifndef HAS_LIBMGBA
+@@ -2004,9 +2057,15 @@ void NetPlayDialog::OnChangeFormat()
+   // this write on, a guest's submission is checked against the new format.
+   Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, format);
+   XDNetplay::RoomTeamCheck check;
++  // A watching host's own team and the GBA 2 slot play no part: GBA 1's and GBA 2's staged teams
++  // are judged at Start. (A switch to Multi ends the watching, and judges the host's team.)
++  const bool watching =
++      server->IsXdHostWatching() && format != XDNetplay::FormatRules::FORMAT_MULTI;
+   const NetPlay::XdFormatChange change = server->SetXdFormat(
+       format,
+-      [&check, format](const NetPlay::XdSlotView& slot) {
++      [&check, format, watching](const NetPlay::XdSlotView& slot) {
++        if (watching)
++          return;
+         // A departed player's team is reset before any Start reads it: not judged. Multi judges
+         // only the host's team here: the seats' teams are staged per player and judged at Start.
+         check = XDNetplay::CheckRoomTeams(format,
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
+index 2f25ac2..f7664ee 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
+@@ -126,7 +126,7 @@ private:
+   void OnSetHostName();
+   void OnStart();
+   static QString JoinerSubmitTeamToolTip();
+-  static QString WatchOnlyToolTip(bool multi);
++  static QString WatchOnlyToolTip(bool multi, bool host_watching);
+   void DisplayMessage(const QString& msg, const std::string& color,
+                       int duration = OSD::Duration::NORMAL);
+   void ResetExternalIP();
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 819291a..456442b 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -570,7 +570,7 @@ void XDLauncherDialog::CreateMainLayout()
+   m_style_guest_model_combo = add_style_combo(
+       tr("Guest model (used only if they don't pick):"),
+       tr("Fallback only: a model the guest picks when submitting\n"
+-         "their team always wins over this."));
++         "their team always wins over this. Not used in Multi or while you watch."));
+   m_style_music_combo = add_style_combo(tr("Battle music:"), QString());
+   m_style_venue_combo = add_style_combo(
+       tr("Battle location:"), tr("Locations that alter Nature Power, Camouflage or Secret Power\n"
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+index 5fc0c93..303915b 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include <mutex>
+ #include <algorithm>
++#include <array>
+ #include <optional>
+ #include <span>
+ #include <string>
+@@ -91,6 +92,23 @@ constexpr u32 MODEL_ARM_P1_LINE = 0x041FFF60;  // 32-bit write: li r3, id @ 0x80
+ constexpr u32 MODEL_ARM_P2_LINE = 0x041FFF68;  // 32-bit write: li r3, id @ 0x801FFF68
+ constexpr u32 PPC_LI_R3 = 0x38600000;      // li r3, 0 -- the id occupies the low byte
+ 
++// Multi (four seats). XD keeps one staging record per SI port (record k = port k+1, 0x1320 bytes
++// apart from 0x8042E690; the handshake fills its TID u16 at +0 from that GBA's save: 0x138D +
++// gender for Emerald), and battle setup copies them into the four battle slots in the picked
++// combination's order (A_k = staging[perm[k]], 0x8004DA28) before it registers the slots' TIDs.
++// So a pin on a staging TID follows its player into whatever slot the combination gives them.
++// The battle slots themselves are NOT pinned: a slot pin could land between that copy and the
++// registration and dress the wrong player under combination 1 or 2.
++// Every seat's TID must stay one of the six GBA TIDs 0x1389..0x138E: only those route a trainer's
++// input to its GBA (classes 2/3, 0x801FFFD8 and 0x801FD36C). The switch arm of TID 0x1389 + j is
++// at 0x801FFF40 + 8j (vanilla li r3, 9 - j: the six GBA player models).
++constexpr u32 MULTI_STAGING_TID_LINE = 0x0242E690;  // 16-bit write, + k * MULTI_RECORD_STRIDE
++constexpr u32 MULTI_RECORD_STRIDE = 0x1320;
++constexpr u32 MODEL_ARM_BASE_LINE = 0x041FFF40;  // 32-bit write, + 8 * (tid - GBA_TID_FIRST)
++constexpr u16 GBA_TID_FIRST = 0x1389;
++constexpr u16 GBA_TID_COUNT = 6;
++constexpr u16 EMERALD_NATURAL_TID = 0x138D;  // + save gender
++
+ // Model id -> the virtual TID whose switch arm yields it natively (the six
+ // GBA player models; everything else needs the Tier-2 arm patch).
+ constexpr u16 GbaModelTid(int model_id)
+@@ -107,6 +125,17 @@ constexpr u16 GbaModelTid(int model_id)
+   }
+ }
+ 
++// The model a GBA TID's switch arm yields when it is not patched (0 for any other TID).
++constexpr int GbaTidModel(u16 tid)
++{
++  for (int model = 0x04; model <= 0x09; model++)
++  {
++    if (GbaModelTid(model) == tid)
++      return model;
++  }
++  return 0;
++}
++
+ // Pre-battle bust remap (the connection-screen close-up). The bust never
+ // consults the TID->model switch: a save-class mapper (fn 0x80085BB0; game u32
+ // at staging+4, gender byte in the save mirror) indexes two 7-entry u32
+@@ -316,7 +345,7 @@ constexpr StyleOption MODELS[] = {
+     {0x1B, "Newscaster", Tier::Experimental},
+     {0x29, "Eagun", Tier::Experimental},
+     {0x2A, "Robo Groudon (Chobin)", Tier::Experimental},
+-    {0x40, "Professor Krane", Tier::Experimental},
++    {0x40, "Cipher Peon holding Professor Krane", Tier::Experimental},
+     {0x41, "Grand Master Greevil (robed)", Tier::Experimental},
+ };
+ 
+@@ -351,13 +380,15 @@ constexpr StyleOption MODELS[] = {
+ // with none of the guarantees.
+ constexpr int MUSIC_SILENT_ID = 0x10000;
+ 
++// The story battle themes are named by who the game itself plays them against (common.rel's
++// battle records against DeckData_Story's trainer models): 1127 every ordinary trainer, 1128 every
++// Cipher Peon, 1407 the Cipher Admins and Gonzap. 1316 (stm_bgm_XD_battle8) no story battle uses.
+ constexpr StyleOption MUSICS[] = {
+     {MUSIC_SILENT_ID, "No music (silent battle)", Tier::TestedSafe},
+-    {1316, "XD Battle 8 (Cipher)", Tier::TestedSafe},
+-    {1413, "XD Battle 0", Tier::TestedSafe},
+-    {1127, "XD Battle 01", Tier::TestedSafe},
+-    {1128, "XD Battle 02", Tier::TestedSafe},
+-    {1407, "XD Battle 03", Tier::TestedSafe},
++    {1316, "XD Battle 8", Tier::TestedSafe},
++    {1127, "Trainer Battle", Tier::TestedSafe},
++    {1128, "Cipher Peon Battle", Tier::TestedSafe},
++    {1407, "Cipher Admin Battle", Tier::TestedSafe},
+     {1318, "Colosseum Round 1", Tier::TestedSafe},
+     {1319, "Colosseum Round 2", Tier::TestedSafe},
+     {1320, "Colosseum Round 3", Tier::TestedSafe},
+@@ -376,7 +407,8 @@ constexpr StyleOption MUSICS[] = {
+     {1068, "Mt. Battle", Tier::TestedSafe},
+     {1370, "Gateon Port 2", Tier::TestedSafe},
+     {1485, "Battle Now 2", Tier::TestedSafe},
+-    {1132, "Mecha Theme 1", Tier::TestedSafe},
++    {1132, "Greevil Encounter", Tier::TestedSafe},
++    {1088, "Miror B. Theme", Tier::TestedSafe},
+     // Looping non-battle BGM (locations, themes, menus).
+     {1075, "Pokemon Center", Tier::Experimental},
+     {1070, "Gateon Port", Tier::Experimental},
+@@ -387,9 +419,8 @@ constexpr StyleOption MUSICS[] = {
+     {1409, "Cipher Lab", Tier::Experimental},
+     {1129, "Purify Chamber", Tier::Experimental},
+     {1468, "Orre Colosseum Lobby", Tier::Experimental},
+-    {1088, "Miror B. Theme", Tier::Experimental},
+     {1471, "Greevil Theme", Tier::Experimental},
+-    {1486, "Hexagon Bros", Tier::Experimental},
++    {1486, "Gonzap Theme", Tier::Experimental},
+     {1362, "Lugia Theme", Tier::Experimental},
+     {1419, "Title Theme", Tier::Experimental},
+     {1266, "Battle Now Menu", Tier::Experimental},
+@@ -408,18 +439,19 @@ constexpr StyleOption MUSICS[] = {
+     {1384, "Music Player 2", Tier::Experimental},
+     {1067, "Darkside 4", Tier::Experimental},
+     {1074, "Darkside", Tier::Experimental},
+-    {1071, "Stand Theme", Tier::Experimental},
++    {1071, "Outskirt Stand", Tier::Experimental},
+     {1072, "Saint Theme", Tier::Experimental},
+-    // Looping event (ev_*) streams; stems only, names pending the listening
+-    // pass like everything above.
++    // Looping event (ev_*) streams. Named from the game's own stream file names where those say
++    // what the scene is (stm_bgm_ev_6brothers, stm_bgm_ev_mechagradon, stm_bgm_relive_ceremony);
++    // the rest keep their id until someone has listened to them.
+     {1130, "Event Theme 1130", Tier::Experimental},
+-    {1297, "Event Theme 1297", Tier::Experimental},
++    {1297, "Robo Groudon Event", Tier::Experimental},
+     {1361, "Event Theme 1361", Tier::Experimental},
+     {1363, "Event Theme 1363", Tier::Experimental},
+     {1391, "Event Theme 1391", Tier::Experimental},
+-    {1408, "Event Theme 1408", Tier::Experimental},
++    {1408, "Hexagon Bros", Tier::Experimental},
+     {1411, "Event Theme 1411", Tier::Experimental},
+-    {1448, "Event Theme 1448", Tier::Experimental},
++    {1448, "Purification Ceremony", Tier::Experimental},
+     {1449, "Event Theme 1449", Tier::Experimental},
+     {1450, "Event Theme 1450", Tier::Experimental},
+     {1469, "Event Theme 1469", Tier::Experimental},
+@@ -452,6 +484,7 @@ constexpr StyleOption VENUES[] = {
+     {53, "HQ Lab grounds", Tier::TestedSafe},
+     {57, "Rock Pokespot", Tier::TestedSafe},
+     {7, "Phenac City streets", Tier::TestedSafe},
++    {23, "Mt. Battle clouds", Tier::TestedSafe},
+     // Colosseums outside the retail VS pool.
+     {35, "Phenac Colosseum", Tier::Experimental},
+     {39, "Orre Colosseum", Tier::Experimental},
+@@ -474,7 +507,6 @@ constexpr StyleOption VENUES[] = {
+     {20, "Mt. Battle lobby", Tier::Experimental},
+     {21, "Mt. Battle valley", Tier::Experimental},
+     {22, "Mt. Battle magma zone", Tier::Experimental},
+-    {23, "Mt. Battle clouds", Tier::Experimental},
+     {42, "S.S. Libra deck", Tier::Experimental},
+     {24, "Realgam dome", Tier::Experimental},
+     {25, "Realgam Tower hall", Tier::Experimental},
+@@ -553,6 +585,17 @@ void AppendLine(std::string* block, u32 addr_word, u32 value_word)
+   *block += fmt::format("{:08X} {:08X}", addr_word, value_word);
+ }
+ 
++// Hide one bust class's two widgets (all five language sub-records): the same lines as
++// GenerateCodeBlock's hide.
++void AppendBustHide(std::string* block, int bust_class)
++{
++  for (u32 m = 0; m < 5; m++)
++  {
++    AppendLine(block, BustWhWordAddr(BUST_WIDGET_A[bust_class], m), 0);
++    AppendLine(block, BustWhWordAddr(BUST_WIDGET_B[bust_class], m), 0);
++  }
++}
++
+ // Remove every line of ours from a section's line list. For [ActionReplay]
+ // that means the "$OrreLink Battle Style" name line plus everything up to the
+ // next "$" name (or the section end); for the enabled/disabled sections it is
+@@ -838,6 +881,132 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
+   return block;
+ }
+ 
++std::string GenerateMultiModelLines(const SeatLooks& looks)
++{
++  std::array<bool, 4> picked{};
++  bool any_pick = false;
++  bool genders_known = true;
++  for (size_t k = 0; k < looks.size(); ++k)
++  {
++    picked[k] = looks[k].model && IsValidModelId(*looks[k].model);
++    any_pick |= picked[k];
++    genders_known &= looks[k].gender == 0 || looks[k].gender == 1;
++  }
++  const auto pick_text = [&](size_t k) {
++    if (picked[k])
++      return fmt::format("{:#x}", *looks[k].model);
++    return std::string(looks[k].model ? "invalid" : "default");
++  };
++  if (!any_pick || !genders_known)
++  {
++    for (size_t k = 0; k < looks.size(); ++k)
++    {
++      LogNote(fmt::format("battlestyle multi seat={} pick={} gender={}", k + 1, pick_text(k),
++                          looks[k].gender));
++    }
++    LogNote(fmt::format("battlestyle multi models=off reason={}",
++                        !any_pick ? "no-picks" : "save-unreadable"));
++    return {};
++  }
++
++  // What each port wears: its pick, else its save's own trainer (Brendan or May, Emerald).
++  std::array<u16, 4> natural{};
++  std::array<int, 4> want{};
++  for (size_t k = 0; k < looks.size(); ++k)
++  {
++    natural[k] = static_cast<u16>(EMERALD_NATURAL_TID + looks[k].gender);
++    want[k] = picked[k] ? *looks[k].model : GbaTidModel(natural[k]);
++  }
++
++  // 1. A GBA player model keeps its own TID (seats wearing the same one share it).
++  std::array<u16, 4> tid{};
++  std::array<bool, GBA_TID_COUNT> claimed{};
++  std::array<int, GBA_TID_COUNT> arm_model{};
++  for (size_t k = 0; k < looks.size(); ++k)
++  {
++    if (const u16 own = GbaModelTid(want[k]); own != 0)
++    {
++      tid[k] = own;
++      claimed[own - GBA_TID_FIRST] = true;
++    }
++  }
++  // 2. Any other model shares an earlier seat's TID for the same model, else borrows a TID whose
++  // own model nobody wears, of the same kind as the save (male 0x1389/8B/8D, female 0x138A/8C/8E)
++  // when one is free, and that TID's arm is patched to the model. Six TIDs always cover four seats.
++  for (size_t k = 0; k < looks.size(); ++k)
++  {
++    if (tid[k] != 0)
++      continue;
++    for (size_t j = 0; j < k; ++j)
++    {
++      if (want[j] == want[k])
++      {
++        tid[k] = tid[j];
++        break;
++      }
++    }
++    if (tid[k] != 0)
++      continue;
++    const u16 kind = natural[k] & 1;  // 0x1389, 0x138B, 0x138D are odd: male
++    std::optional<u16> free_tid;
++    for (u16 i = 0; i < GBA_TID_COUNT && !free_tid; ++i)
++    {
++      if (!claimed[i] && ((GBA_TID_FIRST + i) & 1) == kind)
++        free_tid = static_cast<u16>(GBA_TID_FIRST + i);
++    }
++    for (u16 i = 0; i < GBA_TID_COUNT && !free_tid; ++i)
++    {
++      if (!claimed[i])
++        free_tid = static_cast<u16>(GBA_TID_FIRST + i);
++    }
++    if (!free_tid)
++    {
++      LogNote("battlestyle multi models=off reason=no-free-tid");
++      return {};
++    }
++    tid[k] = *free_tid;
++    claimed[*free_tid - GBA_TID_FIRST] = true;
++    arm_model[*free_tid - GBA_TID_FIRST] = want[k];
++  }
++
++  // Every port is pinned once any seat has a pick, so no save's own TID can land on a patched arm.
++  std::string block;
++  for (size_t k = 0; k < looks.size(); ++k)
++    AppendLine(&block, MULTI_STAGING_TID_LINE + static_cast<u32>(k) * MULTI_RECORD_STRIDE, tid[k]);
++  for (u16 i = 0; i < GBA_TID_COUNT; ++i)
++  {
++    if (arm_model[i] != 0)
++    {
++      AppendLine(&block, MODEL_ARM_BASE_LINE + 8u * i,
++                 PPC_LI_R3 | (static_cast<u32>(arm_model[i]) & 0xFF));
++    }
++  }
++  // Connection-screen busts are per class, not per seat (class 5 Emerald male, 6 Emerald female:
++  // the class comes from the save, and a TID pin never moves it). A class is hidden when any seat
++  // of that class wears something other than the class's own trainer.
++  for (const int bust_class : {5, 6})
++  {
++    const u16 class_tid = static_cast<u16>(EMERALD_NATURAL_TID + (bust_class - 5));
++    bool hide = false;
++    for (size_t k = 0; k < looks.size(); ++k)
++      hide |= natural[k] == class_tid && want[k] != GbaTidModel(class_tid);
++    if (hide)
++      AppendBustHide(&block, bust_class);
++  }
++
++  for (size_t k = 0; k < looks.size(); ++k)
++  {
++    const u16 i = static_cast<u16>(tid[k] - GBA_TID_FIRST);
++    LogNote(fmt::format("battlestyle multi seat={} pick={} gender={} natural={:#x} tid={:#x} "
++                        "arm={}",
++                        k + 1, pick_text(k), looks[k].gender, natural[k], tid[k],
++                        arm_model[i] != 0 ? fmt::format("{:#x}", arm_model[i]) :
++                                            std::string("-")));
++  }
++  LogNote("battlestyle multi models=on");
++  return block;
++}
++
+ // The community formats' in-game rulesets, pinned into Custom 1. Design:
+ // instead of pinning individual clause bytes -- several of whose meanings are
+ // unverified -- the WHOLE 144-byte slot is written with one of the game's own
+@@ -967,13 +1136,12 @@ static std::string TimerSummary()
+ }
+ 
+ // Multi (layout 3, XD's "GBA + GBA VS GBA + GBA"): the menu globals. Layout 3 is the four-GBA
+-// tag layout (>= 2 forces tag at commit); pairing 0 is the seat order the layout table pairs as
+-// ports {1,2} vs {3,4}; rules Custom 1 as for the 1v1 formats. Like every line here the pairing
+-// is written each frame, so in phase 1 the sides are fixed by seat: if XD's post-battle "change
+-// combination" edits this word (test S1c), the pin puts it back before the next battle.
++// tag layout (>= 2 forces tag at commit); rules Custom 1 as for the 1v1 formats. The team
++// combination (0x804349E4) is NOT pinned (1.7.6 pinned it to 0, so the picker snapped back): XD's
++// picker (state 0xAC, after the team preview) resets it to option 0 on each visit and moves it on
++// synced input, so every machine picks the same teams.
+ constexpr u32 MULTI_MENU_GLOBAL_LINES[][2] = {
+     {0x044349EC, 0x00000003},  // player layout = GBA + GBA VS GBA + GBA
+-    {0x044349E4, 0x00000000},  // pairing
+     {0x044349FC, 0x00000003},  // rules choice = Custom 1
+ };
+ // The optional preview-cancel pin (MAIN_XD_MULTI_PREVIEW_CANCEL_PIN): at 0x80079B64..7C the team
+@@ -1162,23 +1330,55 @@ void SetGuestModel(std::optional<int> id)
+ // 0 when it cannot be determined (no ROM, unreadable save, FRLG-refused build,
+ // non-mgba build). Same ROM fallback as TeamInjector: the socket's own ROM,
+ // then the other socket's.
+-static int SaveBustClass(int device)
+-{
+ #ifdef HAS_LIBMGBA
+-  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device]);
+-  if (rom.empty() || !File::Exists(rom))
+-    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device == 1 ? 2 : 1]);
+-  if (rom.empty() || !File::Exists(rom))
+-    return 0;
+-  const std::string path = HW::GBA::Core::GetSavePath(rom, device);
++static std::optional<EmeraldSave> ReadSaveFile(const std::string& path)
++{
+   File::IOFile file(path, "rb");
+   if (!file)
+-    return 0;
++    return std::nullopt;
+   std::vector<u8> bytes(file.GetSize());
+   if (!file.ReadBytes(bytes.data(), bytes.size()))
+-    return 0;
++    return std::nullopt;
+   std::string error;
+-  const auto save = EmeraldSave::Create(std::move(bytes), &error);
++  return EmeraldSave::Create(std::move(bytes), &error);
++}
++
++// The save path GBA port |device|+1 uses, with TeamInjector's ROM fallback (the socket's own ROM,
++// then the other socket's), or "" when no ROM is set up.
++static std::string SocketSavePath(int device)
++{
++  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device]);
++  if (rom.empty() || !File::Exists(rom))
++    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device == 1 ? 2 : 1]);
++  if (rom.empty() || !File::Exists(rom))
++    return {};
++  return HW::GBA::Core::GetSavePath(rom, device);
++}
++#endif
++
++int SaveFileGender(const std::string& path)
++{
++#ifdef HAS_LIBMGBA
++  if (path.empty())
++    return -1;
++  const auto save = ReadSaveFile(path);
++  if (!save)
++    return -1;
++  const u32 gender = save->GetTrainerGender();
++  return gender <= 1 ? static_cast<int>(gender) : -1;
++#else
++  (void)path;
++  return -1;
++#endif
++}
++
++static int SaveBustClass(int device)
++{
++#ifdef HAS_LIBMGBA
++  const std::string path = SocketSavePath(device);
++  if (path.empty())
++    return 0;
++  const auto save = ReadSaveFile(path);
+   if (!save)
+     return 0;
+   const u32 gender = save->GetTrainerGender();
+@@ -1200,33 +1400,90 @@ static int SaveBustClass(int device)
+ #endif
+ }
+ 
++// A solo Multi boot: "Your model" for port 1 and the MultiSoloModels tester key ("2B,16,41") for
++// ports 2-4, each port's gender from its own save.
++static SeatLooks SoloMultiLooks()
++{
++  SeatLooks looks;
++  if (const int own = Config::Get(Config::MAIN_XD_STYLE_HOST_MODEL); own > 0)
++    looks[0].model = own;
++  const std::vector<std::string> fields =
++      SplitString(Config::Get(Config::MAIN_XD_MULTI_SOLO_MODELS), ',');
++  for (size_t i = 0; i < fields.size() && i < 3; ++i)
++  {
++    u32 id = 0;
++    const std::string field(StripWhitespace(fields[i]));
++    if (!field.empty() && TryParse(field, &id, 16) && id > 0)
++      looks[i + 1].model = static_cast<int>(id);
++  }
++#ifdef HAS_LIBMGBA
++  for (int k = 0; k < 4; ++k)
++  {
++    std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[k]);
++    if (rom.empty() || !File::Exists(rom))
++      rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
++    if (!rom.empty() && File::Exists(rom))
++      looks[k].gender = SaveFileGender(HW::GBA::Core::GetSavePath(rom, k));
++  }
++#endif
++  return looks;
++}
++
+ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
+-                   bool include_format_rules, StartKind kind)
++                   bool include_format_rules, StartKind kind, const SeatLooks* looks)
+ {
+   const bool multi = kind == StartKind::Multi;
++  // A 1v1 start whose host watches: GBA 1 and GBA 2 are two joiners, each wearing its own pick
++  // (looks[1] and looks[2], SI ports 2 and 3) and nobody's fallback.
++  const bool watch = !multi && looks != nullptr;
+   // Guest stash (already validated) wins over the host's fallback dropdown --
+-  // the same precedence the socket-3 team fallback uses. A Multi block has no
+-  // model lines: each seat wears its own save's model.
++  // the same precedence the socket-3 team fallback uses. A Multi block takes
++  // its models from `looks` instead (GenerateMultiModelLines).
+   std::optional<int> guest_model;
+-  if (!multi)
++  if (!multi && !watch)
+   {
+     std::lock_guard lock(s_mutex);
+     guest_model = s_guest_model;
+   }
+   const bool guest_submitted = guest_model.has_value();
+-  if (!guest_model && !multi)
++  if (!guest_model && !multi && !watch)
+     guest_model = sel.guest_model_fallback > 0 ? std::optional<int>(sel.guest_model_fallback) :
+                                                  std::nullopt;
+-  const std::optional<int> host_model =
+-      !multi && sel.host_model > 0 ? std::optional<int>(sel.host_model) : std::nullopt;
++  std::optional<int> host_model =
++      !multi && !watch && sel.host_model > 0 ? std::optional<int>(sel.host_model) : std::nullopt;
++  if (watch)
++  {
++    const auto valid_pick = [](std::optional<int> id) {
++      return id && IsValidModelId(*id) ? id : std::nullopt;
++    };
++    host_model = valid_pick((*looks)[1].model);
++    guest_model = valid_pick((*looks)[2].model);
++    // An unpicked side next to a picked one is pinned too (GenerateCodeBlock's collision rule), to
++    // its save's own Emerald trainer rather than the bundled template's gender.
++    const auto own_trainer = [](int gender) {
++      return gender == 0 ? std::optional<int>(0x05) :
++             gender == 1 ? std::optional<int>(0x04) :
++                           std::nullopt;
++    };
++    if (host_model && !guest_model)
++      guest_model = own_trainer((*looks)[2].gender);
++    if (guest_model && !host_model)
++      host_model = own_trainer((*looks)[1].gender);
++  }
++  // An Emerald boot copy's bust class: 5 male, 6 female (0 = unknown).
++  const auto look_class = [&](size_t port_index) {
++    const int gender = (*looks)[port_index].gender;
++    return gender == 0 || gender == 1 ? 5 + gender : 0;
++  };
+ 
+   // Side mapping (host -> "Player" block, guest -> "Opponent" line) is the
+   // expected orientation; if the one-time emulator test shows it reversed,
+   // swap the first two arguments HERE only.
+   // A format rules-pin implies GBA-vs-GBA, where the preview's default
+   // protagonist busts are always wrong -- have the block hide them.
+-  // A Multi block always hides the class-0 bust and always skips the preview drawer (no side's
+-  // TID is pinned, so no preview head can be right).
++  // A Multi block always hides the class-0 bust and always skips the preview drawer: the
++  // four-slot preview has art only for the GBA player models and Michael, and it reads the battle
++  // slots, which a Multi model pick never pins.
+   const bool format_pinned =
+       multi ||
+       (include_format_rules && FormatRules::HasTeamRules(Config::Get(Config::MAIN_XD_FORMAT)) &&
+@@ -1234,7 +1491,18 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
+   std::string block = GenerateCodeBlock(
+       host_model, guest_model, sel.music > 0 ? std::optional<int>(sel.music) : std::nullopt,
+       sel.venue > 0 ? std::optional<int>(sel.venue) : std::nullopt,
+-      multi ? 0 : SaveBustClass(1), multi ? 0 : SaveBustClass(2), format_pinned);
++      multi ? 0 : watch ? look_class(1) : SaveBustClass(1),
++      multi ? 0 : watch ? look_class(2) : SaveBustClass(2), format_pinned);
++  // Multi: the four seats' trainer models (none when no seat picked one).
++  if (multi && looks)
++  {
++    if (const std::string model_lines = GenerateMultiModelLines(*looks); !model_lines.empty())
++    {
++      if (!block.empty())
++        block.push_back('\n');
++      block += model_lines;
++    }
++  }
+   // FORMAT seam: FormatRuleLines() contributes the picked format's in-game
+   // rule pins (menu globals, battle type, Custom-1 ruleset); Free/OU return
+   // "" and an all-default session stays byte-for-byte stock.
+@@ -1255,10 +1523,12 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
+   {
+     const auto id_or = [](std::optional<int> v) { return v ? fmt::format("{:#x}", *v) : std::string{"default"}; };
+     LogNote(fmt::format(
+-        "battlestyle sel{} host_model={} guest_model={}{} music={} venue={} -> block={} "
+-        "ou_disable={}",
+-        multi ? " multi=1" : "", id_or(host_model),
+-        id_or(guest_model), guest_submitted ? " (guest pick)" : "",
++        "battlestyle sel{} music={} venue={} -> block={} ou_disable={}",
++        multi ? std::string(" multi=1 models=per-seat") :
++        watch ? fmt::format(" watch=1 gba1_model={} gba2_model={}", id_or(host_model),
++                            id_or(guest_model)) :
++                fmt::format(" host_model={} guest_model={}{}", id_or(host_model),
++                            id_or(guest_model), guest_submitted ? " (guest pick)" : ""),
+         // Validity, not just non-zero: a stored pick that left the catalog
+         // (curated-out music, say) generates NO lines, and the log claiming it
+         // was live sent a whole debugging session sideways once.
+@@ -1375,14 +1645,15 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
+   return saved;
+ }
+ 
+-bool RegenerateFromConfig(std::string* status, StartKind kind)
++bool RegenerateFromConfig(std::string* status, StartKind kind, const SeatLooks* looks)
+ {
+   // The OU choice is the Format dropdown now (the old standalone toggle is
+   // gone), so it reads straight from the format key -- PrepareForStart's
+   // cheats reconciliation can no longer distort it, however many Starts a
+   // room sees.
+   const bool ou_enabled = Config::Get(Config::MAIN_XD_FORMAT) == FormatRules::FORMAT_OU;
+-  return RegenerateIni(ConfigSelection(), ou_enabled, status, /*include_format_rules=*/true, kind);
++  return RegenerateIni(ConfigSelection(), ou_enabled, status, /*include_format_rules=*/true, kind,
++                       looks);
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -1480,7 +1751,7 @@ void BeginLiveStyleForStart()
+   s_live_venue = -1;
+ }
+ 
+-void PrepareForStart(StartKind kind)
++void PrepareForStart(StartKind kind, const SeatLooks* looks)
+ {
+ 
+   // Solo boots have no room-closed event, so their cleanup rides the emulation
+@@ -1507,7 +1778,14 @@ void PrepareForStart(StartKind kind)
+     });
+   });
+ 
+-  RegenerateFromConfig(nullptr, kind);
++  // A solo Multi boot has no room to collect picks from (see SoloMultiLooks).
++  std::optional<SeatLooks> solo_looks;
++  if (kind == StartKind::Multi && !looks)
++  {
++    solo_looks = SoloMultiLooks();
++    looks = &*solo_looks;
++  }
++  RegenerateFromConfig(nullptr, kind, looks);
+ 
+   bool active;
+   {
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.h b/Source/Core/UICommon/XDNetplay/BattleCustomizer.h
+index 06e33d6..0ac0568 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.h
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <array>
+ #include <optional>
+ #include <span>
+ #include <string>
+@@ -24,6 +25,16 @@ enum class StartKind
+   Multi,
+ };
+ 
++// One Multi seat as the host saw it at Start: SI port n's trainer-model pick (nullopt or an id
++// IsValidModelId refuses = that save's own trainer) and the trainer gender of the save port n
++// boots (0 male, 1 female, -1 unreadable). Index 0 is port 1.
++struct SeatLook
++{
++  std::optional<int> model;
++  int gender = -1;
++};
++using SeatLooks = std::array<SeatLook, 4>;
++
+ // ---------------------------------------------------------------------------
+ // Cosmetic battle selectors ("$OrreLink Battle Style")
+ // ---------------------------------------------------------------------------
+@@ -179,10 +190,11 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
+ // all ON, so the game itself enforces them in battle.
+ //
+ // Multi (StartKind::Multi with the Multi format): layout 3 (GBA + GBA VS GBA +
+-// GBA), pairing 0, rules Custom 1 holding the Lv100 tournament preset with
+-// pick 3 (FormatRules::MULTI_PICK; the exactly-three fallback keeps the stock
+-// "all battle" entry mode), the stock clauses and the timer word. No battle
+-// type pin. The Multi format with OneVsOne emits nothing.
++// GBA; the team combination is XD's own choice), rules Custom 1 holding the
++// Lv100 tournament preset with pick 3 (FormatRules::MULTI_PICK; the
++// exactly-three fallback keeps the stock "all battle" entry mode), the stock
++// clauses and the timer word. No battle type pin. The Multi format with
++// OneVsOne emits nothing.
+ std::string FormatRuleLines(StartKind kind = StartKind::OneVsOne);
+ 
+ // The host's four launcher selections. 0 (the config default) = game default.
+@@ -245,19 +257,25 @@ bool IsNetplaySessionActive();
+ // leave its rules block at rest in the file between sessions, where any
+ // cheats-on GXXE01 boot outside our flows would load it.
+ //
+-// kind = Multi (phase 1 of the multi battles): no trainer-model lines at all,
+-// each seat wears its own save's model; the class-0 bust is always hidden and
+-// the preview drawer always skipped; music and venue as usual; plus the
+-// Multi rules pin (FormatRuleLines).
++// kind = Multi: the four seats' trainer models come from `looks` (GenerateMultiModelLines; none
++// when no seat picked one, or looks is null); the class-0 bust is always hidden and the preview
++// drawer always skipped; music and venue as usual; plus the Multi rules pin (FormatRuleLines).
+ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
+-                   bool include_format_rules = true, StartKind kind = StartKind::OneVsOne);
++                   bool include_format_rules = true, StartKind kind = StartKind::OneVsOne,
++                   const SeatLooks* looks = nullptr);
++
++// The Multi trainer-model lines for four seats (empty when no seat picked a valid model or a
++// save's gender is unknown), with one log line per seat. A pure function of `looks`: the host
++// builds it once at Start and the code sync gives every machine the same text.
++std::string GenerateMultiModelLines(const SeatLooks& looks);
+ 
+ // RegenerateIni driven entirely by config: selection from the MAIN_XD_STYLE_*
+ // keys, ou_enabled from MAIN_XD_FORMAT == FORMAT_OU (the Format dropdown is
+ // the OU choice now; the flag PrepareForStart reconciles cannot distort it).
+ // This is the call for the host's TeamData handlers: regenerate on every
+ // submission arrival so a model submitted any time before Start is honored.
+-bool RegenerateFromConfig(std::string* status, StartKind kind = StartKind::OneVsOne);
++bool RegenerateFromConfig(std::string* status, StartKind kind = StartKind::OneVsOne,
++                          const SeatLooks* looks = nullptr);
+ 
+ // The pre-start hook, host side, strictly before RequestStartGame (desktop:
+ // ApplyStartForcing; Android: nativeStartGame): regenerates the block once
+@@ -267,7 +285,14 @@ bool RegenerateFromConfig(std::string* status, StartKind kind = StartKind::OneVs
+ // removed OU toggle from silently shipping OU patches under "Free").
+ // A submission that arrives after this point is rejected by the server while
+ // the battle runs, so the synced set can never diverge mid-session.
+-void PrepareForStart(StartKind kind = StartKind::OneVsOne);
++//
++// Multi: `looks` are the four seats' picks and save genders (MultiStart builds them from the
++// frozen room). A solo Multi boot passes none and gets "Your model" for port 1 plus the
++// MultiSoloModels tester key for ports 2-4, with each port's own save gender.
++void PrepareForStart(StartKind kind = StartKind::OneVsOne, const SeatLooks* looks = nullptr);
++
++// The trainer gender of an Emerald save file (0 male, 1 female), or -1 when it cannot be read.
++int SaveFileGender(const std::string& path);
+ 
+ // A music and location change for a game that is already running (the room's Music & Location
+ // while XD is open). The netplay client installs these lines at the same emulated moment on
+diff --git a/Source/Core/UICommon/XDNetplay/MultiStart.cpp b/Source/Core/UICommon/XDNetplay/MultiStart.cpp
+index 15a2973..5b2f9db 100644
+--- a/Source/Core/UICommon/XDNetplay/MultiStart.cpp
++++ b/Source/Core/UICommon/XDNetplay/MultiStart.cpp
+@@ -111,6 +111,18 @@ MultiStartOutcome PrepareMultiStart(NetPlay::NetPlayServer& server,
+         fmt::format("Can't start: {}'s team is not {} legal.", claim.seats[i].name, format_name));
+   }
+ 
++  // The trainer models, read while the room is frozen: Seat 1's is "Your model", every other
++  // seat's came with its team. A host-filled Seat 2 (tester switch) wears the host save's trainer.
++  BattleCustomizer::SeatLooks looks;
++  if (const int own = Config::Get(Config::MAIN_XD_STYLE_HOST_MODEL); own > 0)
++    looks[0].model = own;
++  for (size_t i = 0; i < claim.seats.size(); ++i)
++  {
++    if (i == 0 && host_fills_seat2)
++      continue;
++    looks[i + 1].model = MultiStageModel(claim.seats[i].serial);
++  }
++
+   // 11-12: the boot copies every machine starts from, and their scrub once the game stops.
+   const std::vector<u32> room_serials = server.XdRoomSerials();
+   if (std::string error; !WriteMultiBootSaves(serials, host_fills_seat2, room_serials, &error))
+@@ -119,14 +131,29 @@ MultiStartOutcome PrepareMultiStart(NetPlay::NetPlayServer& server,
+     return refuse("Can't start: a team save could not be written.");
+   }
+   ArmTempPurgeOnStop();
++  // Each seat's natural trainer comes from the exact save every machine boots on its port.
++  bool any_pick = false;
++  bool genders_known = true;
++  for (int k = 0; k < 4; ++k)
++  {
++    looks[k].gender = BattleCustomizer::SaveFileGender(NetPlay::GetGBANetplayTempPath(k));
++    any_pick |= looks[k].model && BattleCustomizer::IsValidModelId(*looks[k].model);
++    genders_known &= looks[k].gender >= 0;
++  }
++  if (any_pick && !genders_known)
++  {
++    outcome.notes.emplace_back(
++        1, "Trainer models are off for this battle: a save could not be read.");
++  }
+ 
+   // 13: the session settings the link needs (as ApplyStartForcing does for 1v1).
+   Config::SetBaseOrCurrent(Config::NETPLAY_SAVEDATA_LOAD, true);
+   Config::SetBaseOrCurrent(Config::NETPLAY_HIDE_REMOTE_GBAS, true);
+   Config::SetBaseOrCurrent(Config::NETPLAY_SYNC_CODES, true);
+ 
+-  // 14: the Multi block (rules, music, location; no model lines) and the live-style baseline.
+-  BattleCustomizer::PrepareForStart(BattleCustomizer::StartKind::Multi);
++  // 14: the Multi block (rules, music, location, the four trainer models) and the live-style
++  // baseline.
++  BattleCustomizer::PrepareForStart(BattleCustomizer::StartKind::Multi, &looks);
+   BattleCustomizer::BeginLiveStyleForStart();
+ 
+   // 15: Seat n plays SI port n. Channel 0 is the host's controller that becomes a GBA.
+@@ -141,6 +168,110 @@ MultiStartOutcome PrepareMultiStart(NetPlay::NetPlayServer& server,
+   return outcome;
+ }
+ 
++MultiStartOutcome PrepareWatchStart(NetPlay::NetPlayServer& server,
++                                    const NetPlay::XdStartClaim& claim)
++{
++  MultiStartOutcome outcome;
++  const auto refuse = [&outcome](std::string line) {
++    outcome.refusal = std::move(line);
++    return outcome;
++  };
++
++  // The previous game's GBA cores write their saves back as they shut down.
++  if (!Core::IsUninitialized(Core::System::GetInstance()))
++    return refuse("Can't start: the last battle is still closing.");
++  // Hardcore mode filters this machine's Action Replay codes, not the synced copy the others run.
++  if (AchievementManager::GetInstance().IsHardcoreModeActive())
++    return refuse("Can't start: RetroAchievements hardcore mode is on.");
++
++  // The room's format is what every player was shown.
++  const int room_format = server.GetXdRoomFormat();
++  if (Config::Get(Config::MAIN_XD_FORMAT) != room_format)
++    Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, room_format);
++
++  // Both GBAs seated, both teams in.
++  for (size_t i = 0; i < 2; ++i)
++  {
++    if (claim.seats[i].pid == 0)
++      return refuse(fmt::format("Can't start: GBA {} is open.", i + 1));
++  }
++  std::vector<std::string> missing;
++  for (size_t i = 0; i < 2; ++i)
++  {
++    if (claim.seats[i].team_in)
++      continue;
++    missing.push_back(claim.seats[i].name);
++    outcome.notes.emplace_back(claim.seats[i].pid, "Submit a team.");
++  }
++  if (!missing.empty())
++    return refuse(fmt::format("Can't start: waiting for teams from {}.", fmt::join(missing, ", ")));
++
++  // One Emerald dump for both GBAs.
++#ifdef HAS_LIBMGBA
++  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
++  if (rom.empty() || !File::Exists(rom))
++    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
++  if (rom.empty() || !File::Exists(rom))
++    return refuse("Can't start: no Emerald ROM is set up.");
++  Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[1], rom);
++  Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[2], rom);
++#else
++  return refuse("Can't start: no Emerald ROM is set up.");
++#endif
++
++  // Both teams under the room's rules, each on its own (the host's own team plays no part).
++  const std::array<u32, 3> serials = {claim.seats[0].serial, claim.seats[1].serial, 0};
++  const char* format_name = FormatRules::FormatDisplayName(room_format);
++  const MultiTeamCheck check = CheckMultiTeams(room_format, serials, /*host_fills_seat2=*/false);
++  for (size_t i = 0; i < 2; ++i)
++  {
++    if (check.seats[i].ok)
++      continue;
++    outcome.notes.emplace_back(claim.seats[i].pid,
++                               fmt::format("Your team is not {} legal: {}. Submit a new team.",
++                                           format_name, check.seats[i].reason));
++    // No reason here: it would show the host a move or item from a player's hidden team.
++    return refuse(
++        fmt::format("Can't start: {}'s team is not {} legal.", claim.seats[i].name, format_name));
++  }
++
++  // Each player's model pick, read while the room is frozen.
++  BattleCustomizer::SeatLooks looks;
++  for (size_t i = 0; i < 2; ++i)
++    looks[i + 1].model = MultiStageModel(claim.seats[i].serial);
++
++  // The boot copies every machine starts from, and their scrub once the game stops.
++  const std::vector<u32> room_serials = server.XdRoomSerials();
++  if (std::string error;
++      !WriteWatchBootSaves({claim.seats[0].serial, claim.seats[1].serial}, room_serials, &error))
++  {
++    ScrubMultiBootSaves();
++    return refuse("Can't start: a team save could not be written.");
++  }
++  ArmTempPurgeOnStop();
++  for (int k = 1; k <= 2; ++k)
++    looks[k].gender = BattleCustomizer::SaveFileGender(NetPlay::GetGBANetplayTempPath(k));
++
++  // The session settings the link needs (as ApplyStartForcing does for 1v1).
++  Config::SetBaseOrCurrent(Config::NETPLAY_SAVEDATA_LOAD, true);
++  Config::SetBaseOrCurrent(Config::NETPLAY_HIDE_REMOTE_GBAS, true);
++  Config::SetBaseOrCurrent(Config::NETPLAY_SYNC_CODES, true);
++
++  // The 1v1 block with the two players' models, and the live-style baseline.
++  BattleCustomizer::PrepareForStart(BattleCustomizer::StartKind::OneVsOne, &looks);
++  BattleCustomizer::BeginLiveStyleForStart();
++
++  // Port 1 is the host's controller (XD's menus); GBA 1 and GBA 2 are the two seats.
++  constexpr NetPlay::PlayerId HOST_PID = 1;
++  const NetPlay::PadMappingArray pad_map = {HOST_PID, claim.seats[0].pid, claim.seats[1].pid, 0};
++  NetPlay::GBAConfigArray gba_config{};
++  gba_config[1].enabled = true;
++  gba_config[2].enabled = true;
++  server.SetPadMapping(pad_map);
++  server.SetGBAConfig(gba_config, /*update_rom=*/true);
++  return outcome;
++}
++
+ std::string MultiStartChatLine()
+ {
+   if (Config::Get(Config::MAIN_XD_MULTI_PREVIEW_CANCEL_PIN))
+@@ -194,8 +325,14 @@ NetPlay::XdTeamResult HandleTeamSubmission(const std::string& player, const std:
+                   InjectGuestTeamToStage(submission.showdown_text, submission.trainer_name,
+                                          target.device, target.stage_serial, &status,
+                                          submission.raise_to_level_100);
++    // A model id outside the table would reach a switch-arm patch on every machine: refused here.
+     if (applied)
+-      RecordMultiStage(target.stage_serial, submission.model);
++    {
++      RecordMultiStage(target.stage_serial,
++                       submission.model && BattleCustomizer::IsValidModelId(*submission.model) ?
++                           submission.model :
++                           std::nullopt);
++    }
+   }
+ 
+   NetPlay::XdTeamResult result;
+diff --git a/Source/Core/UICommon/XDNetplay/MultiStart.h b/Source/Core/UICommon/XDNetplay/MultiStart.h
+index cc37136..0172970 100644
+--- a/Source/Core/UICommon/XDNetplay/MultiStart.h
++++ b/Source/Core/UICommon/XDNetplay/MultiStart.h
+@@ -39,6 +39,13 @@ MultiStartOutcome PrepareMultiStart(NetPlay::NetPlayServer& server,
+ // The Start line for the room chat (it names the team preview's B, which cancels for everyone
+ // unless the preview-cancel pin is on).
+ std::string MultiStartChatLine();
++// The same as PrepareMultiStart for a 1v1 room whose host watches (claim.host_watching): GBA 1
++// and GBA 2 are the two seated joiners' staged teams, written to boot copies every machine starts
++// from; the host keeps port 1 (XD's menus) and plays no GBA. Each seat wears its own model pick.
++// On a refusal the boot copies are scrubbed again. The caller then calls RequestStartGame; if
++// that fails, AbortMultiStart.
++MultiStartOutcome PrepareWatchStart(NetPlay::NetPlayServer& server,
++                                    const NetPlay::XdStartClaim& claim);
+ // RequestStartGame refused a prepared Multi start: scrub the boot copies now.
+ void AbortMultiStart();
+ // The server aborted a start that was syncing (a player left): if it was a Multi start and no game
+diff --git a/Source/Core/UICommon/XDNetplay/TeamInjector.cpp b/Source/Core/UICommon/XDNetplay/TeamInjector.cpp
+index 7c5b257..c66dbd6 100644
+--- a/Source/Core/UICommon/XDNetplay/TeamInjector.cpp
++++ b/Source/Core/UICommon/XDNetplay/TeamInjector.cpp
+@@ -1464,8 +1464,14 @@ bool InjectGuestBundleToStage(const std::vector<u8>& bundle, int device, u32 ser
+ 
+ void RecordMultiStage(u32 serial, std::optional<int> model)
+ {
+-  std::lock_guard lock(s_stage_mutex);
+-  s_stages[serial] = model;
++  {
++    std::lock_guard lock(s_stage_mutex);
++    s_stages[serial] = model;
++  }
++#ifdef HAS_LIBMGBA
++  GBADetectLog::NoteBoot(fmt::format("multi stage serial={} model={}", serial,
++                                     model ? fmt::format("{:#x}", *model) : std::string("default")));
++#endif
+ }
+ 
+ std::optional<int> MultiStageModel(u32 serial)
+@@ -1555,6 +1561,57 @@ bool WriteMultiBootSaves(const std::array<u32, 3>& seat_serials, bool host_fills
+ #endif
+ }
+ 
++bool WriteWatchBootSaves(const std::array<u32, 2>& seat_serials, std::span<const u32> room_serials,
++                         std::string* error)
++{
++  const auto fail = [error](std::string message) {
++    if (error)
++      *error = std::move(message);
++    return false;
++  };
++#ifndef HAS_LIBMGBA
++  (void)seat_serials;
++  (void)room_serials;
++  return fail("this build has no GBA support");
++#else
++  // The previous game's cores write their saves back as they shut down.
++  if (!Core::IsUninitialized(Core::System::GetInstance()))
++    return fail("the last battle is still closing");
++
++  {
++    std::lock_guard lock(s_purge_mutex);
++    std::vector<std::string> lines;
++    for (size_t i = 0; i < seat_serials.size(); ++i)
++    {
++      const int slot = static_cast<int>(i) + 1;  // SI ports 2 and 3
++      const u32 serial = seat_serials[i];
++      std::vector<u8> bytes;
++      if (serial == 0 || !ReadFileBytes(MultiStagePath(serial), &bytes) || bytes.empty())
++        return fail(fmt::format("no team for GBA {}", i + 1));
++      const std::string dest = NetPlay::GetGBANetplayTempPath(slot);
++      const std::string tmp = dest + TMP_SUFFIX;
++      File::CreateFullPath(dest);
++      {
++        File::IOFile file(tmp, "wb");
++        if (!file || !file.WriteBytes(bytes.data(), bytes.size()) || !file.Flush())
++          return fail(fmt::format("could not write {}", tmp));
++      }
++      if (!File::Rename(tmp, dest))
++        return fail(fmt::format("could not write {}", dest));
++      lines.push_back(fmt::format("watch boot sock={} src=stage-{} size={} crc={:08x}", slot,
++                                  serial, bytes.size(),
++                                  Common::ComputeCRC32(bytes.data(), bytes.size())));
++    }
++    for (const std::string& line : lines)
++      GBADetectLog::NoteBoot(line);
++  }
++
++  // Their stages have served; a player who left does not get theirs back.
++  DropMultiStages(room_serials);
++  return true;
++#endif
++}
++
+ void ScrubMultiBootSaves()
+ {
+   std::lock_guard lock(s_purge_mutex);
+diff --git a/Source/Core/UICommon/XDNetplay/TeamInjector.h b/Source/Core/UICommon/XDNetplay/TeamInjector.h
+index 79d53c6..f3f96d0 100644
+--- a/Source/Core/UICommon/XDNetplay/TeamInjector.h
++++ b/Source/Core/UICommon/XDNetplay/TeamInjector.h
+@@ -368,6 +368,11 @@ void DropAllMultiStages();
+ // boots from a half-written set (the caller scrubs).
+ bool WriteMultiBootSaves(const std::array<u32, 3>& seat_serials, bool host_fills_seat2,
+                          std::span<const u32> room_serials, std::string* error);
++// The same for a 1v1 start whose host watches: NetPlayTemp2 and NetPlayTemp3 (SI ports 2 and 3,
++// GBA 1 and GBA 2) from the stages of seat_serials[0] and seat_serials[1]; the host's own saves
++// are not read. Then drops the stages of serials not in room_serials.
++bool WriteWatchBootSaves(const std::array<u32, 2>& seat_serials, std::span<const u32> room_serials,
++                         std::string* error);
+ // Scrubs and deletes NetPlayTemp1..4.
+ void ScrubMultiBootSaves();
+ // Scrub the boot copies once emulation next reaches Uninitialized (the game
+-- 
+2.39.5 (Apple Git-154)
+
