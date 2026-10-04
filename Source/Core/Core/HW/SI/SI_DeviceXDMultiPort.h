@@ -101,6 +101,7 @@ private:
   std::string Snapshot(u64 now) const;
   void Log(u64 now, const std::string& detail, bool flush = false) const;
   void LogDiagnostics(const XdRam& ram, bool en0, u64 now);
+  void LogBattleSides(u64 now);
 
   std::unique_ptr<CSIDevice_GCController> m_controller;
   // Only on channel 0.
@@ -162,6 +163,7 @@ private:
   u64 m_diag_padok_start = 0;
   std::array<u32, 4> m_diag_prev_ctx{};
   u8 m_diag_prev_errflag = 0;
+  u32 m_diag_prev_bflag = 0;
 };
 }  // namespace SerialInterface
 

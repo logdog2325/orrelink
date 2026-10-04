@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <optional>
 #include <span>
 #include <string>
@@ -23,6 +24,16 @@ enum class StartKind
   OneVsOne,
   Multi,
 };
+
+// One Multi seat as the host saw it at Start: SI port n's trainer-model pick (nullopt or an id
+// IsValidModelId refuses = that save's own trainer) and the trainer gender of the save port n
+// boots (0 male, 1 female, -1 unreadable). Index 0 is port 1.
+struct SeatLook
+{
+  std::optional<int> model;
+  int gender = -1;
+};
+using SeatLooks = std::array<SeatLook, 4>;
 
 // ---------------------------------------------------------------------------
 // Cosmetic battle selectors ("$OrreLink Battle Style")
@@ -179,10 +190,11 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
 // all ON, so the game itself enforces them in battle.
 //
 // Multi (StartKind::Multi with the Multi format): layout 3 (GBA + GBA VS GBA +
-// GBA), pairing 0, rules Custom 1 holding the Lv100 tournament preset with
-// pick 3 (FormatRules::MULTI_PICK; the exactly-three fallback keeps the stock
-// "all battle" entry mode), the stock clauses and the timer word. No battle
-// type pin. The Multi format with OneVsOne emits nothing.
+// GBA; the team combination is XD's own choice), rules Custom 1 holding the
+// Lv100 tournament preset with pick 3 (FormatRules::MULTI_PICK; the
+// exactly-three fallback keeps the stock "all battle" entry mode), the stock
+// clauses and the timer word. No battle type pin. The Multi format with
+// OneVsOne emits nothing.
 std::string FormatRuleLines(StartKind kind = StartKind::OneVsOne);
 
 // The host's four launcher selections. 0 (the config default) = game default.
@@ -245,19 +257,25 @@ bool IsNetplaySessionActive();
 // leave its rules block at rest in the file between sessions, where any
 // cheats-on GXXE01 boot outside our flows would load it.
 //
-// kind = Multi (phase 1 of the multi battles): no trainer-model lines at all,
-// each seat wears its own save's model; the class-0 bust is always hidden and
-// the preview drawer always skipped; music and venue as usual; plus the
-// Multi rules pin (FormatRuleLines).
+// kind = Multi: the four seats' trainer models come from `looks` (GenerateMultiModelLines; none
+// when no seat picked one, or looks is null); the class-0 bust is always hidden and the preview
+// drawer always skipped; music and venue as usual; plus the Multi rules pin (FormatRuleLines).
 bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
-                   bool include_format_rules = true, StartKind kind = StartKind::OneVsOne);
+                   bool include_format_rules = true, StartKind kind = StartKind::OneVsOne,
+                   const SeatLooks* looks = nullptr);
+
+// The Multi trainer-model lines for four seats (empty when no seat picked a valid model or a
+// save's gender is unknown), with one log line per seat. A pure function of `looks`: the host
+// builds it once at Start and the code sync gives every machine the same text.
+std::string GenerateMultiModelLines(const SeatLooks& looks);
 
 // RegenerateIni driven entirely by config: selection from the MAIN_XD_STYLE_*
 // keys, ou_enabled from MAIN_XD_FORMAT == FORMAT_OU (the Format dropdown is
 // the OU choice now; the flag PrepareForStart reconciles cannot distort it).
 // This is the call for the host's TeamData handlers: regenerate on every
 // submission arrival so a model submitted any time before Start is honored.
-bool RegenerateFromConfig(std::string* status, StartKind kind = StartKind::OneVsOne);
+bool RegenerateFromConfig(std::string* status, StartKind kind = StartKind::OneVsOne,
+                          const SeatLooks* looks = nullptr);
 
 // The pre-start hook, host side, strictly before RequestStartGame (desktop:
 // ApplyStartForcing; Android: nativeStartGame): regenerates the block once
@@ -267,7 +285,14 @@ bool RegenerateFromConfig(std::string* status, StartKind kind = StartKind::OneVs
 // removed OU toggle from silently shipping OU patches under "Free").
 // A submission that arrives after this point is rejected by the server while
 // the battle runs, so the synced set can never diverge mid-session.
-void PrepareForStart(StartKind kind = StartKind::OneVsOne);
+//
+// Multi: `looks` are the four seats' picks and save genders (MultiStart builds them from the
+// frozen room). A solo Multi boot passes none and gets "Your model" for port 1 plus the
+// MultiSoloModels tester key for ports 2-4, with each port's own save gender.
+void PrepareForStart(StartKind kind = StartKind::OneVsOne, const SeatLooks* looks = nullptr);
+
+// The trainer gender of an Emerald save file (0 male, 1 female), or -1 when it cannot be read.
+int SaveFileGender(const std::string& path);
 
 // A music and location change for a game that is already running (the room's Music & Location
 // while XD is open). The netplay client installs these lines at the same emulated moment on

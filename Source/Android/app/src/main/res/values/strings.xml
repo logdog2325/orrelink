@@ -1082,9 +1082,12 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_role_opponent">Opponent</string>
     <string name="xd_role_waiting">Waiting</string>
     <string name="xd_role_watching">Watching</string>
+    <string name="xd_role_host_watching">Host, watching</string>
+    <string name="xd_role_gba">GBA %1$d</string>
     <string name="xd_role_seat">Seat %1$d</string>
     <string name="xd_watch_only">Watch only</string>
     <string name="xd_watch_only_description">Watch without playing.</string>
+    <string name="xd_watch_only_host_description">The next two in line play; you keep XD\'s menus.</string>
     <string name="netplay_network_mode_label">Input mode</string>
     <string name="netplay_network_mode_fair_input_delay">Fair Input Delay</string>
     <string name="netplay_network_mode_host_input_authority">Host Input Authority</string>
@@ -1126,7 +1129,7 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_style_section_hint">The host picks format, music and location. Joiners set team, name and model in Submit Team; hosts set their name in the room or Team Editor.</string>
     <string name="xd_style_your_model">Your model</string>
     <string name="xd_style_guest_model">Guest model</string>
-    <string name="xd_style_guest_model_hint">Used only if they don\'t pick one themselves</string>
+    <string name="xd_style_guest_model_hint">Used only if they don\'t pick one themselves. Not used in Multi or while you watch.</string>
     <string name="xd_style_music">Battle music</string>
     <string name="xd_style_venue">Battle location</string>
     <string name="xd_style_game_default">Game default</string>
@@ -1135,7 +1138,6 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_style_no_portrait_suffix">%1$s (no portrait)</string>
     <string name="xd_style_submit_model_label">Trainer model</string>
     <string name="xd_style_submit_model_hint">How you appear in battle. Your pick here overrides the host\'s Guest model choice.</string>
-    <string name="xd_submit_model_multi">Multi uses each save\'s own model.</string>
 
     <!-- One-tap battle Format pick. The option names and their order come from
          shared core (FormatRules, through FormatBridge) so every picker and

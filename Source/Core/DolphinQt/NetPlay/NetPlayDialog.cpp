@@ -357,7 +357,7 @@ void NetPlayDialog::CreateChatLayout()
   // player in line as the opponent, and the Role column shows who that is.
   // UpdateGUI shows it to joiners in an XD room.
   m_watch_box = new QCheckBox(tr("Watch only"));
-  m_watch_box->setToolTip(WatchOnlyToolTip(false));
+  m_watch_box->setToolTip(WatchOnlyToolTip(false, false));
   m_watch_box->hide();
 
   // XD Netplay, host side: the joiner sets its in-game name in the Submit Team
@@ -641,6 +641,24 @@ void NetPlayDialog::OnStart()
       DisplayMessage(tr("A battle is starting. Try again after it ends."), "red");
       return;
     }
+    // A 1v1 room whose host watches: two joiners on GBA 1 and GBA 2, staged teams, boot copies
+    // (UICommon/XDNetplay/MultiStart.h); the host keeps XD's menus.
+    if (claim.host_watching)
+    {
+      const XDNetplay::MultiStartOutcome outcome = XDNetplay::PrepareWatchStart(*server, claim);
+      for (const auto& [pid, note] : outcome.notes)
+        server->SendXdNote(pid, note);
+      if (!outcome.refusal.empty())
+      {
+        DisplayMessage(QString::fromStdString(outcome.refusal), "red");
+        return;
+      }
+      if (server->RequestStartGame())
+        SetOptionsEnabled(false);
+      else
+        XDNetplay::AbortMultiStart();
+      return;
+    }
     // A Multi room: four seats, staged teams, boot copies (UICommon/XDNetplay/MultiStart.h). The
     // claim already cleared anything a 1v1 start sets.
     if (claim.multi)
@@ -713,12 +731,17 @@ void NetPlayDialog::OnStart()
     SetOptionsEnabled(false);
 }
 
-QString NetPlayDialog::WatchOnlyToolTip(bool multi)
+QString NetPlayDialog::WatchOnlyToolTip(bool multi, bool host_watching)
 {
   if (multi)
   {
     return tr("Watch without playing. The next player in line takes your seat.\nA change made "
               "in a game applies after the host stops it.");
+  }
+  if (host_watching)
+  {
+    return tr("Watch without playing. The next player in line takes your seat.\nA change made "
+              "during a battle applies to the next one.");
   }
   return tr("Watch without playing. The next player in line becomes the opponent.\nA change made "
             "during a battle applies to the next one.");
@@ -899,6 +922,7 @@ void NetPlayDialog::UpdateGUI()
   // XD rooms show each player's part in the next battle where the port mapping
   // was; the mapping stays in the cell tooltip.
   const bool is_xd = XDNetplay::IsXdGameId(m_current_game_identifier.game_id);
+  const bool host_watching = client->IsXdHostWatching();
 
   m_players_list->clear();
   m_players_list->setHorizontalHeaderLabels({tr("Player"), tr("Game Status"), tr("Ping"),
@@ -943,13 +967,16 @@ void NetPlayDialog::UpdateGUI()
     switch (seat.role)
     {
     case NetPlay::XdRole::Host:
-      role = seat.seat != 0 ? tr("Seat %1").arg(seat.seat) : tr("Host");
+      role = seat.watching  ? tr("Host, watching") :
+             seat.seat != 0 ? tr("Seat %1").arg(seat.seat) :
+                              tr("Host");
       break;
     case NetPlay::XdRole::Opponent:
       role = tr("Opponent");
       break;
     case NetPlay::XdRole::Seated:
-      role = tr("Seat %1").arg(seat.seat);
+      // A 1v1 room whose host watches seats GBA 1 (port 2) and GBA 2 (port 3).
+      role = host_watching ? tr("GBA %1").arg(seat.seat - 1) : tr("Seat %1").arg(seat.seat);
       break;
     case NetPlay::XdRole::Waiting:
       role = tr("Waiting");
@@ -1004,10 +1031,10 @@ void NetPlayDialog::UpdateGUI()
   const bool multi_seats = client->IsXdMultiSeats();
   if (!server)
   {
-    // Only the opponent (a seated player in Multi) can submit a team; the server refuses anyone
-    // else. Unknown (no seat broadcast yet) stays allowed, as before.
+    // Only the opponent (a seated player in Multi or a room the host watches) can submit a team;
+    // the server refuses anyone else. Unknown (no seat broadcast yet) stays allowed, as before.
     m_watch_box->setVisible(is_xd);
-    m_watch_box->setToolTip(WatchOnlyToolTip(multi_seats));
+    m_watch_box->setToolTip(WatchOnlyToolTip(multi_seats, host_watching));
     // Watch only means nothing outside XD, but the server would still leave this player out of
     // the index count and the lobby buffer. Unticking sends the change.
     if (!is_xd && m_watch_box->isChecked())
@@ -1018,10 +1045,36 @@ void NetPlayDialog::UpdateGUI()
                             local_role == NetPlay::XdRole::Unknown;
     m_submit_team_button->setEnabled(may_submit);
     m_submit_team_button->setToolTip(
-        may_submit  ? JoinerSubmitTeamToolTip() :
-        multi_seats ? tr("Only seated players can submit a team.") :
-                      tr("Only the opponent can submit a team."));
+        may_submit                    ? JoinerSubmitTeamToolTip() :
+        multi_seats || host_watching ? tr("Only seated players can submit a team.") :
+                                       tr("Only the opponent can submit a team."));
     return;
+  }
+
+  // The host's own Watch only (1v1 rooms): two joiners play GBA 1 and GBA 2 and the host keeps
+  // XD's menus. A Multi room seats the host on Seat 1, so the box is hidden there and the server
+  // drops the flag. The box follows the server's seat broadcast.
+  {
+    const bool host_can_watch = is_xd && !server->IsXdMultiRoom();
+    m_watch_box->setVisible(host_can_watch);
+    m_watch_box->setToolTip(
+        tr("Watch instead of playing: the next two players in line play GBA 1 and GBA 2.\n"
+           "You still start each battle and drive XD's menus."));
+    const bool watching = client->GetXdSeatInfo(client->GetLocalPlayerId()).watching;
+    // Watching means nothing outside XD, but the server would still leave the host out of the
+    // index count. Repeats until the server's broadcast says it took (a duplicate is ignored).
+    if (!is_xd && watching)
+      client->SendXdWatch(false);
+    if (m_watch_box->isChecked() != watching)
+    {
+      const QSignalBlocker blocker(m_watch_box);
+      m_watch_box->setChecked(watching);
+    }
+    // While watching, the host's own team and model play no part.
+    m_submit_team_button->setToolTip(
+        watching ? tr("Not used while you watch: GBA 1 and GBA 2 play their own teams.") :
+                   tr("Set your own team from a Showdown paste. Written to your GBA port 2 save "
+                      "for the next battle you start."));
   }
 
   const bool is_local_ip_selected = m_room_box->currentIndex() > (m_use_traversal ? 1 : 0);
@@ -1459,12 +1512,12 @@ void NetPlayDialog::OnSubmitTeam()
   }
   const int stored_model_index = model_combo->findData(Config::Get(Config::MAIN_XD_SUBMIT_MODEL));
   model_combo->setCurrentIndex(stored_model_index >= 0 ? stored_model_index : 0);
-  // A Multi battle emits no model lines: every seat wears its own save's model.
+  // Multi: each seat's own pick (the host has no fallback for it). Unpicked = the save's trainer.
   if (const auto client = Settings::Instance().GetNetPlayClient();
-      client && client->IsXdMultiSeats())
+      client && (client->IsXdMultiSeats() || client->IsXdHostWatching()))
   {
-    model_combo->setEnabled(false);
-    model_combo->setToolTip(tr("Multi uses each save's own model."));
+    model_combo->setItemText(0, tr("Game default"));
+    model_combo->setToolTip(tr("How you appear in battle."));
   }
   use_save_check->setChecked(Config::Get(Config::MAIN_XD_SUBMIT_USE_SAVE));
 #ifndef HAS_LIBMGBA
@@ -2004,9 +2057,15 @@ void NetPlayDialog::OnChangeFormat()
   // this write on, a guest's submission is checked against the new format.
   Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, format);
   XDNetplay::RoomTeamCheck check;
+  // A watching host's own team and the GBA 2 slot play no part: GBA 1's and GBA 2's staged teams
+  // are judged at Start. (A switch to Multi ends the watching, and judges the host's team.)
+  const bool watching =
+      server->IsXdHostWatching() && format != XDNetplay::FormatRules::FORMAT_MULTI;
   const NetPlay::XdFormatChange change = server->SetXdFormat(
       format,
-      [&check, format](const NetPlay::XdSlotView& slot) {
+      [&check, format, watching](const NetPlay::XdSlotView& slot) {
+        if (watching)
+          return;
         // A departed player's team is reset before any Start reads it: not judged. Multi judges
         // only the host's team here: the seats' teams are staged per player and judged at Start.
         check = XDNetplay::CheckRoomTeams(format,

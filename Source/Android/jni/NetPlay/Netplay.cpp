@@ -368,9 +368,15 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetRoomForm
   // is checked against the new format.
   Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, format);
   XDNetplay::RoomTeamCheck check;
+  // A watching host's own team and the GBA 2 slot play no part: GBA 1's and GBA 2's staged teams
+  // are judged at Start. (A switch to Multi ends the watching, and judges the host's team.)
+  const bool watching =
+      server->IsXdHostWatching() && format != XDNetplay::FormatRules::FORMAT_MULTI;
   const NetPlay::XdFormatChange change = server->SetXdFormat(
       format,
-      [&check, format](const NetPlay::XdSlotView& slot) {
+      [&check, format, watching](const NetPlay::XdSlotView& slot) {
+        if (watching)
+          return;
         // A departed player's team is reset before any Start reads it: not judged. Multi judges
         // only the host's team here: the seats' teams are staged per player and judged at Start.
         check = XDNetplay::CheckRoomTeams(format,
@@ -662,6 +668,20 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
   const NetPlay::XdStartClaim& claim = freeze.Claim();
   if (claim.starting)
     return reply(false, HOST_WRITE_BUSY);
+  // A 1v1 room whose host watches: two joiners on GBA 1 and GBA 2, staged teams, boot copies
+  // (UICommon/XDNetplay/MultiStart.h); the host keeps XD's menus. Still under s_host_write_mutex.
+  if (claim.host_watching)
+  {
+    const XDNetplay::MultiStartOutcome outcome = XDNetplay::PrepareWatchStart(*server, claim);
+    for (const auto& [pid, note] : outcome.notes)
+      server->SendXdNote(pid, note);
+    if (!outcome.refusal.empty())
+      return reply(false, outcome.refusal);
+    const bool started = server->RequestStartGame();
+    if (!started)
+      XDNetplay::AbortMultiStart();
+    return reply(started, "");
+  }
   // A Multi room: four seats, staged teams, boot copies (UICommon/XDNetplay/MultiStart.h), still
   // under s_host_write_mutex. The claim already cleared anything a 1v1 start sets.
   if (claim.multi)
@@ -784,7 +804,8 @@ JNIEXPORT void JNICALL
 Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetWatchOnly(
     JNIEnv* env, jobject obj, jboolean watching)
 {
-  // XD Netplay, joiner: only watch (or play again). Applies from the next Start.
+  // XD Netplay: only watch (or play again). Applies from the next Start. The host may watch a 1v1
+  // room: two joiners then play GBA 1 and GBA 2.
   if (auto* client = GetClientPointer(env, obj))
     client->SendXdWatch(watching == JNI_TRUE);
 }
