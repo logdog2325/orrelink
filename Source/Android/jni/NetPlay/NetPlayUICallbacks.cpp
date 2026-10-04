@@ -161,7 +161,8 @@ void NetPlayUICallbacks::Update()
                          static_cast<jint>(player->pid), ToJString(env, player->name),
                          ToJString(env, player->revision), static_cast<jint>(player->ping),
                          static_cast<jboolean>(player->IsHost()), ToJString(env, mapping),
-                         static_cast<jint>(seat.role),
+                         // A watching host reads as Watching; Kotlin labels it by isHost.
+                         static_cast<jint>(seat.watching ? NetPlay::XdRole::Watching : seat.role),
                          static_cast<jboolean>(client->IsLocalPlayer(player->pid)),
                          static_cast<jint>(seat.seat), static_cast<jboolean>(seat.team_in));
       env->SetObjectArrayElement(player_array, i, player_obj);

@@ -268,6 +268,10 @@ extern const Info<bool> MAIN_XD_MULTI_FILL_SEATS;
 // preview (BattleCustomizer's preview-cancel pin). Off until its solo test passes; while off,
 // any seat's B cancels the preview for everyone, and the Start line in the chat says so.
 extern const Info<bool> MAIN_XD_MULTI_PREVIEW_CANCEL_PIN;
+// Tester key, INI only, solo Multi boots only: the trainer models for GBA ports 2, 3 and 4 as hex
+// model ids, for example "2B,16,41" (empty or 0 = that port's save trainer). Port 1 uses "Your
+// model". Lets one machine check four model picks.
+extern const Info<std::string> MAIN_XD_MULTI_SOLO_MODELS;
 // Host-side battle timer, folded into the format rules pin: when enabled and
 // the Format pins a rules record, BattleCustomizer emits that record's timer
 // word (+0x14 s16 minutes per game, +0x16 s16 seconds per turn; positive = on)

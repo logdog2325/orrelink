@@ -315,9 +315,9 @@ fun NetplayScreen(
                     Spacer(Modifier.height(12.dp))
                     // Host mode: this is the HOST model (the launcher's "Your
                     // model" pick), so its first entry is "Game default" and
-                    // no guest-fallback wording applies. A Multi seat's pick
-                    // does nothing (every seat wears its save's own model), so
-                    // it greys out.
+                    // no guest-fallback wording applies. A Multi seat's pick is
+                    // its own too (the host has no fallback for it), so it
+                    // reads the same way.
                     val multiSeat = !isHosting && localRole == Player.ROLE_SEATED
                     BattleStyleDropdown(
                         label = stringResource(
@@ -327,19 +327,15 @@ fun NetplayScreen(
                         options = modelOptions,
                         selectedId = modelDraft,
                         defaultLabel = stringResource(
-                            if (isHosting) R.string.xd_style_game_default
+                            if (isHosting || multiSeat) R.string.xd_style_game_default
                             else R.string.xd_style_no_preference
                         ),
                         onSelected = { modelDraft = it },
                         modifier = Modifier.fillMaxWidth(),
                         supportingText = stringResource(
-                            when {
-                                isHosting -> R.string.xd_host_submit_model_hint
-                                multiSeat -> R.string.xd_submit_model_multi
-                                else -> R.string.xd_style_submit_model_hint
-                            }
-                        ),
-                        enabled = !multiSeat
+                            if (isHosting || multiSeat) R.string.xd_host_submit_model_hint
+                            else R.string.xd_style_submit_model_hint
+                        )
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(
@@ -1255,15 +1251,21 @@ private fun PlayersAndSettings(
             val roleOpponent = stringResource(R.string.xd_role_opponent)
             val roleWaiting = stringResource(R.string.xd_role_waiting)
             val roleWatching = stringResource(R.string.xd_role_watching)
+            val roleHostWatching = stringResource(R.string.xd_role_host_watching)
             // "Seat %1$d": a Multi room's seats, the host's (Seat 1) included.
             val roleSeat = stringResource(R.string.xd_role_seat)
+            // "GBA %1$d": a 1v1 room whose host watches seats GBA 1 (port 2) and GBA 2 (port 3).
+            val roleGba = stringResource(R.string.xd_role_gba)
+            val hostWatching = players.any { it.isHost && it.role == Player.ROLE_WATCHING }
             val roleLabel = { player: Player ->
                 when (player.role) {
                     Player.ROLE_HOST -> if (player.seat > 0) roleSeat.format(player.seat) else roleHost
                     Player.ROLE_OPPONENT -> roleOpponent
-                    Player.ROLE_SEATED -> roleSeat.format(player.seat)
+                    Player.ROLE_SEATED ->
+                        if (hostWatching) roleGba.format(player.seat - 1)
+                        else roleSeat.format(player.seat)
                     Player.ROLE_WAITING -> roleWaiting
-                    Player.ROLE_WATCHING -> roleWatching
+                    Player.ROLE_WATCHING -> if (player.isHost) roleHostWatching else roleWatching
                     else -> ""
                 }
             }
@@ -1282,6 +1284,36 @@ private fun PlayersAndSettings(
                 modifier = Modifier
                     .fillMaxWidth()
             )
+        }
+
+        // XD Netplay, host of a 1v1 room: watch while the next two players in
+        // line play GBA 1 and GBA 2. Not in Multi, where the host is Seat 1
+        // (the server drops the flag there). The switch follows the server's
+        // seat broadcast.
+        val multiRoom = players.any { it.isHost && it.role == Player.ROLE_HOST && it.seat == 1 }
+        if (isHosting && isXdGameName(game) && !multiRoom) {
+            MenuSpacer()
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        stringResource(R.string.xd_watch_only),
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        stringResource(R.string.xd_watch_only_host_description),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Switch(
+                    checked = players.any { it.isHost && it.role == Player.ROLE_WATCHING },
+                    onCheckedChange = onWatchOnlyChanged,
+                    enabled = !gameRunning
+                )
+            }
         }
 
         if (!isHosting && isXdGameName(game)) {

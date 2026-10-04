@@ -570,7 +570,7 @@ void XDLauncherDialog::CreateMainLayout()
   m_style_guest_model_combo = add_style_combo(
       tr("Guest model (used only if they don't pick):"),
       tr("Fallback only: a model the guest picks when submitting\n"
-         "their team always wins over this."));
+         "their team always wins over this. Not used in Multi or while you watch."));
   m_style_music_combo = add_style_combo(tr("Battle music:"), QString());
   m_style_venue_combo = add_style_combo(
       tr("Battle location:"), tr("Locations that alter Nature Power, Camouflage or Secret Power\n"

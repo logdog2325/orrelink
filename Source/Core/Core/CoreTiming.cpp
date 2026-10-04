@@ -84,7 +84,8 @@ void CoreTimingManager::UnregisterAllEvents()
 
 void CoreTimingManager::Init()
 {
-  m_system.GetPPCState().downcount = CyclesToDowncount(MAX_SLICE_LENGTH);
+  m_boot_prev_oc_factor = m_last_oc_factor;
+  m_boot_first_advance = BOOT_ADVANCE_PENDING;
   m_globals.slice_length = MAX_SLICE_LENGTH;
   m_globals.global_timer = 0;
   m_idled_cycles = 0;
@@ -107,6 +108,13 @@ void CoreTimingManager::Init()
 
   m_last_oc_factor = m_config_oc_factor;
   m_globals.last_OC_factor_inverted = m_config_oc_inv_factor;
+  // OrreLink: the first slice's downcount must come from THIS boot's factor. Upstream computes it
+  // at the top of Init, from the previous session's factor (0 in a fresh process), so the first
+  // Advance credited 20000 cycles no instruction ran on a fresh process's first boot and 0 on any
+  // later boot. Two netplay peers where one had just opened the app then ran the same game with
+  // different timing, and it reached XD's state minutes later (the 2026-10-04 Multi desync).
+  m_system.GetPPCState().downcount = CyclesToDowncount(MAX_SLICE_LENGTH);
+  m_boot_init_downcount = m_system.GetPPCState().downcount;
 
   m_core_state_changed_hook = Core::AddOnStateChangedCallback([this](Core::State state) {
     if (state == Core::State::Running)
@@ -354,6 +362,8 @@ void CoreTimingManager::Advance()
   auto& ppc_state = power_pc.GetPPCState();
 
   int cyclesExecuted = m_globals.slice_length - DowncountToCycles(ppc_state.downcount);
+  if (m_boot_first_advance == BOOT_ADVANCE_PENDING) [[unlikely]]
+    m_boot_first_advance = cyclesExecuted;
   m_globals.global_timer += cyclesExecuted;
   m_last_oc_factor = m_config_oc_factor;
   m_globals.last_OC_factor_inverted = m_config_oc_inv_factor;

@@ -47,6 +47,13 @@ constexpr u32 XD_CTX_48 = 0x804354F0;    // u8, log only
 constexpr u32 XD_ERRFLAG = 0x804EA840;   // u8: set when the link error handler posts
 constexpr u32 XD_BFLAG = 0x804EA834;     // u32: 1 while the VS battle runner runs
 constexpr u32 XD_VSROW = 0x804349EC;
+// The team combination index (XD's picker, state 0xAC) and the four battle slots' SI port (u32,
+// 1-based, at +0x24 of each 0x1320 battle record). Battle setup lays the slots out from the
+// picked row, slots 0-1 one side and 2-3 the other.
+constexpr u32 XD_COMBO = 0x804349E4;
+constexpr u32 XD_SLOT_PORT = 0x80429A34;
+constexpr u32 XD_SLOT_STRIDE = 0x1320;
+constexpr u32 XD_LAYOUT_MULTI = 3;
 constexpr u32 XD_FORMAT = 0x80429A00;
 constexpr u32 XD_LINK_A = 0x80428338;
 constexpr u32 XD_LINK_B = 0x80428348;
@@ -1056,10 +1063,41 @@ std::string CSIDevice_XDMultiPort::Snapshot(u64 now) const
   return out;
 }
 
+void CSIDevice_XDMultiPort::LogBattleSides(u64 now)
+{
+  const auto& memory = m_system.GetMemory();
+  std::array<u32, 4> ports{};
+  u32 seen = 0;
+  bool valid = memory.Read_U32(XD_VSROW) == XD_LAYOUT_MULTI;
+  for (u32 k = 0; k < 4; ++k)
+  {
+    ports[k] = memory.Read_U32(XD_SLOT_PORT + k * XD_SLOT_STRIDE);
+    if (ports[k] < 1 || ports[k] > 4 || (seen & (1u << ports[k])) != 0)
+      valid = false;
+    else
+      seen |= 1u << ports[k];
+  }
+  valid = valid && ports[0] == 1;
+  Log(now, fmt::format("sides combo={} slots={},{},{},{} valid={}", memory.Read_U32(XD_COMBO),
+                       ports[0], ports[1], ports[2], ports[3], valid ? 1 : 0));
+  if (!valid || !m_netplay || !m_is_local)
+    return;
+  u8 packed = 0;
+  for (u32 k = 0; k < 4; ++k)
+    packed |= static_cast<u8>((ports[k] - 1) << (2 * k));
+  NetPlay::ReportXdMultiSides(packed);
+}
+
 void CSIDevice_XDMultiPort::LogDiagnostics(const XdRam& ram, bool en0, u64 now)
 {
   const u64 tps = m_system.GetSystemTimers().GetTicksPerSecond();
   const u64 ms = std::max<u64>(tps / 1000, 1);
+
+  // The teams, once per battle (battle again and change combination included), on every machine
+  // at the same poll: reads only. The port-1 owner sends them to the room for the chat line.
+  if (ram.is_xd && ram.bflag != 0 && m_diag_prev_bflag == 0)
+    LogBattleSides(now);
+  m_diag_prev_bflag = ram.bflag;
 
   if (m_diag_have_prev && en0 != m_diag_prev_en0 && m_diag_en0_lines < 256)
   {
