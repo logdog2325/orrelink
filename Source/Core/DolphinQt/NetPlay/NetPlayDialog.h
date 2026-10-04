@@ -126,7 +126,7 @@ private:
   void OnSetHostName();
   void OnStart();
   static QString JoinerSubmitTeamToolTip();
-  static QString WatchOnlyToolTip(bool multi);
+  static QString WatchOnlyToolTip(bool multi, bool host_watching);
   void DisplayMessage(const QString& msg, const std::string& color,
                       int duration = OSD::Duration::NORMAL);
   void ResetExternalIP();

@@ -715,13 +715,23 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
   if (GBADetectLog::IsSessionOpen())
   {
     const auto& ppc = system.GetPowerPC();
+    // proc_boot is 1 on the first boot of this process. ct_* is CoreTiming's first slice: the
+    // 2026-10-04 desync was ct_init_dc=0 ct_first_adv=20000 on a fresh process against 20000 / 0
+    // on a reused one; from 1.7.7 every boot must read ct_init_dc=20000*oc ct_first_adv=0.
+    const CoreTiming::CoreTimingManager::BootTiming boot_timing =
+        system.GetCoreTiming().GetBootTiming();
+    const std::string first_advance =
+        boot_timing.first_advance == CoreTiming::CoreTimingManager::BOOT_ADVANCE_PENDING ?
+            std::string("na") :
+            fmt::format("{}", boot_timing.first_advance);
     GBADetectLog::NoteBoot(fmt::format(
         "cpu arch={} core_cfg={} core_eff=\"{}\" dispatch={} hw_fma={} hw_afp={} use_fma={} "
         "accurate_fmadds={} accurate_nans={} fprf={} float_exc={} div0_exc={} disable_icache={} "
         "accurate_dcache={} fastmem={} follow_branch={} mmu={} cpu_thread={} oc={} "
         "sync_on_skip_idle={} cheats={} gpu_det={} dsp_hle={} dsp_thread={} "
         "debug={} soft_flush={} netplay={} xd_clock={} xd_clock_cfg={} xd_salt={:08x} "
-        "xd_seed={:08x} xd_period={} xd_inc={} xd_clock_v={} rev={} orrelink={}",
+        "xd_seed={:08x} xd_period={} xd_inc={} xd_clock_v={} rev={} orrelink={} proc_boot={} "
+        "ct_prev_oc={} ct_init_dc={} ct_first_adv={}",
         NetPlay::LocalCpuArch(), static_cast<int>(Config::Get(Config::MAIN_CPU_CORE)),
         ppc.GetCPUName(), ppc.GetMode() == PowerPC::CoreMode::JIT ? "jit" : "interp",
         cpu_info.bFMA ? 1 : 0, cpu_info.bAFP ? 1 : 0, Config::Get(Config::SESSION_USE_FMA) ? 1 : 0,
@@ -743,7 +753,8 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
         NetPlay::IsNetPlayRunning() ? 1 : 0, HLE_XD::IsInstalled() ? "on" : "off",
         Config::Get(Config::SESSION_XD_DETERMINISTIC_CLOCK) ? 1 : 0, HLE_XD::GetSalt(),
         HLE_XD::GetSeed(), HLE_XD::GetPeriod(), HLE_XD::DefaultIncrement(), HLE_XD::ClockModel(),
-        Common::GetScmRevGitStr(), XDNetplay::VERSION));
+        Common::GetScmRevGitStr(), XDNetplay::VERSION, GetBootSequence(),
+        boot_timing.prev_oc_factor, boot_timing.init_downcount, first_advance));
   }
 #endif
   UpdateTitle(system);

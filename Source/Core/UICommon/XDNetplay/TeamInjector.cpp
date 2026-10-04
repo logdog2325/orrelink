@@ -1464,8 +1464,14 @@ bool InjectGuestBundleToStage(const std::vector<u8>& bundle, int device, u32 ser
 
 void RecordMultiStage(u32 serial, std::optional<int> model)
 {
-  std::lock_guard lock(s_stage_mutex);
-  s_stages[serial] = model;
+  {
+    std::lock_guard lock(s_stage_mutex);
+    s_stages[serial] = model;
+  }
+#ifdef HAS_LIBMGBA
+  GBADetectLog::NoteBoot(fmt::format("multi stage serial={} model={}", serial,
+                                     model ? fmt::format("{:#x}", *model) : std::string("default")));
+#endif
 }
 
 std::optional<int> MultiStageModel(u32 serial)
@@ -1544,6 +1550,57 @@ bool WriteMultiBootSaves(const std::array<u32, 3>& seat_serials, bool host_fills
       lines.push_back(fmt::format("multi boot sock={} src={} size={} crc={:08x}", slot, source,
                                   bytes->size(), Common::ComputeCRC32(bytes->data(),
                                                                       bytes->size())));
+    }
+    for (const std::string& line : lines)
+      GBADetectLog::NoteBoot(line);
+  }
+
+  // Their stages have served; a player who left does not get theirs back.
+  DropMultiStages(room_serials);
+  return true;
+#endif
+}
+
+bool WriteWatchBootSaves(const std::array<u32, 2>& seat_serials, std::span<const u32> room_serials,
+                         std::string* error)
+{
+  const auto fail = [error](std::string message) {
+    if (error)
+      *error = std::move(message);
+    return false;
+  };
+#ifndef HAS_LIBMGBA
+  (void)seat_serials;
+  (void)room_serials;
+  return fail("this build has no GBA support");
+#else
+  // The previous game's cores write their saves back as they shut down.
+  if (!Core::IsUninitialized(Core::System::GetInstance()))
+    return fail("the last battle is still closing");
+
+  {
+    std::lock_guard lock(s_purge_mutex);
+    std::vector<std::string> lines;
+    for (size_t i = 0; i < seat_serials.size(); ++i)
+    {
+      const int slot = static_cast<int>(i) + 1;  // SI ports 2 and 3
+      const u32 serial = seat_serials[i];
+      std::vector<u8> bytes;
+      if (serial == 0 || !ReadFileBytes(MultiStagePath(serial), &bytes) || bytes.empty())
+        return fail(fmt::format("no team for GBA {}", i + 1));
+      const std::string dest = NetPlay::GetGBANetplayTempPath(slot);
+      const std::string tmp = dest + TMP_SUFFIX;
+      File::CreateFullPath(dest);
+      {
+        File::IOFile file(tmp, "wb");
+        if (!file || !file.WriteBytes(bytes.data(), bytes.size()) || !file.Flush())
+          return fail(fmt::format("could not write {}", tmp));
+      }
+      if (!File::Rename(tmp, dest))
+        return fail(fmt::format("could not write {}", dest));
+      lines.push_back(fmt::format("watch boot sock={} src=stage-{} size={} crc={:08x}", slot,
+                                  serial, bytes.size(),
+                                  Common::ComputeCRC32(bytes.data(), bytes.size())));
     }
     for (const std::string& line : lines)
       GBADetectLog::NoteBoot(line);

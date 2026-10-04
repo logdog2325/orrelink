@@ -16,6 +16,7 @@
 // inside callback:
 //   ScheduleEvent(periodInCycles - cyclesLate, callback, "whatever")
 
+#include <limits>
 #include <mutex>
 #include <string>
 #include <tuple>
@@ -45,7 +46,7 @@ struct Globals
   int slice_length = 0;
   u64 fake_TB_start_value = 0;
   u64 fake_TB_start_ticks = 0;
-  float last_OC_factor_inverted = 0.0f;
+  float last_OC_factor_inverted = 1.0f;
 };
 
 using TimedCallback =
@@ -175,6 +176,22 @@ public:
 
   bool UseSyncOnSkipIdle() const;
 
+  // OrreLink boot diagnostics, read once for the cpu line in gba_detect logs: the factor left over
+  // from the previous session in this process (1 in a fresh process), the
+  // first slice's downcount, and the cycles the first Advance credited (BOOT_ADVANCE_PENDING until
+  // it runs). Every boot must show the same init downcount and first_advance=0.
+  static constexpr s64 BOOT_ADVANCE_PENDING = std::numeric_limits<s64>::min();
+  struct BootTiming
+  {
+    float prev_oc_factor;
+    int init_downcount;
+    s64 first_advance;
+  };
+  BootTiming GetBootTiming() const
+  {
+    return {m_boot_prev_oc_factor, m_boot_init_downcount, m_boot_first_advance};
+  }
+
 private:
   Globals m_globals;
 
@@ -197,7 +214,13 @@ private:
   // The time value of each Event here is a cycles_into_future value.
   Common::SPSCQueue<Event> m_ts_queue;
 
-  float m_last_oc_factor = 0.0f;
+  float m_last_oc_factor = 1.0f;
+
+  // OrreLink boot diagnostics (the cpu line in gba_detect logs). Not emulation state: never saved
+  // or synced.
+  float m_boot_prev_oc_factor = 1.0f;
+  int m_boot_init_downcount = 0;
+  s64 m_boot_first_advance = BOOT_ADVANCE_PENDING;
 
   s64 m_idled_cycles = 0;
   u32 m_fake_dec_start_value = 0;

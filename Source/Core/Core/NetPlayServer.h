@@ -51,6 +51,10 @@ struct XdStartClaim
   // and 4 and the host (serial 0) Seat 2; otherwise an empty Seat 2 is the host and an empty
   // Seat 3 or 4 repeats the other one.
   bool multi = false;
+  // A 1v1 room whose host ticked Watch only: opponent stays 0 and the slot fields unused; seats[0]
+  // and seats[1] are SI ports 2 and 3, filled like a Multi room's (staged teams, boot copies). The
+  // host keeps port 1, XD's menus.
+  bool host_watching = false;
   struct Seat
   {
     PlayerId pid = 0;
@@ -152,6 +156,9 @@ public:
   bool IsGameRunning() const { return m_is_running.load(); }
   // XD Netplay: the room's format is Multi (four seats). Any thread.
   bool IsXdMultiRoom() const { return m_xd_room_format.load() == XD_FORMAT_MULTI; }
+  // XD Netplay: a 1v1 room whose host ticked Watch only (two joiners play GBA 1 and GBA 2).
+  // Takes m_crit.players.
+  bool IsXdHostWatching();
   // Host UI thread.
   bool IsHostInputAuthority() const { return m_host_input_authority; }
   // A Multi start needs the recompilers kept (single core, XD clock in a mixed room); the
@@ -321,9 +328,11 @@ private:
   bool XdSlotStaleLocked(PlayerId opponent) const;
   bool ResetXdSlotLocked(bool announce);
   bool XdStartPlayerLeft();
-  // The ports a room seats joiners on: {3} in 1v1, {2, 3, 4} in Multi. Caller holds
-  // m_crit.players, or is the NETPLAY thread.
+  // The ports a room seats joiners on: {3} in 1v1, {2, 3} in a 1v1 room whose host watches,
+  // {2, 3, 4} in Multi. Caller holds m_crit.players, or is the NETPLAY thread.
   std::vector<u8> XdSeatPorts() const;
+  // A 1v1 room whose host ticked Watch only. Same locking as XdSeatPorts.
+  bool XdHostWatchingLocked() const;
   PlayerId XdSeatHolderLocked(u8 port) const;
   // ---NETPLAY--- thread, under m_crit.players: unseat watchers and players on ports the room no
   // longer uses, then fill each open port with the earliest in line. In a Multi room nothing moves
@@ -449,6 +458,9 @@ private:
   // host's own data is there, and that player's name for the "cleared" line.
   std::atomic<u32> m_xd_slot_owner{0};
   std::string m_xd_slot_owner_name;
+  // An m_xd_slot_owner that matches no connection: the slot holds a team nobody may play (the host
+  // switched between playing and watching), so it reads stale and is reset before its next use.
+  static constexpr u32 XD_SLOT_OWNER_ORPHANED = 0xFFFFFFFF;
   // The room's battle format (GetXdRoomFormat). Written only by SetXdFormat under
   // m_xd_seat_mutex; read anywhere. OnConnect sends it to each joiner, and SetXdFormat's broadcast
   // queues behind that on the NETPLAY thread, so every player ends on the latest value.
@@ -461,6 +473,8 @@ private:
   // Set by every XD claim: the claimed start is a Multi start. SetupNetSettings copies it into
   // xd_multi_p1.
   std::atomic<bool> m_xd_multi_start{false};
+  // The same for a 1v1 start whose host watches: SetupNetSettings sets xd_boot_copies for it.
+  std::atomic<bool> m_xd_watch_start{false};
   // The running game's xd_multi_p1, for the pad relays on the NETPLAY thread (the only field of
   // m_settings they read, so they never race SetupNetSettings on the GUI thread).
   std::atomic<bool> m_xd_multi_wire{false};
