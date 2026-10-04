@@ -368,6 +368,11 @@ void DropAllMultiStages();
 // boots from a half-written set (the caller scrubs).
 bool WriteMultiBootSaves(const std::array<u32, 3>& seat_serials, bool host_fills_seat2,
                          std::span<const u32> room_serials, std::string* error);
+// The same for a 1v1 start whose host watches: NetPlayTemp2 and NetPlayTemp3 (SI ports 2 and 3,
+// GBA 1 and GBA 2) from the stages of seat_serials[0] and seat_serials[1]; the host's own saves
+// are not read. Then drops the stages of serials not in room_serials.
+bool WriteWatchBootSaves(const std::array<u32, 2>& seat_serials, std::span<const u32> room_serials,
+                         std::string* error);
 // Scrubs and deletes NetPlayTemp1..4.
 void ScrubMultiBootSaves();
 // Scrub the boot copies once emulation next reaches Uninitialized (the game

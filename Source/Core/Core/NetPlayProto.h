@@ -167,6 +167,10 @@ struct NetSettings
   // port's control byte in analogA/analogB (see PadTravelsAsGba and HW/SI/XDMultiCtl.h).
   // Serialized LAST in StartGame, after xd_rng_seed.
   bool xd_multi_p1 = false;
+  // The GBAs boot from the host's boot copies on every machine, the host's included (a Multi
+  // start, or a 1v1 start whose host watches; NetPlay::GetGBASavePath). Serialized LAST in
+  // StartGame, after xd_multi_p1.
+  bool xd_boot_copies = false;
 
   Sram sram;
 
@@ -298,6 +302,10 @@ enum class XdNoticeKind : u8
   // Server -> clients only, who = 0: a Multi battle's worst route needs more input delay than the
   // cap (once per game, mid-battle; the copy before the boot goes out as a plain chat line).
   DelayAtLimit = 5,
+  // A Multi battle started. arg: the four battle slots' SI ports, 2 bits each (port - 1), slot 0
+  // in the low bits; slots 0-1 are one team. Sent only by the port-1 owner; every client names the
+  // teams in its chat.
+  MultiSides = 6,
 };
 
 enum class ConnectionError : u8
@@ -379,5 +387,8 @@ void ReportGbaStartFailure(int port);
 // `port`, a fixed point in the game's own code on every machine. CPU thread, from the GBA device;
 // takes crit_netplay_client, like IsCurrentGameCore.
 void ReportXdStateSample(int port, u32 write_count, const HLE_XD::XdDigest& digest);
+// A Multi battle started with these teams (XdNoticeKind::MultiSides packing). CPU thread, from the
+// port-1 device of the machine that owns it; takes crit_netplay_client, like IsCurrentGameCore.
+void ReportXdMultiSides(u8 packed);
 int NumLocalWiimotes();
 }  // namespace NetPlay

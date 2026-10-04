@@ -5,6 +5,7 @@
 
 #include <mutex>
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <span>
 #include <string>
@@ -91,6 +92,23 @@ constexpr u32 MODEL_ARM_P1_LINE = 0x041FFF60;  // 32-bit write: li r3, id @ 0x80
 constexpr u32 MODEL_ARM_P2_LINE = 0x041FFF68;  // 32-bit write: li r3, id @ 0x801FFF68
 constexpr u32 PPC_LI_R3 = 0x38600000;      // li r3, 0 -- the id occupies the low byte
 
+// Multi (four seats). XD keeps one staging record per SI port (record k = port k+1, 0x1320 bytes
+// apart from 0x8042E690; the handshake fills its TID u16 at +0 from that GBA's save: 0x138D +
+// gender for Emerald), and battle setup copies them into the four battle slots in the picked
+// combination's order (A_k = staging[perm[k]], 0x8004DA28) before it registers the slots' TIDs.
+// So a pin on a staging TID follows its player into whatever slot the combination gives them.
+// The battle slots themselves are NOT pinned: a slot pin could land between that copy and the
+// registration and dress the wrong player under combination 1 or 2.
+// Every seat's TID must stay one of the six GBA TIDs 0x1389..0x138E: only those route a trainer's
+// input to its GBA (classes 2/3, 0x801FFFD8 and 0x801FD36C). The switch arm of TID 0x1389 + j is
+// at 0x801FFF40 + 8j (vanilla li r3, 9 - j: the six GBA player models).
+constexpr u32 MULTI_STAGING_TID_LINE = 0x0242E690;  // 16-bit write, + k * MULTI_RECORD_STRIDE
+constexpr u32 MULTI_RECORD_STRIDE = 0x1320;
+constexpr u32 MODEL_ARM_BASE_LINE = 0x041FFF40;  // 32-bit write, + 8 * (tid - GBA_TID_FIRST)
+constexpr u16 GBA_TID_FIRST = 0x1389;
+constexpr u16 GBA_TID_COUNT = 6;
+constexpr u16 EMERALD_NATURAL_TID = 0x138D;  // + save gender
+
 // Model id -> the virtual TID whose switch arm yields it natively (the six
 // GBA player models; everything else needs the Tier-2 arm patch).
 constexpr u16 GbaModelTid(int model_id)
@@ -105,6 +123,17 @@ constexpr u16 GbaModelTid(int model_id)
   case 0x04: return 0x138E;  // May (Emerald)
   default: return 0;
   }
+}
+
+// The model a GBA TID's switch arm yields when it is not patched (0 for any other TID).
+constexpr int GbaTidModel(u16 tid)
+{
+  for (int model = 0x04; model <= 0x09; model++)
+  {
+    if (GbaModelTid(model) == tid)
+      return model;
+  }
+  return 0;
 }
 
 // Pre-battle bust remap (the connection-screen close-up). The bust never
@@ -316,7 +345,7 @@ constexpr StyleOption MODELS[] = {
     {0x1B, "Newscaster", Tier::Experimental},
     {0x29, "Eagun", Tier::Experimental},
     {0x2A, "Robo Groudon (Chobin)", Tier::Experimental},
-    {0x40, "Professor Krane", Tier::Experimental},
+    {0x40, "Cipher Peon holding Professor Krane", Tier::Experimental},
     {0x41, "Grand Master Greevil (robed)", Tier::Experimental},
 };
 
@@ -351,13 +380,15 @@ constexpr StyleOption MODELS[] = {
 // with none of the guarantees.
 constexpr int MUSIC_SILENT_ID = 0x10000;
 
+// The story battle themes are named by who the game itself plays them against (common.rel's
+// battle records against DeckData_Story's trainer models): 1127 every ordinary trainer, 1128 every
+// Cipher Peon, 1407 the Cipher Admins and Gonzap. 1316 (stm_bgm_XD_battle8) no story battle uses.
 constexpr StyleOption MUSICS[] = {
     {MUSIC_SILENT_ID, "No music (silent battle)", Tier::TestedSafe},
-    {1316, "XD Battle 8 (Cipher)", Tier::TestedSafe},
-    {1413, "XD Battle 0", Tier::TestedSafe},
-    {1127, "XD Battle 01", Tier::TestedSafe},
-    {1128, "XD Battle 02", Tier::TestedSafe},
-    {1407, "XD Battle 03", Tier::TestedSafe},
+    {1316, "XD Battle 8", Tier::TestedSafe},
+    {1127, "Trainer Battle", Tier::TestedSafe},
+    {1128, "Cipher Peon Battle", Tier::TestedSafe},
+    {1407, "Cipher Admin Battle", Tier::TestedSafe},
     {1318, "Colosseum Round 1", Tier::TestedSafe},
     {1319, "Colosseum Round 2", Tier::TestedSafe},
     {1320, "Colosseum Round 3", Tier::TestedSafe},
@@ -376,7 +407,8 @@ constexpr StyleOption MUSICS[] = {
     {1068, "Mt. Battle", Tier::TestedSafe},
     {1370, "Gateon Port 2", Tier::TestedSafe},
     {1485, "Battle Now 2", Tier::TestedSafe},
-    {1132, "Mecha Theme 1", Tier::TestedSafe},
+    {1132, "Greevil Encounter", Tier::TestedSafe},
+    {1088, "Miror B. Theme", Tier::TestedSafe},
     // Looping non-battle BGM (locations, themes, menus).
     {1075, "Pokemon Center", Tier::Experimental},
     {1070, "Gateon Port", Tier::Experimental},
@@ -387,9 +419,8 @@ constexpr StyleOption MUSICS[] = {
     {1409, "Cipher Lab", Tier::Experimental},
     {1129, "Purify Chamber", Tier::Experimental},
     {1468, "Orre Colosseum Lobby", Tier::Experimental},
-    {1088, "Miror B. Theme", Tier::Experimental},
     {1471, "Greevil Theme", Tier::Experimental},
-    {1486, "Hexagon Bros", Tier::Experimental},
+    {1486, "Gonzap Theme", Tier::Experimental},
     {1362, "Lugia Theme", Tier::Experimental},
     {1419, "Title Theme", Tier::Experimental},
     {1266, "Battle Now Menu", Tier::Experimental},
@@ -408,18 +439,19 @@ constexpr StyleOption MUSICS[] = {
     {1384, "Music Player 2", Tier::Experimental},
     {1067, "Darkside 4", Tier::Experimental},
     {1074, "Darkside", Tier::Experimental},
-    {1071, "Stand Theme", Tier::Experimental},
+    {1071, "Outskirt Stand", Tier::Experimental},
     {1072, "Saint Theme", Tier::Experimental},
-    // Looping event (ev_*) streams; stems only, names pending the listening
-    // pass like everything above.
+    // Looping event (ev_*) streams. Named from the game's own stream file names where those say
+    // what the scene is (stm_bgm_ev_6brothers, stm_bgm_ev_mechagradon, stm_bgm_relive_ceremony);
+    // the rest keep their id until someone has listened to them.
     {1130, "Event Theme 1130", Tier::Experimental},
-    {1297, "Event Theme 1297", Tier::Experimental},
+    {1297, "Robo Groudon Event", Tier::Experimental},
     {1361, "Event Theme 1361", Tier::Experimental},
     {1363, "Event Theme 1363", Tier::Experimental},
     {1391, "Event Theme 1391", Tier::Experimental},
-    {1408, "Event Theme 1408", Tier::Experimental},
+    {1408, "Hexagon Bros", Tier::Experimental},
     {1411, "Event Theme 1411", Tier::Experimental},
-    {1448, "Event Theme 1448", Tier::Experimental},
+    {1448, "Purification Ceremony", Tier::Experimental},
     {1449, "Event Theme 1449", Tier::Experimental},
     {1450, "Event Theme 1450", Tier::Experimental},
     {1469, "Event Theme 1469", Tier::Experimental},
@@ -452,6 +484,7 @@ constexpr StyleOption VENUES[] = {
     {53, "HQ Lab grounds", Tier::TestedSafe},
     {57, "Rock Pokespot", Tier::TestedSafe},
     {7, "Phenac City streets", Tier::TestedSafe},
+    {23, "Mt. Battle clouds", Tier::TestedSafe},
     // Colosseums outside the retail VS pool.
     {35, "Phenac Colosseum", Tier::Experimental},
     {39, "Orre Colosseum", Tier::Experimental},
@@ -474,7 +507,6 @@ constexpr StyleOption VENUES[] = {
     {20, "Mt. Battle lobby", Tier::Experimental},
     {21, "Mt. Battle valley", Tier::Experimental},
     {22, "Mt. Battle magma zone", Tier::Experimental},
-    {23, "Mt. Battle clouds", Tier::Experimental},
     {42, "S.S. Libra deck", Tier::Experimental},
     {24, "Realgam dome", Tier::Experimental},
     {25, "Realgam Tower hall", Tier::Experimental},
@@ -551,6 +583,17 @@ void AppendLine(std::string* block, u32 addr_word, u32 value_word)
   if (!block->empty())
     block->push_back('\n');
   *block += fmt::format("{:08X} {:08X}", addr_word, value_word);
+}
+
+// Hide one bust class's two widgets (all five language sub-records): the same lines as
+// GenerateCodeBlock's hide.
+void AppendBustHide(std::string* block, int bust_class)
+{
+  for (u32 m = 0; m < 5; m++)
+  {
+    AppendLine(block, BustWhWordAddr(BUST_WIDGET_A[bust_class], m), 0);
+    AppendLine(block, BustWhWordAddr(BUST_WIDGET_B[bust_class], m), 0);
+  }
 }
 
 // Remove every line of ours from a section's line list. For [ActionReplay]
@@ -838,6 +881,132 @@ std::string GenerateCodeBlock(std::optional<int> p1_model, std::optional<int> p2
   return block;
 }
 
+std::string GenerateMultiModelLines(const SeatLooks& looks)
+{
+  std::array<bool, 4> picked{};
+  bool any_pick = false;
+  bool genders_known = true;
+  for (size_t k = 0; k < looks.size(); ++k)
+  {
+    picked[k] = looks[k].model && IsValidModelId(*looks[k].model);
+    any_pick |= picked[k];
+    genders_known &= looks[k].gender == 0 || looks[k].gender == 1;
+  }
+  const auto pick_text = [&](size_t k) {
+    if (picked[k])
+      return fmt::format("{:#x}", *looks[k].model);
+    return std::string(looks[k].model ? "invalid" : "default");
+  };
+  if (!any_pick || !genders_known)
+  {
+    for (size_t k = 0; k < looks.size(); ++k)
+    {
+      LogNote(fmt::format("battlestyle multi seat={} pick={} gender={}", k + 1, pick_text(k),
+                          looks[k].gender));
+    }
+    LogNote(fmt::format("battlestyle multi models=off reason={}",
+                        !any_pick ? "no-picks" : "save-unreadable"));
+    return {};
+  }
+
+  // What each port wears: its pick, else its save's own trainer (Brendan or May, Emerald).
+  std::array<u16, 4> natural{};
+  std::array<int, 4> want{};
+  for (size_t k = 0; k < looks.size(); ++k)
+  {
+    natural[k] = static_cast<u16>(EMERALD_NATURAL_TID + looks[k].gender);
+    want[k] = picked[k] ? *looks[k].model : GbaTidModel(natural[k]);
+  }
+
+  // 1. A GBA player model keeps its own TID (seats wearing the same one share it).
+  std::array<u16, 4> tid{};
+  std::array<bool, GBA_TID_COUNT> claimed{};
+  std::array<int, GBA_TID_COUNT> arm_model{};
+  for (size_t k = 0; k < looks.size(); ++k)
+  {
+    if (const u16 own = GbaModelTid(want[k]); own != 0)
+    {
+      tid[k] = own;
+      claimed[own - GBA_TID_FIRST] = true;
+    }
+  }
+  // 2. Any other model shares an earlier seat's TID for the same model, else borrows a TID whose
+  // own model nobody wears, of the same kind as the save (male 0x1389/8B/8D, female 0x138A/8C/8E)
+  // when one is free, and that TID's arm is patched to the model. Six TIDs always cover four seats.
+  for (size_t k = 0; k < looks.size(); ++k)
+  {
+    if (tid[k] != 0)
+      continue;
+    for (size_t j = 0; j < k; ++j)
+    {
+      if (want[j] == want[k])
+      {
+        tid[k] = tid[j];
+        break;
+      }
+    }
+    if (tid[k] != 0)
+      continue;
+    const u16 kind = natural[k] & 1;  // 0x1389, 0x138B, 0x138D are odd: male
+    std::optional<u16> free_tid;
+    for (u16 i = 0; i < GBA_TID_COUNT && !free_tid; ++i)
+    {
+      if (!claimed[i] && ((GBA_TID_FIRST + i) & 1) == kind)
+        free_tid = static_cast<u16>(GBA_TID_FIRST + i);
+    }
+    for (u16 i = 0; i < GBA_TID_COUNT && !free_tid; ++i)
+    {
+      if (!claimed[i])
+        free_tid = static_cast<u16>(GBA_TID_FIRST + i);
+    }
+    if (!free_tid)
+    {
+      LogNote("battlestyle multi models=off reason=no-free-tid");
+      return {};
+    }
+    tid[k] = *free_tid;
+    claimed[*free_tid - GBA_TID_FIRST] = true;
+    arm_model[*free_tid - GBA_TID_FIRST] = want[k];
+  }
+
+  // Every port is pinned once any seat has a pick, so no save's own TID can land on a patched arm.
+  std::string block;
+  for (size_t k = 0; k < looks.size(); ++k)
+    AppendLine(&block, MULTI_STAGING_TID_LINE + static_cast<u32>(k) * MULTI_RECORD_STRIDE, tid[k]);
+  for (u16 i = 0; i < GBA_TID_COUNT; ++i)
+  {
+    if (arm_model[i] != 0)
+    {
+      AppendLine(&block, MODEL_ARM_BASE_LINE + 8u * i,
+                 PPC_LI_R3 | (static_cast<u32>(arm_model[i]) & 0xFF));
+    }
+  }
+  // Connection-screen busts are per class, not per seat (class 5 Emerald male, 6 Emerald female:
+  // the class comes from the save, and a TID pin never moves it). A class is hidden when any seat
+  // of that class wears something other than the class's own trainer.
+  for (const int bust_class : {5, 6})
+  {
+    const u16 class_tid = static_cast<u16>(EMERALD_NATURAL_TID + (bust_class - 5));
+    bool hide = false;
+    for (size_t k = 0; k < looks.size(); ++k)
+      hide |= natural[k] == class_tid && want[k] != GbaTidModel(class_tid);
+    if (hide)
+      AppendBustHide(&block, bust_class);
+  }
+
+  for (size_t k = 0; k < looks.size(); ++k)
+  {
+    const u16 i = static_cast<u16>(tid[k] - GBA_TID_FIRST);
+    LogNote(fmt::format("battlestyle multi seat={} pick={} gender={} natural={:#x} tid={:#x} "
+                        "arm={}",
+                        k + 1, pick_text(k), looks[k].gender, natural[k], tid[k],
+                        arm_model[i] != 0 ? fmt::format("{:#x}", arm_model[i]) :
+                                            std::string("-")));
+  }
+  LogNote("battlestyle multi models=on");
+  return block;
+}
+
 // The community formats' in-game rulesets, pinned into Custom 1. Design:
 // instead of pinning individual clause bytes -- several of whose meanings are
 // unverified -- the WHOLE 144-byte slot is written with one of the game's own
@@ -967,13 +1136,12 @@ static std::string TimerSummary()
 }
 
 // Multi (layout 3, XD's "GBA + GBA VS GBA + GBA"): the menu globals. Layout 3 is the four-GBA
-// tag layout (>= 2 forces tag at commit); pairing 0 is the seat order the layout table pairs as
-// ports {1,2} vs {3,4}; rules Custom 1 as for the 1v1 formats. Like every line here the pairing
-// is written each frame, so in phase 1 the sides are fixed by seat: if XD's post-battle "change
-// combination" edits this word (test S1c), the pin puts it back before the next battle.
+// tag layout (>= 2 forces tag at commit); rules Custom 1 as for the 1v1 formats. The team
+// combination (0x804349E4) is NOT pinned (1.7.6 pinned it to 0, so the picker snapped back): XD's
+// picker (state 0xAC, after the team preview) resets it to option 0 on each visit and moves it on
+// synced input, so every machine picks the same teams.
 constexpr u32 MULTI_MENU_GLOBAL_LINES[][2] = {
     {0x044349EC, 0x00000003},  // player layout = GBA + GBA VS GBA + GBA
-    {0x044349E4, 0x00000000},  // pairing
     {0x044349FC, 0x00000003},  // rules choice = Custom 1
 };
 // The optional preview-cancel pin (MAIN_XD_MULTI_PREVIEW_CANCEL_PIN): at 0x80079B64..7C the team
@@ -1162,23 +1330,55 @@ void SetGuestModel(std::optional<int> id)
 // 0 when it cannot be determined (no ROM, unreadable save, FRLG-refused build,
 // non-mgba build). Same ROM fallback as TeamInjector: the socket's own ROM,
 // then the other socket's.
-static int SaveBustClass(int device)
-{
 #ifdef HAS_LIBMGBA
+static std::optional<EmeraldSave> ReadSaveFile(const std::string& path)
+{
+  File::IOFile file(path, "rb");
+  if (!file)
+    return std::nullopt;
+  std::vector<u8> bytes(file.GetSize());
+  if (!file.ReadBytes(bytes.data(), bytes.size()))
+    return std::nullopt;
+  std::string error;
+  return EmeraldSave::Create(std::move(bytes), &error);
+}
+
+// The save path GBA port |device|+1 uses, with TeamInjector's ROM fallback (the socket's own ROM,
+// then the other socket's), or "" when no ROM is set up.
+static std::string SocketSavePath(int device)
+{
   std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device]);
   if (rom.empty() || !File::Exists(rom))
     rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[device == 1 ? 2 : 1]);
   if (rom.empty() || !File::Exists(rom))
+    return {};
+  return HW::GBA::Core::GetSavePath(rom, device);
+}
+#endif
+
+int SaveFileGender(const std::string& path)
+{
+#ifdef HAS_LIBMGBA
+  if (path.empty())
+    return -1;
+  const auto save = ReadSaveFile(path);
+  if (!save)
+    return -1;
+  const u32 gender = save->GetTrainerGender();
+  return gender <= 1 ? static_cast<int>(gender) : -1;
+#else
+  (void)path;
+  return -1;
+#endif
+}
+
+static int SaveBustClass(int device)
+{
+#ifdef HAS_LIBMGBA
+  const std::string path = SocketSavePath(device);
+  if (path.empty())
     return 0;
-  const std::string path = HW::GBA::Core::GetSavePath(rom, device);
-  File::IOFile file(path, "rb");
-  if (!file)
-    return 0;
-  std::vector<u8> bytes(file.GetSize());
-  if (!file.ReadBytes(bytes.data(), bytes.size()))
-    return 0;
-  std::string error;
-  const auto save = EmeraldSave::Create(std::move(bytes), &error);
+  const auto save = ReadSaveFile(path);
   if (!save)
     return 0;
   const u32 gender = save->GetTrainerGender();
@@ -1200,33 +1400,90 @@ static int SaveBustClass(int device)
 #endif
 }
 
+// A solo Multi boot: "Your model" for port 1 and the MultiSoloModels tester key ("2B,16,41") for
+// ports 2-4, each port's gender from its own save.
+static SeatLooks SoloMultiLooks()
+{
+  SeatLooks looks;
+  if (const int own = Config::Get(Config::MAIN_XD_STYLE_HOST_MODEL); own > 0)
+    looks[0].model = own;
+  const std::vector<std::string> fields =
+      SplitString(Config::Get(Config::MAIN_XD_MULTI_SOLO_MODELS), ',');
+  for (size_t i = 0; i < fields.size() && i < 3; ++i)
+  {
+    u32 id = 0;
+    const std::string field(StripWhitespace(fields[i]));
+    if (!field.empty() && TryParse(field, &id, 16) && id > 0)
+      looks[i + 1].model = static_cast<int>(id);
+  }
+#ifdef HAS_LIBMGBA
+  for (int k = 0; k < 4; ++k)
+  {
+    std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[k]);
+    if (rom.empty() || !File::Exists(rom))
+      rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+    if (!rom.empty() && File::Exists(rom))
+      looks[k].gender = SaveFileGender(HW::GBA::Core::GetSavePath(rom, k));
+  }
+#endif
+  return looks;
+}
+
 bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
-                   bool include_format_rules, StartKind kind)
+                   bool include_format_rules, StartKind kind, const SeatLooks* looks)
 {
   const bool multi = kind == StartKind::Multi;
+  // A 1v1 start whose host watches: GBA 1 and GBA 2 are two joiners, each wearing its own pick
+  // (looks[1] and looks[2], SI ports 2 and 3) and nobody's fallback.
+  const bool watch = !multi && looks != nullptr;
   // Guest stash (already validated) wins over the host's fallback dropdown --
-  // the same precedence the socket-3 team fallback uses. A Multi block has no
-  // model lines: each seat wears its own save's model.
+  // the same precedence the socket-3 team fallback uses. A Multi block takes
+  // its models from `looks` instead (GenerateMultiModelLines).
   std::optional<int> guest_model;
-  if (!multi)
+  if (!multi && !watch)
   {
     std::lock_guard lock(s_mutex);
     guest_model = s_guest_model;
   }
   const bool guest_submitted = guest_model.has_value();
-  if (!guest_model && !multi)
+  if (!guest_model && !multi && !watch)
     guest_model = sel.guest_model_fallback > 0 ? std::optional<int>(sel.guest_model_fallback) :
                                                  std::nullopt;
-  const std::optional<int> host_model =
-      !multi && sel.host_model > 0 ? std::optional<int>(sel.host_model) : std::nullopt;
+  std::optional<int> host_model =
+      !multi && !watch && sel.host_model > 0 ? std::optional<int>(sel.host_model) : std::nullopt;
+  if (watch)
+  {
+    const auto valid_pick = [](std::optional<int> id) {
+      return id && IsValidModelId(*id) ? id : std::nullopt;
+    };
+    host_model = valid_pick((*looks)[1].model);
+    guest_model = valid_pick((*looks)[2].model);
+    // An unpicked side next to a picked one is pinned too (GenerateCodeBlock's collision rule), to
+    // its save's own Emerald trainer rather than the bundled template's gender.
+    const auto own_trainer = [](int gender) {
+      return gender == 0 ? std::optional<int>(0x05) :
+             gender == 1 ? std::optional<int>(0x04) :
+                           std::nullopt;
+    };
+    if (host_model && !guest_model)
+      guest_model = own_trainer((*looks)[2].gender);
+    if (guest_model && !host_model)
+      host_model = own_trainer((*looks)[1].gender);
+  }
+  // An Emerald boot copy's bust class: 5 male, 6 female (0 = unknown).
+  const auto look_class = [&](size_t port_index) {
+    const int gender = (*looks)[port_index].gender;
+    return gender == 0 || gender == 1 ? 5 + gender : 0;
+  };
 
   // Side mapping (host -> "Player" block, guest -> "Opponent" line) is the
   // expected orientation; if the one-time emulator test shows it reversed,
   // swap the first two arguments HERE only.
   // A format rules-pin implies GBA-vs-GBA, where the preview's default
   // protagonist busts are always wrong -- have the block hide them.
-  // A Multi block always hides the class-0 bust and always skips the preview drawer (no side's
-  // TID is pinned, so no preview head can be right).
+  // A Multi block always hides the class-0 bust and always skips the preview drawer: the
+  // four-slot preview has art only for the GBA player models and Michael, and it reads the battle
+  // slots, which a Multi model pick never pins.
   const bool format_pinned =
       multi ||
       (include_format_rules && FormatRules::HasTeamRules(Config::Get(Config::MAIN_XD_FORMAT)) &&
@@ -1234,7 +1491,18 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
   std::string block = GenerateCodeBlock(
       host_model, guest_model, sel.music > 0 ? std::optional<int>(sel.music) : std::nullopt,
       sel.venue > 0 ? std::optional<int>(sel.venue) : std::nullopt,
-      multi ? 0 : SaveBustClass(1), multi ? 0 : SaveBustClass(2), format_pinned);
+      multi ? 0 : watch ? look_class(1) : SaveBustClass(1),
+      multi ? 0 : watch ? look_class(2) : SaveBustClass(2), format_pinned);
+  // Multi: the four seats' trainer models (none when no seat picked one).
+  if (multi && looks)
+  {
+    if (const std::string model_lines = GenerateMultiModelLines(*looks); !model_lines.empty())
+    {
+      if (!block.empty())
+        block.push_back('\n');
+      block += model_lines;
+    }
+  }
   // FORMAT seam: FormatRuleLines() contributes the picked format's in-game
   // rule pins (menu globals, battle type, Custom-1 ruleset); Free/OU return
   // "" and an all-default session stays byte-for-byte stock.
@@ -1255,10 +1523,12 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
   {
     const auto id_or = [](std::optional<int> v) { return v ? fmt::format("{:#x}", *v) : std::string{"default"}; };
     LogNote(fmt::format(
-        "battlestyle sel{} host_model={} guest_model={}{} music={} venue={} -> block={} "
-        "ou_disable={}",
-        multi ? " multi=1" : "", id_or(host_model),
-        id_or(guest_model), guest_submitted ? " (guest pick)" : "",
+        "battlestyle sel{} music={} venue={} -> block={} ou_disable={}",
+        multi ? std::string(" multi=1 models=per-seat") :
+        watch ? fmt::format(" watch=1 gba1_model={} gba2_model={}", id_or(host_model),
+                            id_or(guest_model)) :
+                fmt::format(" host_model={} guest_model={}{}", id_or(host_model),
+                            id_or(guest_model), guest_submitted ? " (guest pick)" : ""),
         // Validity, not just non-zero: a stored pick that left the catalog
         // (curated-out music, say) generates NO lines, and the log claiming it
         // was live sent a whole debugging session sideways once.
@@ -1375,14 +1645,15 @@ bool RegenerateIni(const Selection& sel, bool ou_enabled, std::string* status,
   return saved;
 }
 
-bool RegenerateFromConfig(std::string* status, StartKind kind)
+bool RegenerateFromConfig(std::string* status, StartKind kind, const SeatLooks* looks)
 {
   // The OU choice is the Format dropdown now (the old standalone toggle is
   // gone), so it reads straight from the format key -- PrepareForStart's
   // cheats reconciliation can no longer distort it, however many Starts a
   // room sees.
   const bool ou_enabled = Config::Get(Config::MAIN_XD_FORMAT) == FormatRules::FORMAT_OU;
-  return RegenerateIni(ConfigSelection(), ou_enabled, status, /*include_format_rules=*/true, kind);
+  return RegenerateIni(ConfigSelection(), ou_enabled, status, /*include_format_rules=*/true, kind,
+                       looks);
 }
 
 // ---------------------------------------------------------------------------
@@ -1480,7 +1751,7 @@ void BeginLiveStyleForStart()
   s_live_venue = -1;
 }
 
-void PrepareForStart(StartKind kind)
+void PrepareForStart(StartKind kind, const SeatLooks* looks)
 {
 
   // Solo boots have no room-closed event, so their cleanup rides the emulation
@@ -1507,7 +1778,14 @@ void PrepareForStart(StartKind kind)
     });
   });
 
-  RegenerateFromConfig(nullptr, kind);
+  // A solo Multi boot has no room to collect picks from (see SoloMultiLooks).
+  std::optional<SeatLooks> solo_looks;
+  if (kind == StartKind::Multi && !looks)
+  {
+    solo_looks = SoloMultiLooks();
+    looks = &*solo_looks;
+  }
+  RegenerateFromConfig(nullptr, kind, looks);
 
   bool active;
   {
