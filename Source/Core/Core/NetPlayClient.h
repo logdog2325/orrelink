@@ -60,12 +60,15 @@ enum class XdRole : u8
 };
 
 // XD Netplay: a player's seat from the last XdSeats. seat: 1 for the host in a Multi room, 2-4 for
-// a seated joiner there, 3 for the 1v1 opponent, 0 otherwise. team_in: the seat has a team ready.
+// a seated joiner there, 3 for the 1v1 opponent, 2 or 3 (SI port; GBA 1 or GBA 2) for a joiner
+// seated in a 1v1 room whose host watches (role Seated), 0 otherwise. team_in: the seat has a team
+// ready. watching: the host of a 1v1 room ticked Watch only.
 struct XdSeatInfo
 {
   XdRole role = XdRole::Unknown;
   u8 seat = 0;
   bool team_in = false;
+  bool watching = false;
 };
 
 // XD Netplay, host side: where a joiner's TeamData goes. 1v1: the GBA 2 slot (device 2,
@@ -217,6 +220,9 @@ public:
   XdSeatInfo GetXdSeatInfo(PlayerId pid);
   // The last XdSeats was a Multi room's. Takes m_crit.players.
   bool IsXdMultiSeats();
+  // The last XdSeats was a 1v1 room's whose host watches (joiners play GBA 1 and GBA 2). Takes
+  // m_crit.players.
+  bool IsXdHostWatching();
   // XD Netplay: the room's battle format (a FormatRules id) from the server's last XdFormat, or
   // nullopt before the first one. Display only. Takes m_crit.players.
   std::optional<int> GetXdRoomFormat();
@@ -295,6 +301,8 @@ public:
   // A GBA core of this game did not start on this machine (SI port 0-3). The emulation thread,
   // under crit_netplay_client (NetPlay::ReportGbaStartFailure).
   void OnLocalGbaStartFailed(int port);
+  // A Multi battle started on this machine, the port-1 owner (NetPlay::ReportXdMultiSides).
+  void OnLocalMultiSides(u8 packed);
 
   const PadMappingArray& GetPadMapping() const;
   const GBAConfigArray& GetGBAConfig() const;
@@ -551,6 +559,7 @@ private:
   // have a team in.
   std::array<PlayerId, 3> m_xd_seats{};
   bool m_xd_multi = false;
+  bool m_xd_host_watching = false;
   u8 m_xd_team_bits = 0;
   bool m_xd_seats_known = false;
   // XD Netplay: the room's format from the last XdFormat, guarded by m_crit.players.

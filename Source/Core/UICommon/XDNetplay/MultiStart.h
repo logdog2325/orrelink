@@ -39,6 +39,13 @@ MultiStartOutcome PrepareMultiStart(NetPlay::NetPlayServer& server,
 // The Start line for the room chat (it names the team preview's B, which cancels for everyone
 // unless the preview-cancel pin is on).
 std::string MultiStartChatLine();
+// The same as PrepareMultiStart for a 1v1 room whose host watches (claim.host_watching): GBA 1
+// and GBA 2 are the two seated joiners' staged teams, written to boot copies every machine starts
+// from; the host keeps port 1 (XD's menus) and plays no GBA. Each seat wears its own model pick.
+// On a refusal the boot copies are scrubbed again. The caller then calls RequestStartGame; if
+// that fails, AbortMultiStart.
+MultiStartOutcome PrepareWatchStart(NetPlay::NetPlayServer& server,
+                                    const NetPlay::XdStartClaim& claim);
 // RequestStartGame refused a prepared Multi start: scrub the boot copies now.
 void AbortMultiStart();
 // The server aborted a start that was syncing (a player left): if it was a Multi start and no game

@@ -763,6 +763,7 @@ void NetPlayClient::OnXdSeats(sf::Packet& packet)
       player.xd_watching = std::ranges::find(watchers, pid) != watchers.end();
     m_xd_seats = seats;
     m_xd_multi = mode == 1;
+    m_xd_host_watching = mode == 2;
     m_xd_team_bits = team_bits;
     m_xd_seats_known = true;
   }
@@ -823,6 +824,27 @@ void NetPlayClient::OnXdNotice(sf::Packet& packet)
     tag = "delay-at-limit";
     line = "Input delay is at its limit for this room. Expect slowdown.";
     break;
+  case XdNoticeKind::MultiSides:
+  {
+    tag = "multi-sides";
+    // Slots 0-1 are one team, 2-3 the other. Seat n plays SI port n.
+    std::array<std::string, 4> seat_text;
+    {
+      std::lock_guard lkp(m_crit.players);
+      for (int slot = 0; slot < 4; ++slot)
+      {
+        const int port = ((arg >> (2 * slot)) & 3) + 1;
+        const PlayerId owner = m_net_settings.pad_map[port - 1];
+        const auto it = m_players.find(owner);
+        seat_text[slot] = owner != 0 && it != m_players.end() ?
+                              fmt::format("{} (Seat {})", it->second.name, port) :
+                              fmt::format("Seat {}", port);
+      }
+    }
+    line = fmt::format("Teams: {} and {} vs {} and {}.", seat_text[0], seat_text[1], seat_text[2],
+                       seat_text[3]);
+    break;
+  }
   default:
     return;
   }
@@ -1310,6 +1332,7 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     packet >> m_net_settings.xd_rng_seed;
     // XD multi battles: after xd_rng_seed, last of all (NetPlayServer::StartGame).
     packet >> m_net_settings.xd_multi_p1;
+    packet >> m_net_settings.xd_boot_copies;
 
     // Never let PowerPC.cpp's silent fallback pick a core nobody announced. A host on the
     // other architecture names a JIT this build cannot construct: with the XD clock on that
@@ -2466,7 +2489,8 @@ XdSeatInfo NetPlayClient::GetXdSeatInfo(PlayerId pid)
   {
     info.role = XdRole::Host;
     info.seat = m_xd_seats_known && m_xd_multi ? 1 : 0;
-    info.team_in = true;
+    info.watching = m_xd_seats_known && m_xd_host_watching;
+    info.team_in = !info.watching;
     return info;
   }
   if (!m_xd_seats_known)
@@ -2475,7 +2499,7 @@ XdSeatInfo NetPlayClient::GetXdSeatInfo(PlayerId pid)
   {
     if (m_xd_seats[i] == 0 || m_xd_seats[i] != pid)
       continue;
-    info.role = m_xd_multi ? XdRole::Seated : XdRole::Opponent;
+    info.role = m_xd_multi || m_xd_host_watching ? XdRole::Seated : XdRole::Opponent;
     info.seat = static_cast<u8>(i + 2);
     info.team_in = ((m_xd_team_bits >> i) & 1) != 0;
     return info;
@@ -2490,6 +2514,12 @@ bool NetPlayClient::IsXdMultiSeats()
 {
   std::lock_guard lkp(m_crit.players);
   return m_xd_seats_known && m_xd_multi;
+}
+
+bool NetPlayClient::IsXdHostWatching()
+{
+  std::lock_guard lkp(m_crit.players);
+  return m_xd_seats_known && m_xd_host_watching;
 }
 
 std::optional<int> NetPlayClient::GetXdRoomFormat()
@@ -3448,12 +3478,13 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
           std::min<u32>(m_health_min_depth, static_cast<u32>(std::min<size_t>(pre_depth, 0xFFFE)));
     }
 
-    // XD multi battles, players only: chase re-anchor. Four machines split the slack by phase,
-    // and one that keeps waiting on another's entries sits behind its throttle deadline and would
-    // spend any slack it is given at once. A pop that waited 50 ms or more, or waits on half of
-    // the last 120 pops of other machines' pads, re-anchors the throttle, at most once per 2 s.
-    // Wall-clock pacing only, like the re-anchor above: which entries are used is unchanged.
-    if (m_net_settings.xd_multi_p1 && !m_spec_active && !m_host_input_authority &&
+    // XD multi battles and 1v1 battles the host watches (every route joiner to host to joiner),
+    // players only: chase re-anchor. The machines split the slack by phase, and one that keeps
+    // waiting on another's entries sits behind its throttle deadline and would spend any slack it
+    // is given at once. A pop that waited 50 ms or more, or waits on half of the last 120 pops of
+    // other machines' pads, re-anchors the throttle, at most once per 2 s. Wall-clock pacing only,
+    // like the re-anchor above: which entries are used is unchanged.
+    if (m_net_settings.xd_boot_copies && !m_spec_active && !m_host_input_authority &&
         m_local_player && pad_nb >= 0 &&
         static_cast<size_t>(pad_nb) < m_net_settings.pad_map.size() &&
         m_net_settings.pad_map[pad_nb] != m_local_player->pid)
@@ -3746,6 +3777,19 @@ void NetPlayClient::OnLocalGbaStartFailed(int port)
                          false);
 #endif
   SendXdNotice(XdNoticeKind::GbaStartFailed, static_cast<u8>(port));
+}
+
+// The emulation thread, under crit_netplay_client (NetPlay::ReportXdMultiSides). The server checks
+// that this player owns port 1 and relays the teams to the room.
+void NetPlayClient::OnLocalMultiSides(u8 packed)
+{
+#ifdef HAS_LIBMGBA
+  GBADetectLog::LogEvent(0, 0, "notice",
+                         fmt::format("multi-sides-sent arg={:02x} wall={}", packed,
+                                     WallClockHHMMSS()),
+                         false);
+#endif
+  SendXdNotice(XdNoticeKind::MultiSides, packed);
 }
 
 // ---NETPLAY--- thread, once per loop (at least every 250 ms). One line when this player has been
@@ -4652,12 +4696,12 @@ std::string GetGBASavePath(int pad_num)
 {
   std::lock_guard lk(crit_netplay_client);
 
-  // XD multi battles: the host's cores boot from the same copies the server synced
-  // (UICommon/XDNetplay/TeamInjector.h WriteMultiBootSaves); the host's own saves are never opened.
+  // XD multi battles, and 1v1 battles the host watches: the host's cores boot from the same copies
+  // the server synced (UICommon/XDNetplay/TeamInjector.h); the host's own saves are never opened.
   if (netplay_client)
   {
     const NetSettings& settings = netplay_client->GetNetSettings();
-    if (settings.is_hosting && settings.xd_multi_p1 && settings.savedata_load)
+    if (settings.is_hosting && settings.xd_boot_copies && settings.savedata_load)
       return GetGBANetplayTempPath(pad_num);
   }
 
@@ -4688,6 +4732,13 @@ void ReportGbaStartFailure(int port)
   std::lock_guard lk(crit_netplay_client);
   if (netplay_client && netplay_client->IsCurrentGameCore())
     netplay_client->OnLocalGbaStartFailed(port);
+}
+
+void ReportXdMultiSides(u8 packed)
+{
+  std::lock_guard lk(crit_netplay_client);
+  if (netplay_client && netplay_client->IsCurrentGameCore())
+    netplay_client->OnLocalMultiSides(packed);
 }
 
 void ReportXdStateSample(int port, u32 write_count, const HLE_XD::XdDigest& digest)
