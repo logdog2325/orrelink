@@ -1436,7 +1436,8 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
       {
         // m_is_running drops at StopGame, before the host's GBA core has flushed its save. A
         // write now would be overwritten by that flush.
-        result = "not applied - the last battle is still closing. Send it again.";
+        result = "not applied - the last battle is still closing. Send it again; if this keeps "
+                 "happening, the host restarts OrreLink.";
       }
       else
       {

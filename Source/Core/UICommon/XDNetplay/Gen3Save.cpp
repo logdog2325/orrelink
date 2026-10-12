@@ -10,8 +10,11 @@
 #include "UICommon/XDNetplay/Gen3Text.h"
 
 #ifndef XDNETPLAY_STANDALONE_NO_FILE_IO
+#include <fmt/format.h>
+
 #include "Common/FileUtil.h"
 #include "Common/IOFile.h"
+#include "Common/StringUtil.h"
 #endif
 
 namespace XDNetplay
@@ -470,6 +473,99 @@ bool VerifiedWriteSaveFile(const std::string& path, const EmeraldSave& save, std
     return false;
   }
   return true;
+}
+std::optional<u32> SavePartyFingerprint(const std::string& save_path)
+{
+  const auto save = LoadSaveFile(save_path);
+  if (!save)
+    return std::nullopt;
+  const auto party = save->ReadParty();
+  if (!party)
+    return std::nullopt;
+  // FNV-1a over the fields that make a team a team; nothing a link battle changes.
+  u32 hash = 0x811C9DC5;
+  const auto mix = [&hash](u32 value) {
+    for (int i = 0; i < 4; ++i)
+    {
+      hash ^= (value >> (8 * i)) & 0xFF;
+      hash *= 0x01000193;
+    }
+  };
+  mix(static_cast<u32>(party->size()));
+  for (const Gen3Mon& mon : *party)
+  {
+    mix(mon.pid);
+    mix(mon.species);
+    mix(mon.held_item);
+    mix(mon.experience);
+    for (const u32 move : mon.moves)
+      mix(move);
+    for (const u32 ev : mon.evs)
+      mix(ev);
+    mix(mon.iv_egg_ability);
+  }
+  return hash;
+}
+
+void RecordSaveOwner(const std::string& marker_path, const std::string& save_path)
+{
+  const auto fingerprint = SavePartyFingerprint(save_path);
+  const std::string record = marker_path + ".party";
+  if (!fingerprint)
+  {
+    File::Delete(record);
+    return;
+  }
+  File::IOFile file(record, "wb");
+  if (file)
+    file.WriteString(fmt::format("{:08x}\n", *fingerprint));
+}
+
+bool SaveStillOwned(const std::string& marker_path, const std::string& save_path)
+{
+  std::string text;
+  if (!File::ReadFileToString(marker_path + ".party", text))
+    return true;
+  u32 recorded = 0;
+  if (!TryParse(std::string(StripWhitespace(text)), &recorded, 16))
+    return true;
+  const auto now = SavePartyFingerprint(save_path);
+  return !now || *now == recorded;
+}
+
+void ForgetSaveOwner(const std::string& marker_path)
+{
+  File::Delete(marker_path + ".party");
+}
+
+bool RestoreKeepingParty(const std::string& stash_path, const std::string& save_path,
+                         std::string* error)
+{
+  const auto current = LoadSaveFile(save_path, error);
+  if (!current)
+    return false;
+  auto base = LoadSaveFile(stash_path, error);
+  if (!base)
+    return false;
+  auto party = current->ReadParty(error);
+  if (!party)
+    return false;
+  const auto ot_name =
+      Gen3Text::Encode(base->GetTrainerName(), EmeraldSave::TRAINER_NAME_LEN, error);
+  if (!ot_name)
+    return false;
+  for (Gen3Mon& mon : *party)
+  {
+    std::copy(ot_name->begin(), ot_name->end(), mon.ot_name_raw.begin());
+    mon.ot_id = base->GetTrainerId();
+  }
+  if (!base->WriteParty(*party))
+  {
+    if (error)
+      *error = "party too large";
+    return false;
+  }
+  return VerifiedWriteSaveFile(save_path, *base, error);
 }
 #endif  // XDNETPLAY_STANDALONE_NO_FILE_IO
 }  // namespace XDNetplay
