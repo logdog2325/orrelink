@@ -1,0 +1,520 @@
+From 7d4bfea81a49aff0914de7b1ba95cd86d99ef4a3 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 23:21:16 -0700
+Subject: [PATCH 165/166] XD Netplay: crash-safe team restores, team logging,
+ Share Log writes the live log
+
+A stash of an earlier save (the host's team under a guest's injected team, an import under a
+netplay disposable) used to be put back blindly, at room close or after a crash at the next
+session boundary, so a team the player set in between (Team Editor, Submit Team) was replaced
+by the old one. Every such write now records the party it wrote (<marker>.party), and a restore
+first checks the save still holds it; when the player changed the team since, the stash goes
+back with the newer team carried over (re-stamped to the stash's trainer) and nothing old wins.
+Also: each 1v1 start logs every GBA save it boots (file, CRC, species) and every team
+submission is logged; Share Log flushes the live session log first (desktop and Android); the
+"last battle is still closing" refusal says to restart OrreLink when it keeps happening.
+---
+ .../features/xdnetplay/SaveImportBridge.kt    |  5 +
+ .../xdnetplay/ui/XDLauncherActivity.kt        |  1 +
+ .../jni/NetPlay/NetPlayIndexBridge.cpp        | 13 +++
+ Source/Core/Core/HW/GBADetectLog.cpp          |  7 ++
+ Source/Core/Core/HW/GBADetectLog.h            |  3 +
+ Source/Core/Core/NetPlayServer.cpp            |  3 +-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  |  7 ++
+ .../UICommon/XDNetplay/BattleCustomizer.cpp   | 51 ++++++++++
+ .../UICommon/XDNetplay/DisposableSave.cpp     | 23 +++++
+ Source/Core/UICommon/XDNetplay/Gen3Save.cpp   | 96 +++++++++++++++++++
+ Source/Core/UICommon/XDNetplay/Gen3Save.h     | 17 ++++
+ Source/Core/UICommon/XDNetplay/MultiStart.cpp |  6 ++
+ .../Core/UICommon/XDNetplay/TeamInjector.cpp  | 28 +++++-
+ 13 files changed, 258 insertions(+), 2 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/SaveImportBridge.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/SaveImportBridge.kt
+index 7a863cc..c402b49 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/SaveImportBridge.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/SaveImportBridge.kt
+@@ -63,6 +63,9 @@ object SaveImportBridge {
+      */
+     fun healLeftoverSession() = nativeHealLeftoverSession()
+ 
++    /** Writes out the live session log, so a share taken mid-game is complete. */
++    fun flushDetectLog() = nativeFlushDetectLog()
++
+     /** Outcome encoding shared with the C++ side: ["1"/"0", message]. */
+     private fun parseOutcome(flat: Array<String>): Outcome =
+         Outcome(ok = flat.getOrNull(0) == "1", message = flat.getOrNull(1) ?: "")
+@@ -72,4 +75,6 @@ object SaveImportBridge {
+     private external fun nativeRestoreDefaultSave(device: Int): Array<String>
+ 
+     private external fun nativeHealLeftoverSession()
++
++    private external fun nativeFlushDetectLog()
+ }
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+index ebeea54..f3e4c26 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+@@ -399,6 +399,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+      * all are shared together so a failed-attempt/retry pair arrives intact,
+      * and the timestamped names say which session is which. */
+     private fun shareDetectLog() {
++        org.dolphinemu.dolphinemu.features.xdnetplay.SaveImportBridge.flushDetectLog()
+         val dir = java.io.File(getExternalFilesDir(null), "GBA")
+         val logs = (dir.listFiles { f ->
+             f.isFile && f.name.startsWith("gba_detect") && f.name.endsWith(".log")
+diff --git a/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp b/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
+index 06e3210..867d586 100644
+--- a/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
++++ b/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
+@@ -49,6 +49,9 @@
+ #include "Common/Version.h"
+ #include "Core/Config/MainSettings.h"
+ #include "Core/Core.h"
++#ifdef HAS_LIBMGBA
++#include "Core/HW/GBADetectLog.h"
++#endif
+ #include "Core/HW/SI/SI_Device.h"
+ #include "Core/System.h"
+ #include "UICommon/NetPlayIndex.h"
+@@ -437,6 +440,16 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativePrepar
+   XDNetplay::DisposableSave::HealLeftoverSession();
+ }
+ 
++JNIEXPORT void JNICALL
++Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeFlushDetectLog(JNIEnv*,
++                                                                                        jobject)
++{
++  // Share Log: a game may still be running, so write out what the live log holds first.
++#ifdef HAS_LIBMGBA
++  GBADetectLog::Flush();
++#endif
++}
++
+ // ---------------------------------------------------------------------------
+ // Save-import bridge (Kotlin counterpart: features/xdnetplay/SaveImportBridge)
+ // ---------------------------------------------------------------------------
+diff --git a/Source/Core/Core/HW/GBADetectLog.cpp b/Source/Core/Core/HW/GBADetectLog.cpp
+index bc950d4..379f427 100644
+--- a/Source/Core/Core/HW/GBADetectLog.cpp
++++ b/Source/Core/Core/HW/GBADetectLog.cpp
+@@ -127,6 +127,13 @@ void WriteLine(const std::string& line, bool flush)
+ }
+ }  // namespace
+ 
++void Flush()
++{
++  std::lock_guard lock(s_mutex);
++  if (s_file.is_open())
++    s_file.flush();
++}
++
+ std::string FilePath()
+ {
+   std::lock_guard lock(s_mutex);
+diff --git a/Source/Core/Core/HW/GBADetectLog.h b/Source/Core/Core/HW/GBADetectLog.h
+index fdf6efd..e30c16b 100644
+--- a/Source/Core/Core/HW/GBADetectLog.h
++++ b/Source/Core/Core/HW/GBADetectLog.h
+@@ -22,6 +22,9 @@ namespace GBADetectLog
+ {
+ // Absolute path of the CURRENT session's log file (empty before any session).
+ std::string FilePath();
++// Writes everything buffered to disk, so a copy taken while a game runs (Share Log) is
++// complete. Any thread.
++void Flush();
+ 
+ // CSIDevice_GBAEmu ctor/dtor (CPU/host thread). Reference-counted: the first
+ // live GBA device of a session truncates the file, writes the banner as line 1
+diff --git a/Source/Core/Core/NetPlayServer.cpp b/Source/Core/Core/NetPlayServer.cpp
+index c28eb5f..210f6fe 100644
+--- a/Source/Core/Core/NetPlayServer.cpp
++++ b/Source/Core/Core/NetPlayServer.cpp
+@@ -1436,7 +1436,8 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
+       {
+         // m_is_running drops at StopGame, before the host's GBA core has flushed its save. A
+         // write now would be overwritten by that flush.
+-        result = "not applied - the last battle is still closing. Send it again.";
++        result = "not applied - the last battle is still closing. Send it again; if this keeps "
++                 "happening, the host restarts OrreLink.";
+       }
+       else
+       {
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 456442b..de852f9 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -49,6 +49,9 @@
+ #include "Common/Version.h"
+ 
+ #include "Core/Config/MainSettings.h"
++#ifdef HAS_LIBMGBA
++#include "Core/HW/GBADetectLog.h"
++#endif
+ #include "Core/Core.h"
+ #include "Core/System.h"
+ #include "Core/Config/NetplaySettings.h"
+@@ -655,6 +658,10 @@ void XDLauncherDialog::FitToScreen()
+ 
+ void XDLauncherDialog::OnShareLog()
+ {
++#ifdef HAS_LIBMGBA
++  // A game may still be running: write out what the live log holds before copying it.
++  GBADetectLog::Flush();
++#endif
+   const QString dir = QString::fromStdString(File::GetUserPath(D_GBAUSER_IDX));
+   const QDir logs(dir);
+   // QDir::Time lists the most recently modified first.
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+index 303915b..e96cf08 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+@@ -19,10 +19,12 @@
+ #include "Common/FileUtil.h"
+ #include "Common/IniFile.h"
+ #include "Common/StringUtil.h"
++#include "Common/Hash.h"
+ 
+ #include "Core/Config/MainSettings.h"
+ #include "Core/Core.h"
+ #include "Core/System.h"
++#include "Core/NetPlayProto.h"
+ 
+ #ifdef HAS_LIBMGBA
+ #include "Core/HW/GBACore.h"
+@@ -1400,6 +1402,43 @@ static int SaveBustClass(int device)
+ #endif
+ }
+ 
++// One line per GBA save a start boots: which file, its CRC and the party's species, so a report
++// of "the old team played" can be checked against what was actually there.
++static void LogSocketTeam(int sock, const std::string& path)
++{
++#ifdef HAS_LIBMGBA
++  std::vector<u8> bytes;
++  if (File::IOFile file(path, "rb"); file)
++  {
++    bytes.resize(file.GetSize());
++    if (!file.ReadBytes(bytes.data(), bytes.size()))
++      bytes.clear();
++  }
++  std::string species = "unreadable";
++  if (!bytes.empty())
++  {
++    if (const auto save = EmeraldSave::Create(bytes))
++    {
++      if (const auto party = save->ReadParty())
++      {
++        species.clear();
++        for (const Gen3Mon& mon : *party)
++          species += fmt::format("{}{}", species.empty() ? "" : ",", mon.species);
++        if (species.empty())
++          species = "none";
++      }
++    }
++  }
++  const std::string name = path.substr(path.find_last_of("/\\") + 1);
++  LogNote(fmt::format("team sock={} file={} size={} crc={:08x} species={}", sock, name,
++                      bytes.size(), Common::ComputeCRC32(bytes.data(), bytes.size()),
++                      species));
++#else
++  (void)sock;
++  (void)path;
++#endif
++}
++
+ // A solo Multi boot: "Your model" for port 1 and the MultiSoloModels tester key ("2B,16,41") for
+ // ports 2-4, each port's gender from its own save.
+ static SeatLooks SoloMultiLooks()
+@@ -1778,6 +1817,18 @@ void PrepareForStart(StartKind kind, const SeatLooks* looks)
+     });
+   });
+ 
++#ifdef HAS_LIBMGBA
++  // The two 1v1 GBA saves this start boots (a watched start: its boot copies; Multi's boot copies
++  // are logged where they are written).
++  if (kind == StartKind::OneVsOne)
++  {
++    for (const int device : {1, 2})
++    {
++      LogSocketTeam(device, looks ? NetPlay::GetGBANetplayTempPath(device) :
++                                    SocketSavePath(device));
++    }
++  }
++#endif
+   // A solo Multi boot has no room to collect picks from (see SoloMultiLooks).
+   std::optional<SeatLooks> solo_looks;
+   if (kind == StartKind::Multi && !looks)
+diff --git a/Source/Core/UICommon/XDNetplay/DisposableSave.cpp b/Source/Core/UICommon/XDNetplay/DisposableSave.cpp
+index 14bf2d9..69cf0df 100644
+--- a/Source/Core/UICommon/XDNetplay/DisposableSave.cpp
++++ b/Source/Core/UICommon/XDNetplay/DisposableSave.cpp
+@@ -124,9 +124,30 @@ void RestoreNow(int device)
+     return;
+   }
+ 
++  // The save no longer holds the disposable this session wrote: the player set a newer team in it
++  // (Submit Team during the room, or the Team Editor after a crash). Put the import back but keep
++  // that team, so neither the player's save nor their newest team is lost.
++  if (!SaveStillOwned(orig, save_path))
++  {
++    std::string merge_error;
++    if (RestoreKeepingParty(orig, save_path, &merge_error))
++    {
++      File::Delete(orig);
++      ForgetSaveOwner(orig);
++      Log(fmt::format("sock={} restored=import-keeping-new-team", device));
++    }
++    else
++    {
++      // Keep the stash for a later retry rather than overwrite the newer team or lose the import.
++      Log(fmt::format("sock={} restore=deferred-merge-failed ({})", device, merge_error));
++    }
++    return;
++  }
++
+   if (File::CopyRegularFile(orig, save_path))
+   {
+     File::Delete(orig);
++    ForgetSaveOwner(orig);
+     Log(fmt::format("sock={} restored=import", device));
+   }
+   else
+@@ -362,6 +383,8 @@ bool PrepareForHosting(std::string* error)
+     }
+ 
+     swapped.push_back(device);
++    // What this session wrote: the restore at its end checks it is still there.
++    RecordSaveOwner(orig, save_path);
+     Log(fmt::format("sock={} swapped=disposable", device));
+   }
+   return true;
+diff --git a/Source/Core/UICommon/XDNetplay/Gen3Save.cpp b/Source/Core/UICommon/XDNetplay/Gen3Save.cpp
+index b93dd29..50c63e4 100644
+--- a/Source/Core/UICommon/XDNetplay/Gen3Save.cpp
++++ b/Source/Core/UICommon/XDNetplay/Gen3Save.cpp
+@@ -10,8 +10,11 @@
+ #include "UICommon/XDNetplay/Gen3Text.h"
+ 
+ #ifndef XDNETPLAY_STANDALONE_NO_FILE_IO
++#include <fmt/format.h>
++
+ #include "Common/FileUtil.h"
+ #include "Common/IOFile.h"
++#include "Common/StringUtil.h"
+ #endif
+ 
+ namespace XDNetplay
+@@ -471,5 +474,98 @@ bool VerifiedWriteSaveFile(const std::string& path, const EmeraldSave& save, std
+   }
+   return true;
+ }
++std::optional<u32> SavePartyFingerprint(const std::string& save_path)
++{
++  const auto save = LoadSaveFile(save_path);
++  if (!save)
++    return std::nullopt;
++  const auto party = save->ReadParty();
++  if (!party)
++    return std::nullopt;
++  // FNV-1a over the fields that make a team a team; nothing a link battle changes.
++  u32 hash = 0x811C9DC5;
++  const auto mix = [&hash](u32 value) {
++    for (int i = 0; i < 4; ++i)
++    {
++      hash ^= (value >> (8 * i)) & 0xFF;
++      hash *= 0x01000193;
++    }
++  };
++  mix(static_cast<u32>(party->size()));
++  for (const Gen3Mon& mon : *party)
++  {
++    mix(mon.pid);
++    mix(mon.species);
++    mix(mon.held_item);
++    mix(mon.experience);
++    for (const u32 move : mon.moves)
++      mix(move);
++    for (const u32 ev : mon.evs)
++      mix(ev);
++    mix(mon.iv_egg_ability);
++  }
++  return hash;
++}
++
++void RecordSaveOwner(const std::string& marker_path, const std::string& save_path)
++{
++  const auto fingerprint = SavePartyFingerprint(save_path);
++  const std::string record = marker_path + ".party";
++  if (!fingerprint)
++  {
++    File::Delete(record);
++    return;
++  }
++  File::IOFile file(record, "wb");
++  if (file)
++    file.WriteString(fmt::format("{:08x}\n", *fingerprint));
++}
++
++bool SaveStillOwned(const std::string& marker_path, const std::string& save_path)
++{
++  std::string text;
++  if (!File::ReadFileToString(marker_path + ".party", text))
++    return true;
++  u32 recorded = 0;
++  if (!TryParse(std::string(StripWhitespace(text)), &recorded, 16))
++    return true;
++  const auto now = SavePartyFingerprint(save_path);
++  return !now || *now == recorded;
++}
++
++void ForgetSaveOwner(const std::string& marker_path)
++{
++  File::Delete(marker_path + ".party");
++}
++
++bool RestoreKeepingParty(const std::string& stash_path, const std::string& save_path,
++                         std::string* error)
++{
++  const auto current = LoadSaveFile(save_path, error);
++  if (!current)
++    return false;
++  auto base = LoadSaveFile(stash_path, error);
++  if (!base)
++    return false;
++  auto party = current->ReadParty(error);
++  if (!party)
++    return false;
++  const auto ot_name =
++      Gen3Text::Encode(base->GetTrainerName(), EmeraldSave::TRAINER_NAME_LEN, error);
++  if (!ot_name)
++    return false;
++  for (Gen3Mon& mon : *party)
++  {
++    std::copy(ot_name->begin(), ot_name->end(), mon.ot_name_raw.begin());
++    mon.ot_id = base->GetTrainerId();
++  }
++  if (!base->WriteParty(*party))
++  {
++    if (error)
++      *error = "party too large";
++    return false;
++  }
++  return VerifiedWriteSaveFile(save_path, *base, error);
++}
+ #endif  // XDNETPLAY_STANDALONE_NO_FILE_IO
+ }  // namespace XDNetplay
+diff --git a/Source/Core/UICommon/XDNetplay/Gen3Save.h b/Source/Core/UICommon/XDNetplay/Gen3Save.h
+index d3502ca..eb975f6 100644
+--- a/Source/Core/UICommon/XDNetplay/Gen3Save.h
++++ b/Source/Core/UICommon/XDNetplay/Gen3Save.h
+@@ -205,5 +205,22 @@ bool VerifiedWriteSaveFile(const std::string& path, const EmeraldSave& save,
+ 
+ // Read + parse a save file from disk.
+ std::optional<EmeraldSave> LoadSaveFile(const std::string& path, std::string* error = nullptr);
++
++// Crash-safe restores. When OrreLink overwrites a socket save for a session (a guest's team, a
++// netplay disposable) it keeps the earlier save as a stash and puts it back afterwards; if the
++// session died, at the next boundary. By then the player may have set a NEWER team in that save
++// (Team Editor, Submit Team, an import), and blindly restoring the stash would bring the old team
++// back. So every such write records the party it wrote (marker_path + ".party", a fingerprint of
++// each Pokemon's PID, species, item, moves, EVs, IVs and experience), and a restore asks first.
++std::optional<u32> SavePartyFingerprint(const std::string& save_path);
++void RecordSaveOwner(const std::string& marker_path, const std::string& save_path);
++// True when nothing was recorded (a stash from an older build), when the save cannot be read, or
++// when its party is still the one recorded: then the stash may be restored as it is.
++bool SaveStillOwned(const std::string& marker_path, const std::string& save_path);
++void ForgetSaveOwner(const std::string& marker_path);
++// Put stash_path back over save_path but keep the party save_path holds now (the player's newer
++// team), re-stamped with the stash's trainer name and ID so the Pokemon stay that trainer's own.
++bool RestoreKeepingParty(const std::string& stash_path, const std::string& save_path,
++                         std::string* error = nullptr);
+ #endif
+ }  // namespace XDNetplay
+diff --git a/Source/Core/UICommon/XDNetplay/MultiStart.cpp b/Source/Core/UICommon/XDNetplay/MultiStart.cpp
+index 5b2f9db..362df1d 100644
+--- a/Source/Core/UICommon/XDNetplay/MultiStart.cpp
++++ b/Source/Core/UICommon/XDNetplay/MultiStart.cpp
+@@ -17,6 +17,7 @@
+ #include "Core/Config/MainSettings.h"
+ #include "Core/Config/NetplaySettings.h"
+ #include "Core/Core.h"
++#include "Core/HW/GBADetectLog.h"
+ #include "Core/NetPlayServer.h"
+ #include "Core/System.h"
+ 
+@@ -335,6 +336,11 @@ NetPlay::XdTeamResult HandleTeamSubmission(const std::string& player, const std:
+     }
+   }
+ 
++#ifdef HAS_LIBMGBA
++  GBADetectLog::NoteBoot(fmt::format("team-data device={} stage={} applied={} result={}",
++                                     target.device, target.stage_serial, applied ? 1 : 0,
++                                     status.empty() ? std::string("-") : status));
++#endif
+   NetPlay::XdTeamResult result;
+   result.applied = applied;
+   if (applied)
+diff --git a/Source/Core/UICommon/XDNetplay/TeamInjector.cpp b/Source/Core/UICommon/XDNetplay/TeamInjector.cpp
+index c66dbd6..2838569 100644
+--- a/Source/Core/UICommon/XDNetplay/TeamInjector.cpp
++++ b/Source/Core/UICommon/XDNetplay/TeamInjector.cpp
+@@ -228,8 +228,29 @@ void PurgeNow(int device)
+     const std::string stash = save_path + HOST_STASH_SUFFIX;
+     const std::string mark = save_path + GUEST_MARK_SUFFIX;
+     const bool had_guest = File::Exists(mark);
++    // The save no longer holds the guest's team this lifecycle wrote: the player set a newer team
++    // after it (typically after a crash, before this cleanup ran). Never bring the old team back.
++    const bool superseded = had_guest && !SaveStillOwned(mark, save_path);
+ 
+-    if (File::Exists(stash))
++    if (superseded)
++    {
++      if (File::Exists(stash))
++      {
++        // The host's own save goes back, carrying the newer team; if that cannot be built, the
++        // newer team stays as it is.
++        std::string merge_error;
++        if (RestoreKeepingParty(stash, save_path, &merge_error))
++          notes.emplace_back("restored=host-keeping-new-team");
++        else
++          notes.emplace_back(fmt::format("kept=new-team ({})", merge_error));
++        File::Delete(stash);
++      }
++      else
++      {
++        notes.emplace_back("kept=new-team");
++      }
++    }
++    else if (File::Exists(stash))
+     {
+       // The host had a save of their own before the first injection: put it
+       // back. Both images are the same size, so nothing of the guest's is left
+@@ -282,6 +303,7 @@ void PurgeNow(int device)
+       if (ScrubAndDelete(save_path + TMP_SUFFIX))
+         notes.emplace_back("removed=tmp");
+       File::Delete(mark);
++      ForgetSaveOwner(mark);
+     }
+   }
+ 
+@@ -730,6 +752,8 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
+   }
+ 
+   WriteGuestMark(save_path);
++  // What this injection wrote: a later restore of the host's stash checks it is still there.
++  RecordSaveOwner(save_path + GUEST_MARK_SUFFIX, save_path);
+   return true;
+ #endif
+ }
+@@ -992,6 +1016,8 @@ bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* s
+     return fail(fmt::format("save NOT written ({})", error));
+ 
+   WriteGuestMark(save_path);
++  // What this injection wrote: a later restore of the host's stash checks it is still there.
++  RecordSaveOwner(save_path + GUEST_MARK_SUFFIX, save_path);
+ 
+   if (status)
+   {
+-- 
+2.39.5 (Apple Git-154)
+
