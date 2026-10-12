@@ -174,7 +174,10 @@ jobs:
           if [ ! -f "$sym" ]; then
             sym="$(find Source/Android/app/build/intermediates -path '*/arm64-v8a/libmain.so' -print0 | xargs -0 ls -S | head -1)"
           fi
-          "$readelf" -S "$sym" | grep -q ' \.symtab' || { echo "::error::$sym is stripped"; exit 1; }
+          # To a file first: grep -q quits at its first match, readelf then dies of SIGPIPE, and
+          # pipefail turned that into a false "stripped" whenever .symtab came early enough.
+          "$readelf" -S "$sym" > "$RUNNER_TEMP/sections.txt"
+          grep -q ' \.symtab' "$RUNNER_TEMP/sections.txt" || { echo "::error::$sym is stripped"; exit 1; }
           mkdir -p symbols/arm64-v8a
           cp "$sym" symbols/arm64-v8a/libmain.so
           "$readelf" -n symbols/arm64-v8a/libmain.so | awk '/Build ID/ {print $NF}' > symbols/BuildId.txt
