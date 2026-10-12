@@ -49,6 +49,9 @@
 #include "Common/Version.h"
 
 #include "Core/Config/MainSettings.h"
+#ifdef HAS_LIBMGBA
+#include "Core/HW/GBADetectLog.h"
+#endif
 #include "Core/Core.h"
 #include "Core/System.h"
 #include "Core/Config/NetplaySettings.h"
@@ -655,6 +658,10 @@ void XDLauncherDialog::FitToScreen()
 
 void XDLauncherDialog::OnShareLog()
 {
+#ifdef HAS_LIBMGBA
+  // A game may still be running: write out what the live log holds before copying it.
+  GBADetectLog::Flush();
+#endif
   const QString dir = QString::fromStdString(File::GetUserPath(D_GBAUSER_IDX));
   const QDir logs(dir);
   // QDir::Time lists the most recently modified first.

@@ -19,10 +19,12 @@
 #include "Common/FileUtil.h"
 #include "Common/IniFile.h"
 #include "Common/StringUtil.h"
+#include "Common/Hash.h"
 
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/System.h"
+#include "Core/NetPlayProto.h"
 
 #ifdef HAS_LIBMGBA
 #include "Core/HW/GBACore.h"
@@ -1400,6 +1402,43 @@ static int SaveBustClass(int device)
 #endif
 }
 
+// One line per GBA save a start boots: which file, its CRC and the party's species, so a report
+// of "the old team played" can be checked against what was actually there.
+static void LogSocketTeam(int sock, const std::string& path)
+{
+#ifdef HAS_LIBMGBA
+  std::vector<u8> bytes;
+  if (File::IOFile file(path, "rb"); file)
+  {
+    bytes.resize(file.GetSize());
+    if (!file.ReadBytes(bytes.data(), bytes.size()))
+      bytes.clear();
+  }
+  std::string species = "unreadable";
+  if (!bytes.empty())
+  {
+    if (const auto save = EmeraldSave::Create(bytes))
+    {
+      if (const auto party = save->ReadParty())
+      {
+        species.clear();
+        for (const Gen3Mon& mon : *party)
+          species += fmt::format("{}{}", species.empty() ? "" : ",", mon.species);
+        if (species.empty())
+          species = "none";
+      }
+    }
+  }
+  const std::string name = path.substr(path.find_last_of("/\\") + 1);
+  LogNote(fmt::format("team sock={} file={} size={} crc={:08x} species={}", sock, name,
+                      bytes.size(), Common::ComputeCRC32(bytes.data(), bytes.size()),
+                      species));
+#else
+  (void)sock;
+  (void)path;
+#endif
+}
+
 // A solo Multi boot: "Your model" for port 1 and the MultiSoloModels tester key ("2B,16,41") for
 // ports 2-4, each port's gender from its own save.
 static SeatLooks SoloMultiLooks()
@@ -1778,6 +1817,18 @@ void PrepareForStart(StartKind kind, const SeatLooks* looks)
     });
   });
 
+#ifdef HAS_LIBMGBA
+  // The two 1v1 GBA saves this start boots (a watched start: its boot copies; Multi's boot copies
+  // are logged where they are written).
+  if (kind == StartKind::OneVsOne)
+  {
+    for (const int device : {1, 2})
+    {
+      LogSocketTeam(device, looks ? NetPlay::GetGBANetplayTempPath(device) :
+                                    SocketSavePath(device));
+    }
+  }
+#endif
   // A solo Multi boot has no room to collect picks from (see SoloMultiLooks).
   std::optional<SeatLooks> solo_looks;
   if (kind == StartKind::Multi && !looks)

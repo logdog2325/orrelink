@@ -399,6 +399,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
      * all are shared together so a failed-attempt/retry pair arrives intact,
      * and the timestamped names say which session is which. */
     private fun shareDetectLog() {
+        org.dolphinemu.dolphinemu.features.xdnetplay.SaveImportBridge.flushDetectLog()
         val dir = java.io.File(getExternalFilesDir(null), "GBA")
         val logs = (dir.listFiles { f ->
             f.isFile && f.name.startsWith("gba_detect") && f.name.endsWith(".log")

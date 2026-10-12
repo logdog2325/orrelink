@@ -205,5 +205,22 @@ bool VerifiedWriteSaveFile(const std::string& path, const EmeraldSave& save,
 
 // Read + parse a save file from disk.
 std::optional<EmeraldSave> LoadSaveFile(const std::string& path, std::string* error = nullptr);
+
+// Crash-safe restores. When OrreLink overwrites a socket save for a session (a guest's team, a
+// netplay disposable) it keeps the earlier save as a stash and puts it back afterwards; if the
+// session died, at the next boundary. By then the player may have set a NEWER team in that save
+// (Team Editor, Submit Team, an import), and blindly restoring the stash would bring the old team
+// back. So every such write records the party it wrote (marker_path + ".party", a fingerprint of
+// each Pokemon's PID, species, item, moves, EVs, IVs and experience), and a restore asks first.
+std::optional<u32> SavePartyFingerprint(const std::string& save_path);
+void RecordSaveOwner(const std::string& marker_path, const std::string& save_path);
+// True when nothing was recorded (a stash from an older build), when the save cannot be read, or
+// when its party is still the one recorded: then the stash may be restored as it is.
+bool SaveStillOwned(const std::string& marker_path, const std::string& save_path);
+void ForgetSaveOwner(const std::string& marker_path);
+// Put stash_path back over save_path but keep the party save_path holds now (the player's newer
+// team), re-stamped with the stash's trainer name and ID so the Pokemon stay that trainer's own.
+bool RestoreKeepingParty(const std::string& stash_path, const std::string& save_path,
+                         std::string* error = nullptr);
 #endif
 }  // namespace XDNetplay
