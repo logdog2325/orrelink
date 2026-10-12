@@ -228,8 +228,29 @@ void PurgeNow(int device)
     const std::string stash = save_path + HOST_STASH_SUFFIX;
     const std::string mark = save_path + GUEST_MARK_SUFFIX;
     const bool had_guest = File::Exists(mark);
+    // The save no longer holds the guest's team this lifecycle wrote: the player set a newer team
+    // after it (typically after a crash, before this cleanup ran). Never bring the old team back.
+    const bool superseded = had_guest && !SaveStillOwned(mark, save_path);
 
-    if (File::Exists(stash))
+    if (superseded)
+    {
+      if (File::Exists(stash))
+      {
+        // The host's own save goes back, carrying the newer team; if that cannot be built, the
+        // newer team stays as it is.
+        std::string merge_error;
+        if (RestoreKeepingParty(stash, save_path, &merge_error))
+          notes.emplace_back("restored=host-keeping-new-team");
+        else
+          notes.emplace_back(fmt::format("kept=new-team ({})", merge_error));
+        File::Delete(stash);
+      }
+      else
+      {
+        notes.emplace_back("kept=new-team");
+      }
+    }
+    else if (File::Exists(stash))
     {
       // The host had a save of their own before the first injection: put it
       // back. Both images are the same size, so nothing of the guest's is left
@@ -282,6 +303,7 @@ void PurgeNow(int device)
       if (ScrubAndDelete(save_path + TMP_SUFFIX))
         notes.emplace_back("removed=tmp");
       File::Delete(mark);
+      ForgetSaveOwner(mark);
     }
   }
 
@@ -730,6 +752,8 @@ bool InjectGuestTeam(const std::string& showdown_text, const std::string& traine
   }
 
   WriteGuestMark(save_path);
+  // What this injection wrote: a later restore of the host's stash checks it is still there.
+  RecordSaveOwner(save_path + GUEST_MARK_SUFFIX, save_path);
   return true;
 #endif
 }
@@ -992,6 +1016,8 @@ bool InjectGuestBundle(const std::vector<u8>& bundle, int device, std::string* s
     return fail(fmt::format("save NOT written ({})", error));
 
   WriteGuestMark(save_path);
+  // What this injection wrote: a later restore of the host's stash checks it is still there.
+  RecordSaveOwner(save_path + GUEST_MARK_SUFFIX, save_path);
 
   if (status)
   {

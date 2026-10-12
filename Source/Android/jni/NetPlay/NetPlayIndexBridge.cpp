@@ -49,6 +49,9 @@
 #include "Common/Version.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
+#ifdef HAS_LIBMGBA
+#include "Core/HW/GBADetectLog.h"
+#endif
 #include "Core/HW/SI/SI_Device.h"
 #include "Core/System.h"
 #include "UICommon/NetPlayIndex.h"
@@ -435,6 +438,16 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativePrepar
   // disposable -- put the real import back so this solo boot plays the user's
   // own save again (DisposableSave.h). No-op while a room is open.
   XDNetplay::DisposableSave::HealLeftoverSession();
+}
+
+JNIEXPORT void JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeFlushDetectLog(JNIEnv*,
+                                                                                        jobject)
+{
+  // Share Log: a game may still be running, so write out what the live log holds first.
+#ifdef HAS_LIBMGBA
+  GBADetectLog::Flush();
+#endif
 }
 
 // ---------------------------------------------------------------------------

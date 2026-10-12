@@ -63,6 +63,9 @@ object SaveImportBridge {
      */
     fun healLeftoverSession() = nativeHealLeftoverSession()
 
+    /** Writes out the live session log, so a share taken mid-game is complete. */
+    fun flushDetectLog() = nativeFlushDetectLog()
+
     /** Outcome encoding shared with the C++ side: ["1"/"0", message]. */
     private fun parseOutcome(flat: Array<String>): Outcome =
         Outcome(ok = flat.getOrNull(0) == "1", message = flat.getOrNull(1) ?: "")
@@ -72,4 +75,6 @@ object SaveImportBridge {
     private external fun nativeRestoreDefaultSave(device: Int): Array<String>
 
     private external fun nativeHealLeftoverSession()
+
+    private external fun nativeFlushDetectLog()
 }

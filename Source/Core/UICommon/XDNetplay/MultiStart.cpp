@@ -17,6 +17,7 @@
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/NetplaySettings.h"
 #include "Core/Core.h"
+#include "Core/HW/GBADetectLog.h"
 #include "Core/NetPlayServer.h"
 #include "Core/System.h"
 
@@ -335,6 +336,11 @@ NetPlay::XdTeamResult HandleTeamSubmission(const std::string& player, const std:
     }
   }
 
+#ifdef HAS_LIBMGBA
+  GBADetectLog::NoteBoot(fmt::format("team-data device={} stage={} applied={} result={}",
+                                     target.device, target.stage_serial, applied ? 1 : 0,
+                                     status.empty() ? std::string("-") : status));
+#endif
   NetPlay::XdTeamResult result;
   result.applied = applied;
   if (applied)

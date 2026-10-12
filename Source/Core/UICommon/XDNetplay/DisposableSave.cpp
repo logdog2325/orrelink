@@ -124,9 +124,30 @@ void RestoreNow(int device)
     return;
   }
 
+  // The save no longer holds the disposable this session wrote: the player set a newer team in it
+  // (Submit Team during the room, or the Team Editor after a crash). Put the import back but keep
+  // that team, so neither the player's save nor their newest team is lost.
+  if (!SaveStillOwned(orig, save_path))
+  {
+    std::string merge_error;
+    if (RestoreKeepingParty(orig, save_path, &merge_error))
+    {
+      File::Delete(orig);
+      ForgetSaveOwner(orig);
+      Log(fmt::format("sock={} restored=import-keeping-new-team", device));
+    }
+    else
+    {
+      // Keep the stash for a later retry rather than overwrite the newer team or lose the import.
+      Log(fmt::format("sock={} restore=deferred-merge-failed ({})", device, merge_error));
+    }
+    return;
+  }
+
   if (File::CopyRegularFile(orig, save_path))
   {
     File::Delete(orig);
+    ForgetSaveOwner(orig);
     Log(fmt::format("sock={} restored=import", device));
   }
   else
@@ -362,6 +383,8 @@ bool PrepareForHosting(std::string* error)
     }
 
     swapped.push_back(device);
+    // What this session wrote: the restore at its end checks it is still there.
+    RecordSaveOwner(orig, save_path);
     Log(fmt::format("sock={} swapped=disposable", device));
   }
   return true;

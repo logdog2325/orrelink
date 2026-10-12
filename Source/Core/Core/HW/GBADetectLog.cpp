@@ -127,6 +127,13 @@ void WriteLine(const std::string& line, bool flush)
 }
 }  // namespace
 
+void Flush()
+{
+  std::lock_guard lock(s_mutex);
+  if (s_file.is_open())
+    s_file.flush();
+}
+
 std::string FilePath()
 {
   std::lock_guard lock(s_mutex);
