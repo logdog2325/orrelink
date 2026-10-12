@@ -22,6 +22,9 @@ namespace GBADetectLog
 {
 // Absolute path of the CURRENT session's log file (empty before any session).
 std::string FilePath();
+// Writes everything buffered to disk, so a copy taken while a game runs (Share Log) is
+// complete. Any thread.
+void Flush();
 
 // CSIDevice_GBAEmu ctor/dtor (CPU/host thread). Reference-counted: the first
 // live GBA device of a session truncates the file, writes the banner as line 1
