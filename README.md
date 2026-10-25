@@ -85,8 +85,9 @@ You can set your team in the Team Editor before you open the room, or paste
 it in the room with **Submit Team**. Once the room is open, the guest slot in
 the editor locks.
 
-1. Pick a **Format** in the launcher (Orre Colosseum is the usual choice, see
-   Formats below). Tick **Battle timer** if you want one.
+1. Pick a **Format** in the launcher. Orre Colosseum is the default (see
+   Formats below), and you can still change it in the room. Tick **Battle
+   timer** if you want one.
 2. Open the **Team Editor**. In the dropdown choose **Host: GBA port 2**, press
    **Import**, paste your Showdown team or pokepast.es link, type your in-game
    name, and press **Save**. The editor tells you if anything is banned in your
@@ -96,19 +97,29 @@ the editor locks.
    Useful for testing alone or for handing a friend a team. A guest who sends a
    team replaces it.
 4. Go to **Netplay** and **Host**. Share the code. In the room, **Submit Team**
-   lets you swap your team, name or trainer model, and **Music & Location**
-   changes the battle music and where you fight (stadiums and lobbies). Both
-   work any time before you press Start and apply to the next battle.
+   lets you swap your team, name or trainer model, **Music & Location**
+   changes the battle music and where you fight (stadiums and lobbies), and
+   **Change Format...** switches the format. All three work any time before
+   you press Start and apply to the next battle.
 5. Wait for your opponent's team to arrive. A line in the room chat says so.
    If the line never appears, their team did not arrive. Ask them to send it
    again before you press Start, or you will fight the wrong team.
-6. Press **Start**. In XD, go to **VS Mode**, then **GBA vs GBA**, and confirm
-   through the rules. They are already set. You drive these menus with the
-   GameCube keys (see Controls). Your opponent's buttons do nothing here.
+6. Press **Start**. If a team breaks the format, Start is refused with a
+   one-line reason. Fix the team or use **Change Format...**, then press Start
+   again. In XD, go to **VS Mode**, then **GBA vs GBA**, and confirm through
+   the rules. They are already set, except in OU and Free. You drive these
+   menus with the GameCube keys (see Controls). Your opponent's buttons do
+   nothing here.
 
 A team you paste with **Submit Team** replaces the team in your **Host: GBA
-port 2** slot. If that slot holds a save you imported, the change only lasts
-until the room closes and your own save comes back untouched.
+port 2** slot, and it stays after the room closes. If that slot holds a save you
+imported, your own save comes back with the new team in it.
+
+**Watch only.** Tick **Watch only** in the room to sit the battle out. The next
+two players in line play GBA 1 and GBA 2 with their own teams and trainer
+models, and you still press Start and drive XD's menus, which suits a
+tournament stream. Every input still passes through you, so host from a good
+connection to both players. Not available in Multi.
 
 ### Join
 
@@ -121,12 +132,16 @@ until the room closes and your own save comes back untouched.
    100 format you can tick **Raise my team to Lv. 100**. Press **Send**.
 3. Check the room chat for the confirmation line. If it is missing, send again
    before the host starts. A team that breaks the format is refused, and the
-   line says why. You can send any time before Start, and sending again
+   line says why. The room shows the current format, and the host can change
+   it until Start. You can send any time before Start, and sending again
    replaces what you sent. A name with no Gen 3 equivalent is dropped and the
    team still goes through, so check the chat line if the name matters.
 4. Wait. The host presses Start and clicks through XD's menus for both of you.
    Your buttons do nothing there, and that is not a bug. When the GBA
    connection screen appears, leave it alone.
+
+**Watch only.** Tick it to spectate instead. The next player in line takes your
+place. A change during a battle applies to the next one.
 
 ### The GBA connection screen
 
@@ -153,23 +168,118 @@ not:
 
 ## Formats
 
+The host picks the format, and **Orre Colosseum** is the default. Choose one
+in the launcher before you host, or switch in the room with **Change
+Format...** any time before you press Start. Everyone in the room sees the
+current format.
+
 | Format | Entry | Level | Team rules |
 |---|---|---|---|
 | **Orre Colosseum** | bring 6, pick 4, doubles | 100 | Restricted ("box") legendaries and Mythicals banned, Soul Dew banned |
+| **OU** | you set it on XD's rules screen | you set it | the community OU rules. OrreLink applies the community's XD OU game fixes and does not check teams. |
+| **Doubles OU** | all 6 battle, doubles | 100 | 11 Pokémon and 8 moves banned (see below), Species Clause, items unrestricted |
 | **Orre Unlimited** | bring 6, pick 4, doubles | 100 | everything allowed |
 | **Orre Limited** | bring 6, pick 4, doubles | 50 | every legendary banned |
 | **Hoenn Stadium** | bring 6, pick 3, singles | 100 | as Orre Colosseum |
 | **Hoenn Unlimited** | bring 6, pick 3, singles | 100 | everything allowed |
 | **Hoenn Limited** | bring 6, pick 3, singles | 50 | every legendary banned |
-| **OU** | you set it on XD's rules screen | you set it | the community OU rules. OrreLink applies the community's XD OU game fixes and does not check teams. |
+| **Realgam** | bring 6, pick 4, doubles | 100 | as Orre Colosseum, but up to 2 Restricted or Mythical Pokémon allowed |
+| **Realgam Classic** | bring 6, pick 4, doubles | 100 | as Orre Colosseum, but 1 Restricted or Mythical Pokémon allowed |
+| **Pyrite** | bring 6, pick 4, doubles | 50 | only Pokémon that can evolve within their own generation |
+| **Phenac** | bring 6, pick 4, doubles | 50 | only first stages that can evolve within their own generation, some moves banned |
+| **Multi** (experimental) | 4 players, 2 per side, bring 6, pick 3 | 100 | as Orre Colosseum, for each trainer |
 | **Free** | you set it on XD's rules screen | you set it | none. XD's menus are left alone. |
 
+**Orre Colosseum** is XD's own Orre Colosseum ruleset. Each player brings six
+and picks four on the GBA for a double battle at level 100. OrreLink sets XD's
+rules for you and refuses Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon,
+Rayquaza, Jirachi, Deoxys, Soul Dew, and a repeated species or held item.
+
+**OU** is the community's Gen 3 OU ruleset for XD. OrreLink runs the *XD OU
+Fixes* game code for both players and leaves XD's rules screen to you, so you
+set the battle type, level and entries there. Teams are not checked, so hold
+each other to the OU rules.
+
+**Doubles OU** is Smogon's Gen 3 (ADV) Doubles OU: all six Pokémon fight a
+double battle at level 100, and your first two lead. OrreLink sets XD's rules
+for you and refuses Mewtwo, Mew, Lugia, Ho-Oh, Latias, Latios, Kyogre,
+Groudon, Rayquaza, every form of Deoxys, Ninjask, a repeated species, and the
+moves Self-Destruct, Explosion, Double Team, Minimize, Fissure, Guillotine,
+Horn Drill and Sheer Cold. Items are unrestricted, and Wobbuffet and Wynaut
+are allowed.
+
+**Orre Unlimited** is Orre Colosseum with the bans lifted. Each player brings
+six and picks four for a double battle at level 100, and every Pokémon and
+item is allowed, Soul Dew and the Mythicals included. OrreLink sets XD's rules
+and still refuses a repeated species or held item.
+
+**Orre Limited** is Orre Colosseum at level 50 with every legendary banned.
+Each player brings six and picks four for a double battle, and no Pokémon
+above level 50 can enter. OrreLink sets XD's rules and refuses everything
+Orre Colosseum refuses, plus Articuno, Zapdos, Moltres, Raikou, Entei,
+Suicune, Regirock, Regice, Registeel, Latias and Latios.
+
+**Hoenn Stadium** puts Orre Colosseum's rules into single battles. Each player
+brings six and picks three on the GBA for a single battle at level 100.
+OrreLink sets XD's rules and refuses the same Pokémon, items and repeats as
+Orre Colosseum.
+
+**Hoenn Unlimited** is Hoenn Stadium with the bans lifted. Each player brings
+six and picks three for a single battle at level 100, and every Pokémon and
+item is allowed. OrreLink sets XD's rules and still refuses a repeated
+species or held item.
+
+**Hoenn Limited** is Hoenn Stadium at level 50 with every legendary banned.
+Each player brings six and picks three for a single battle, and no Pokémon
+above level 50 can enter. OrreLink sets XD's rules and refuses the same
+Pokémon, items and repeats as Orre Limited.
+
+**Realgam** is Orre Colosseum with room for a couple of heavy hitters. Each
+player brings six and picks four for a double battle at level 100, and the six
+may include up to two of Mewtwo, Mew, Lugia, Ho-Oh, Celebi, Kyogre, Groudon,
+Rayquaza, Jirachi and Deoxys. OrreLink sets XD's rules and still refuses Soul
+Dew and a repeated species or held item.
+
+**Realgam Classic** is Realgam with a limit of one of those ten per team.
+Everything else is the same as Realgam.
+
+**Pyrite** is a level 50 format for Pokémon that still have growing to do.
+Each player brings six and picks four for a double battle, and every Pokémon
+must be able to evolve in the games of the generation it debuted in, so
+Ivysaur, Pikachu and Pichu are in while Scyther, Onix, Chansey, Porygon,
+Seadra and Golbat are out. OrreLink sets XD's rules and also refuses Soul Dew, anything above level
+50, and a repeated species or held item.
+
+**Phenac** keeps Pyrite's rules but allows only first stages: a Pokémon may
+not have an earlier stage from its own generation or before, so Bulbasaur is
+in and Ivysaur is out, while Pikachu, Clefairy, Jigglypuff and Marill are in
+because their babies came later. Metapod, Kakuna, Silcoon and Cascoon are
+allowed as well. Pikachu, Clefairy, Jigglypuff and Marill also lose a fixed
+list of moves they could only get from their baby or an egg (for Marill, only
+moves unique to Azurill), and OrreLink names the move it refuses.
+
+**Multi** (experimental) is XD's GBA + GBA VS GBA + GBA for four players, each
+on their own GBA with their own team and trainer model. The host is Seat 1 and
+three more players take Seats 2 to 4. After the team preview, Seat 1 picks the
+teams on XD's combination screen, and the room chat names them.
+
+**Free** has no rules at all. OrreLink leaves XD's menus alone, so you set the
+battle type, level and entries on XD's rules screen, and no team is checked.
+
 Species Clause, Item Clause, Sleep Clause, Freeze Clause and the Self-KO
-Clause are on in every Orre and Hoenn format, enforced by the game itself.
-The team rules are enforced by OrreLink: a paste that breaks them is flagged
-in the editor, a host cannot open a room with an illegal team, and an illegal
-submission is refused with the reason. Rooms show their format in the lobby
-name (`[Orre]`, `[Hoenn-L]`, and so on).
+Clause are on in every Orre and Hoenn format and in Realgam, Realgam Classic,
+Pyrite and Phenac, enforced by the game itself.
+Doubles OU turns on Species Clause only. The team rules are checked by
+OrreLink: the editor flags a paste that breaks them, and a guest's team that
+breaks them is refused with the reason. If the host's team breaks them, the
+room still opens and the host gets a one-line warning. The final check is at
+**Start**: if a team breaks the current format, Start is refused with a
+one-line reason, and the host can fix the team or switch with **Change
+Format...**.
+
+Rooms show their format in the lobby name (`[Orre]`, `[DOU]`, `[Hoenn-L]`,
+`[Realgam-C]`, and so on). That tag is set when the room opens and stays
+the same if the format changes in the room.
 
 **Battle timer.** Tick **Battle timer** under the Format and set the seconds
 per turn (default 60) and minutes per game (default 20). XD's own timer is set
