@@ -1,0 +1,209 @@
+From c23a19f1bd592e8e660e2f6f59dbe9e7cb361124 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 22:02:01 -0700
+Subject: [PATCH] XD Netplay v1.7.9 (test build): RecordLinkTraffic tester
+ switch
+
+[XDNetplay] RecordLinkTraffic = True writes every READ/WRITE command and reply of the session,
+unfiltered, to GBA/linktrace_<stamp>.txt (GBADetectLog::TraceLink, 96 MB cap), flushed by Share
+Log; Android's Share Log adds the newest trace. For decoding what XD tells the GBAs each turn.
+---
+ .../xdnetplay/ui/XDLauncherActivity.kt        |  6 ++-
+ Source/Core/Core/Config/MainSettings.cpp      |  2 +
+ Source/Core/Core/Config/MainSettings.h        |  3 ++
+ Source/Core/Core/HW/GBADetectLog.cpp          | 47 ++++++++++++++++++-
+ Source/Core/Core/HW/GBADetectLog.h            |  4 ++
+ Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp    | 12 +++++
+ Source/Core/UICommon/XDNetplay/Version.h      |  2 +-
+ 7 files changed, 73 insertions(+), 3 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+index f3e4c26..6d32d28 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+@@ -403,7 +403,11 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+         val dir = java.io.File(getExternalFilesDir(null), "GBA")
+         val logs = (dir.listFiles { f ->
+             f.isFile && f.name.startsWith("gba_detect") && f.name.endsWith(".log")
+-        } ?: emptyArray()).sortedByDescending { it.name }.take(3)
++        } ?: emptyArray()).sortedByDescending { it.name }.take(3) +
++            // The newest link trace, when the RecordLinkTraffic tester switch made one.
++            (dir.listFiles { f ->
++                f.isFile && f.name.startsWith("linktrace_") && f.name.endsWith(".txt")
++            } ?: emptyArray()).sortedByDescending { it.name }.take(1)
+         if (logs.isEmpty()) {
+             android.widget.Toast.makeText(
+                 this, "No detect log yet — boot XD once, then share.",
+diff --git a/Source/Core/Core/Config/MainSettings.cpp b/Source/Core/Core/Config/MainSettings.cpp
+index cbc7e20..ac66e4e 100644
+--- a/Source/Core/Core/Config/MainSettings.cpp
++++ b/Source/Core/Core/Config/MainSettings.cpp
+@@ -434,6 +434,8 @@ const Info<bool> MAIN_XD_MULTI_PREVIEW_CANCEL_PIN{
+     {System::Main, "XDNetplay", "MultiPreviewCancelPin"}, false};
+ const Info<std::string> MAIN_XD_MULTI_SOLO_MODELS{{System::Main, "XDNetplay", "MultiSoloModels"},
+                                                   ""};
++const Info<bool> MAIN_XD_RECORD_LINK_TRAFFIC{
++    {System::Main, "XDNetplay", "RecordLinkTraffic"}, false};
+ const Info<bool> MAIN_XD_TIMER_ENABLED{{System::Main, "XDNetplay", "TimerEnabled"}, false};
+ const Info<int> MAIN_XD_TIMER_TURN_SECONDS{{System::Main, "XDNetplay", "TimerTurnSeconds"}, 60};
+ const Info<int> MAIN_XD_TIMER_GAME_MINUTES{{System::Main, "XDNetplay", "TimerGameMinutes"}, 20};
+diff --git a/Source/Core/Core/Config/MainSettings.h b/Source/Core/Core/Config/MainSettings.h
+index 7d2fe2b..c335b07 100644
+--- a/Source/Core/Core/Config/MainSettings.h
++++ b/Source/Core/Core/Config/MainSettings.h
+@@ -272,6 +272,9 @@ extern const Info<bool> MAIN_XD_MULTI_PREVIEW_CANCEL_PIN;
+ // model ids, for example "2B,16,41" (empty or 0 = that port's save trainer). Port 1 uses "Your
+ // model". Lets one machine check four model picks.
+ extern const Info<std::string> MAIN_XD_MULTI_SOLO_MODELS;
++// Tester switch, INI only: record every GC<->GBA link command and reply of each session to
++// GBA/linktrace_<stamp>.txt (GBADetectLog::TraceLink), for decoding what XD tells the GBAs.
++extern const Info<bool> MAIN_XD_RECORD_LINK_TRAFFIC;
+ // Host-side battle timer, folded into the format rules pin: when enabled and
+ // the Format pins a rules record, BattleCustomizer emits that record's timer
+ // word (+0x14 s16 minutes per game, +0x16 s16 seconds per turn; positive = on)
+diff --git a/Source/Core/Core/HW/GBADetectLog.cpp b/Source/Core/Core/HW/GBADetectLog.cpp
+index 379f427..b83f350 100644
+--- a/Source/Core/Core/HW/GBADetectLog.cpp
++++ b/Source/Core/Core/HW/GBADetectLog.cpp
+@@ -14,7 +14,9 @@
+ #include <fmt/format.h>
+ 
+ #include "Common/CommonPaths.h"
++#include "Common/Config/Config.h"
+ #include "Common/FileUtil.h"
++#include "Core/Config/MainSettings.h"
+ 
+ namespace GBADetectLog
+ {
+@@ -29,7 +31,12 @@ namespace
+ constexpr u64 MAX_LOG_BYTES = 32u << 20;
+ 
+ std::mutex s_mutex;
+-std::ofstream s_file;    // held open for the session; never fopen'd per line
++std::ofstream s_file;
++// Tester switch (XDNetplay/RecordLinkTraffic): every GC<->GBA data command and reply of the
++// session, unfiltered, to linktrace_<same stamp>.txt. Own cap; under s_mutex like s_file.
++std::ofstream s_trace;
++u64 s_trace_bytes = 0;
++constexpr u64 MAX_TRACE_BYTES = 96u << 20;    // held open for the session; never fopen'd per line
+ std::string s_path;
+ u64 s_bytes = 0;         // running size, enforces the cap
+ int s_live_devices = 0;  // ref-count -> session begin/end
+@@ -132,6 +139,29 @@ void Flush()
+   std::lock_guard lock(s_mutex);
+   if (s_file.is_open())
+     s_file.flush();
++  if (s_trace.is_open())
++    s_trace.flush();
++}
++
++bool IsTracingLink()
++{
++  std::lock_guard lock(s_mutex);
++  return s_trace.is_open();
++}
++
++void TraceLink(int channel, u64 tick, char dir, const u8* bytes, int len, int jstat)
++{
++  std::lock_guard lock(s_mutex);
++  if (!s_trace.is_open() || s_trace_bytes >= MAX_TRACE_BYTES || len <= 0)
++    return;
++  std::string line = fmt::format("{} {} {} ", tick, channel, dir);
++  for (int i = 0; i < len; ++i)
++    line += fmt::format("{:02x}", bytes[i]);
++  if (jstat >= 0)
++    line += fmt::format(" {:02x}", jstat);
++  line += '\n';
++  s_trace_bytes += line.size();
++  s_trace << line;
+ }
+ 
+ std::string FilePath()
+@@ -153,6 +183,16 @@ void OnDeviceCreated()
+   s_file.close();
+   s_file.clear();
+   s_file.open(s_path, std::ios::out | std::ios::trunc);
++  s_trace.close();
++  s_trace.clear();
++  s_trace_bytes = 0;
++  if (Config::Get(Config::MAIN_XD_RECORD_LINK_TRAFFIC))
++  {
++    s_trace.open(dir + "linktrace_" + Timestamp("%Y%m%d_%H%M%S") + ".txt",
++                 std::ios::out | std::ios::trunc);
++    if (s_trace.is_open())
++      s_trace << "cols: tick sock dir(>=GC to GBA, <=GBA to GC) bytes(hex) [jstat]\n";
++  }
+   s_bytes = 0;
+   s_capped.store(false, std::memory_order_relaxed);
+   for (auto& per_channel : s_joy_repeat)
+@@ -184,6 +224,11 @@ void OnDeviceDestroyed()
+     WriteLine(fmt::format("session end  {}", Timestamp("%Y-%m-%d %H:%M:%S")), true);
+     s_file.flush();
+     s_file.close();
++    if (s_trace.is_open())
++    {
++      s_trace.flush();
++      s_trace.close();
++    }
+   }
+ }
+ 
+diff --git a/Source/Core/Core/HW/GBADetectLog.h b/Source/Core/Core/HW/GBADetectLog.h
+index e30c16b..3fa4879 100644
+--- a/Source/Core/Core/HW/GBADetectLog.h
++++ b/Source/Core/Core/HW/GBADetectLog.h
+@@ -25,6 +25,10 @@ std::string FilePath();
+ // Writes everything buffered to disk, so a copy taken while a game runs (Share Log) is
+ // complete. Any thread.
+ void Flush();
++// Tester switch XDNetplay/RecordLinkTraffic: the session's full GC<->GBA data traffic goes to
++// linktrace_<stamp>.txt beside the log. IsTracingLink is cheap enough to ask per command.
++bool IsTracingLink();
++void TraceLink(int channel, u64 tick, char dir, const u8* bytes, int len, int jstat = -1);
+ 
+ // CSIDevice_GBAEmu ctor/dtor (CPU/host thread). Reference-counted: the first
+ // live GBA device of a session truncates the file, writes the banner as line 1
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+index 273d4c8..6934061 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+@@ -793,6 +793,9 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
+     // minimum tick gap (Review #1 I4). In the socket-3 failure the class stays
+     // at 1 (STATUS), so class_changed is false and H8 falls silent after the
+     // boot budget; the healthy upload oscillates class and is capped at ~200/s.
++    // Tester trace: every data command (not the status probes), unfiltered.
++    if (data_cmd_now && GBADetectLog::IsTracingLink())
++      GBADetectLog::TraceLink(m_device_number, m_timestamp_sent, '>', buffer, request_length);
+     const u8 cmd_class = probing ? 1u : (data_cmd_now ? 2u : 0u);
+     const bool class_changed = cmd_class != m_diag_prev_cmd_class;
+     m_diag_prev_cmd_class = cmd_class;
+@@ -862,6 +865,15 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
+   {
+     m_next_action = NextAction::SendCommand;
+     const auto response_length = m_core->GetJoybusResponse(buffer);
++    if (response_length > 0 &&
++        (m_last_cmd == EBufferCommands::CMD_READ_GBA ||
++         m_last_cmd == EBufferCommands::CMD_WRITE_GBA) &&
++        GBADetectLog::IsTracingLink())
++    {
++      GBADetectLog::TraceLink(m_device_number, m_timestamp_sent, '<', buffer,
++                              static_cast<int>(response_length),
++                              m_core->GetJoyStatAfterCommand());
++    }
+ 
+     // H9 (gba_detect.log). A withheld command (m_diag_cmd_sent == false) makes
+     // the core return 0 with nothing having been asked, so it must NEVER be
+diff --git a/Source/Core/UICommon/XDNetplay/Version.h b/Source/Core/UICommon/XDNetplay/Version.h
+index 20fc992..108cbe7 100644
+--- a/Source/Core/UICommon/XDNetplay/Version.h
++++ b/Source/Core/UICommon/XDNetplay/Version.h
+@@ -11,5 +11,5 @@ namespace XDNetplay
+ // fork's release, so it cannot answer "which XD Netplay am I?" -- this constant is the only thing
+ // that can. It MUST be bumped in the same patch that a release is tagged from: ship a tag ahead of
+ // this string and every user of that release is told they are out of date forever.
+-constexpr char VERSION[] = "1.7.8";
++constexpr char VERSION[] = "1.7.9";
+ }  // namespace XDNetplay
+-- 
+2.39.5 (Apple Git-154)
+
