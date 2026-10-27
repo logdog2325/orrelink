@@ -25,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -37,6 +38,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import org.dolphinemu.dolphinemu.features.xdnetplay.SaveImportBridge
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -254,6 +256,20 @@ fun XDLauncherScreen(
                     TextButton(onClick = onOpenDolphin) { Text("Full Dolphin") }
                     Spacer(Modifier.width(12.dp))
                     TextButton(onClick = onShareDetectLog) { Text("Share log") }
+                }
+                // Tester switch: record every message between XD and the GBAs next to the
+                // session log (for the battle transcript). Share log sends the newest one.
+                var recordLink by remember { mutableStateOf(SaveImportBridge.getRecordLinkTraffic()) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = recordLink,
+                        onCheckedChange = {
+                            recordLink = it
+                            SaveImportBridge.setRecordLinkTraffic(it)
+                        }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Record link traffic (for testers; big files)")
                 }
             }
             Spacer(Modifier.height(16.dp))

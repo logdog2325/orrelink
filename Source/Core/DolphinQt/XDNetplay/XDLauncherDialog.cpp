@@ -613,9 +613,21 @@ void XDLauncherDialog::CreateMainLayout()
   m_share_log_button->setToolTip(
       tr("Save the newest session log (gba_detect_*.log) to a place of your choice and open "
          "that folder, so you can send it. Send the newest one after a problem."));
+  // Tester switch: every message between XD and the GBAs goes to a linktrace_ file next to the
+  // session log (for the battle transcript); Share Log saves the newest one with the log.
+  auto* record_link_check = new QCheckBox(tr("Record link traffic"));
+  record_link_check->setToolTip(
+      tr("For testers: save every message between XD and the GBAs next to the session log.\n"
+         "Share Log sends it too. The files are large, so turn it off afterwards."));
+  record_link_check->setChecked(Config::Get(Config::MAIN_XD_RECORD_LINK_TRAFFIC));
+  connect(record_link_check, &QCheckBox::toggled, this, [](bool on) {
+    Config::SetBaseOrCurrent(Config::MAIN_XD_RECORD_LINK_TRAFFIC, on);
+    Config::Save();
+  });
   auto* footer_row = new QHBoxLayout;
   footer_row->addWidget(m_show_on_startup_check);
   footer_row->addStretch(1);
+  footer_row->addWidget(record_link_check);
   footer_row->addWidget(m_share_log_button);
   auto* footer = new QVBoxLayout;
   const QMargins m = layout->contentsMargins();
@@ -708,6 +720,19 @@ void XDLauncherDialog::OnShareLog()
     QFile::remove(staging);
     ModalMessageBox::critical(this, tr("Share Log"), tr("Could not replace %1").arg(target));
     return;
+  }
+  // The newest link recording (Record link traffic), saved beside the log under its own name.
+  const QStringList traces =
+      logs.entryList({QStringLiteral("linktrace_*.txt")}, QDir::Files, QDir::Time);
+  if (!traces.isEmpty())
+  {
+    const QString trace_target = QFileInfo(target).absoluteDir().filePath(traces.first());
+    if (QFileInfo(trace_target).canonicalFilePath() !=
+        QFileInfo(logs.filePath(traces.first())).canonicalFilePath())
+    {
+      QFile::remove(trace_target);
+      QFile::copy(logs.filePath(traces.first()), trace_target);
+    }
   }
   QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(target).absolutePath()));
 }

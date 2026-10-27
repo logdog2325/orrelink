@@ -473,6 +473,22 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeDeleteS
   return XDNetplay::DeleteSavedTeam(GetJString(env, name)) ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeGetRecordLinkTraffic(
+    JNIEnv*, jobject)
+{
+  return Config::Get(Config::MAIN_XD_RECORD_LINK_TRAFFIC) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeSetRecordLinkTraffic(
+    JNIEnv*, jobject, jboolean on)
+{
+  // Read when the next game's first GBA starts (GBADetectLog::OnDeviceCreated).
+  Config::SetBaseOrCurrent(Config::MAIN_XD_RECORD_LINK_TRAFFIC, on == JNI_TRUE);
+  Config::Save();
+}
+
 JNIEXPORT void JNICALL
 Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeFlushDetectLog(JNIEnv*,
                                                                                         jobject)
