@@ -27,6 +27,10 @@ std::string FilePath();
 void Flush();
 // Tester switch XDNetplay/RecordLinkTraffic: the session's full GC<->GBA data traffic goes to
 // linktrace_<stamp>.txt beside the log. IsTracingLink is cheap enough to ask per command.
+// The battle transcript (battle_<stamp>.txt at session close): every GC->GBA WRITE's data and
+// every GBA READ reply of the session's GBAs. CPU thread, from the GBA device.
+void BattleLinkWrite(int channel, u64 tick, const u8* data);
+void BattleLinkRead(int channel, u64 tick, const u8* data);
 bool IsTracingLink();
 void TraceLink(int channel, u64 tick, char dir, const u8* bytes, int len, int jstat = -1);
 

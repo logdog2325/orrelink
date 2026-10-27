@@ -407,6 +407,10 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
             // The newest link trace, when the RecordLinkTraffic tester switch made one.
             (dir.listFiles { f ->
                 f.isFile && f.name.startsWith("linktrace_") && f.name.endsWith(".txt")
+            } ?: emptyArray()).sortedByDescending { it.name }.take(1) +
+            // The newest battle transcript.
+            (dir.listFiles { f ->
+                f.isFile && f.name.startsWith("battle_") && f.name.endsWith(".txt")
             } ?: emptyArray()).sortedByDescending { it.name }.take(1)
         if (logs.isEmpty()) {
             android.widget.Toast.makeText(
