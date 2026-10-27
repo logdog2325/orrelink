@@ -14,7 +14,9 @@
 #include <fmt/format.h>
 
 #include "Common/CommonPaths.h"
+#include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
+#include "Core/Config/MainSettings.h"
 
 namespace GBADetectLog
 {
@@ -29,7 +31,12 @@ namespace
 constexpr u64 MAX_LOG_BYTES = 32u << 20;
 
 std::mutex s_mutex;
-std::ofstream s_file;    // held open for the session; never fopen'd per line
+std::ofstream s_file;
+// Tester switch (XDNetplay/RecordLinkTraffic): every GC<->GBA data command and reply of the
+// session, unfiltered, to linktrace_<same stamp>.txt. Own cap; under s_mutex like s_file.
+std::ofstream s_trace;
+u64 s_trace_bytes = 0;
+constexpr u64 MAX_TRACE_BYTES = 96u << 20;    // held open for the session; never fopen'd per line
 std::string s_path;
 u64 s_bytes = 0;         // running size, enforces the cap
 int s_live_devices = 0;  // ref-count -> session begin/end
@@ -132,6 +139,29 @@ void Flush()
   std::lock_guard lock(s_mutex);
   if (s_file.is_open())
     s_file.flush();
+  if (s_trace.is_open())
+    s_trace.flush();
+}
+
+bool IsTracingLink()
+{
+  std::lock_guard lock(s_mutex);
+  return s_trace.is_open();
+}
+
+void TraceLink(int channel, u64 tick, char dir, const u8* bytes, int len, int jstat)
+{
+  std::lock_guard lock(s_mutex);
+  if (!s_trace.is_open() || s_trace_bytes >= MAX_TRACE_BYTES || len <= 0)
+    return;
+  std::string line = fmt::format("{} {} {} ", tick, channel, dir);
+  for (int i = 0; i < len; ++i)
+    line += fmt::format("{:02x}", bytes[i]);
+  if (jstat >= 0)
+    line += fmt::format(" {:02x}", jstat);
+  line += '\n';
+  s_trace_bytes += line.size();
+  s_trace << line;
 }
 
 std::string FilePath()
@@ -153,6 +183,16 @@ void OnDeviceCreated()
   s_file.close();
   s_file.clear();
   s_file.open(s_path, std::ios::out | std::ios::trunc);
+  s_trace.close();
+  s_trace.clear();
+  s_trace_bytes = 0;
+  if (Config::Get(Config::MAIN_XD_RECORD_LINK_TRAFFIC))
+  {
+    s_trace.open(dir + "linktrace_" + Timestamp("%Y%m%d_%H%M%S") + ".txt",
+                 std::ios::out | std::ios::trunc);
+    if (s_trace.is_open())
+      s_trace << "cols: tick sock dir(>=GC to GBA, <=GBA to GC) bytes(hex) [jstat]\n";
+  }
   s_bytes = 0;
   s_capped.store(false, std::memory_order_relaxed);
   for (auto& per_channel : s_joy_repeat)
@@ -184,6 +224,11 @@ void OnDeviceDestroyed()
     WriteLine(fmt::format("session end  {}", Timestamp("%Y-%m-%d %H:%M:%S")), true);
     s_file.flush();
     s_file.close();
+    if (s_trace.is_open())
+    {
+      s_trace.flush();
+      s_trace.close();
+    }
   }
 }
 

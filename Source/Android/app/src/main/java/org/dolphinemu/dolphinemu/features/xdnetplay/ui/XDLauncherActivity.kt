@@ -403,7 +403,11 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         val dir = java.io.File(getExternalFilesDir(null), "GBA")
         val logs = (dir.listFiles { f ->
             f.isFile && f.name.startsWith("gba_detect") && f.name.endsWith(".log")
-        } ?: emptyArray()).sortedByDescending { it.name }.take(3)
+        } ?: emptyArray()).sortedByDescending { it.name }.take(3) +
+            // The newest link trace, when the RecordLinkTraffic tester switch made one.
+            (dir.listFiles { f ->
+                f.isFile && f.name.startsWith("linktrace_") && f.name.endsWith(".txt")
+            } ?: emptyArray()).sortedByDescending { it.name }.take(1)
         if (logs.isEmpty()) {
             android.widget.Toast.makeText(
                 this, "No detect log yet — boot XD once, then share.",

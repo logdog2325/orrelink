@@ -793,6 +793,9 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     // minimum tick gap (Review #1 I4). In the socket-3 failure the class stays
     // at 1 (STATUS), so class_changed is false and H8 falls silent after the
     // boot budget; the healthy upload oscillates class and is capped at ~200/s.
+    // Tester trace: every data command (not the status probes), unfiltered.
+    if (data_cmd_now && GBADetectLog::IsTracingLink())
+      GBADetectLog::TraceLink(m_device_number, m_timestamp_sent, '>', buffer, request_length);
     const u8 cmd_class = probing ? 1u : (data_cmd_now ? 2u : 0u);
     const bool class_changed = cmd_class != m_diag_prev_cmd_class;
     m_diag_prev_cmd_class = cmd_class;
@@ -862,6 +865,15 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
   {
     m_next_action = NextAction::SendCommand;
     const auto response_length = m_core->GetJoybusResponse(buffer);
+    if (response_length > 0 &&
+        (m_last_cmd == EBufferCommands::CMD_READ_GBA ||
+         m_last_cmd == EBufferCommands::CMD_WRITE_GBA) &&
+        GBADetectLog::IsTracingLink())
+    {
+      GBADetectLog::TraceLink(m_device_number, m_timestamp_sent, '<', buffer,
+                              static_cast<int>(response_length),
+                              m_core->GetJoyStatAfterCommand());
+    }
 
     // H9 (gba_detect.log). A withheld command (m_diag_cmd_sent == false) makes
     // the core return 0 with nothing having been asked, so it must NEVER be
