@@ -434,6 +434,8 @@ const Info<bool> MAIN_XD_MULTI_PREVIEW_CANCEL_PIN{
     {System::Main, "XDNetplay", "MultiPreviewCancelPin"}, false};
 const Info<std::string> MAIN_XD_MULTI_SOLO_MODELS{{System::Main, "XDNetplay", "MultiSoloModels"},
                                                   ""};
+const Info<bool> MAIN_XD_RECORD_LINK_TRAFFIC{
+    {System::Main, "XDNetplay", "RecordLinkTraffic"}, false};
 const Info<bool> MAIN_XD_TIMER_ENABLED{{System::Main, "XDNetplay", "TimerEnabled"}, false};
 const Info<int> MAIN_XD_TIMER_TURN_SECONDS{{System::Main, "XDNetplay", "TimerTurnSeconds"}, 60};
 const Info<int> MAIN_XD_TIMER_GAME_MINUTES{{System::Main, "XDNetplay", "TimerGameMinutes"}, 20};

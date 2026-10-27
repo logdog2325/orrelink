@@ -272,6 +272,9 @@ extern const Info<bool> MAIN_XD_MULTI_PREVIEW_CANCEL_PIN;
 // model ids, for example "2B,16,41" (empty or 0 = that port's save trainer). Port 1 uses "Your
 // model". Lets one machine check four model picks.
 extern const Info<std::string> MAIN_XD_MULTI_SOLO_MODELS;
+// Tester switch, INI only: record every GC<->GBA link command and reply of each session to
+// GBA/linktrace_<stamp>.txt (GBADetectLog::TraceLink), for decoding what XD tells the GBAs.
+extern const Info<bool> MAIN_XD_RECORD_LINK_TRAFFIC;
 // Host-side battle timer, folded into the format rules pin: when enabled and
 // the Format pins a rules record, BattleCustomizer emits that record's timer
 // word (+0x14 s16 minutes per game, +0x16 s16 seconds per turn; positive = on)
