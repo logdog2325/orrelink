@@ -77,6 +77,11 @@ object SaveImportBridge {
 
     fun deleteSavedTeam(name: String): Boolean = nativeDeleteSavedTeam(name)
 
+    /** The RecordLinkTraffic tester switch ([XDNetplay] in Dolphin.ini). */
+    fun getRecordLinkTraffic(): Boolean = nativeGetRecordLinkTraffic()
+
+    fun setRecordLinkTraffic(on: Boolean) = nativeSetRecordLinkTraffic(on)
+
     /** Outcome encoding shared with the C++ side: ["1"/"0", message]. */
     private fun parseOutcome(flat: Array<String>): Outcome =
         Outcome(ok = flat.getOrNull(0) == "1", message = flat.getOrNull(1) ?: "")
@@ -96,4 +101,8 @@ object SaveImportBridge {
     private external fun nativeSaveTeam(name: String, text: String): String
 
     private external fun nativeDeleteSavedTeam(name: String): Boolean
+
+    private external fun nativeGetRecordLinkTraffic(): Boolean
+
+    private external fun nativeSetRecordLinkTraffic(on: Boolean)
 }
