@@ -1,0 +1,157 @@
+From 126354dc646e9b2912e629463e25dae0879bd565 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 22:46:40 -0700
+Subject: [PATCH 169/170] XD Netplay: Record link traffic checkbox in the
+ launcher (desktop and Android)
+
+The RecordLinkTraffic tester switch gets a launcher control on both platforms, and the desktop
+Share Log saves the newest linktrace_ file beside the log it saves.
+---
+ .../features/xdnetplay/SaveImportBridge.kt    |  9 +++++++
+ .../features/xdnetplay/ui/XDLauncherScreen.kt | 16 ++++++++++++
+ .../jni/NetPlay/NetPlayIndexBridge.cpp        | 16 ++++++++++++
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 25 +++++++++++++++++++
+ 4 files changed, 66 insertions(+)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/SaveImportBridge.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/SaveImportBridge.kt
+index b489529..378e96c 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/SaveImportBridge.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/SaveImportBridge.kt
+@@ -77,6 +77,11 @@ object SaveImportBridge {
+ 
+     fun deleteSavedTeam(name: String): Boolean = nativeDeleteSavedTeam(name)
+ 
++    /** The RecordLinkTraffic tester switch ([XDNetplay] in Dolphin.ini). */
++    fun getRecordLinkTraffic(): Boolean = nativeGetRecordLinkTraffic()
++
++    fun setRecordLinkTraffic(on: Boolean) = nativeSetRecordLinkTraffic(on)
++
+     /** Outcome encoding shared with the C++ side: ["1"/"0", message]. */
+     private fun parseOutcome(flat: Array<String>): Outcome =
+         Outcome(ok = flat.getOrNull(0) == "1", message = flat.getOrNull(1) ?: "")
+@@ -96,4 +101,8 @@ object SaveImportBridge {
+     private external fun nativeSaveTeam(name: String, text: String): String
+ 
+     private external fun nativeDeleteSavedTeam(name: String): Boolean
++
++    private external fun nativeGetRecordLinkTraffic(): Boolean
++
++    private external fun nativeSetRecordLinkTraffic(on: Boolean)
+ }
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+index 9487d77..e4b7741 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+@@ -25,6 +25,7 @@ import androidx.compose.material3.Icon
+ import androidx.compose.material3.MaterialTheme
+ import androidx.compose.material3.OutlinedButton
+ import androidx.compose.material3.Scaffold
++import androidx.compose.material3.Switch
+ import androidx.compose.material3.Text
+ import androidx.compose.material3.TextButton
+ import androidx.compose.runtime.Composable
+@@ -37,6 +38,7 @@ import androidx.compose.runtime.mutableStateOf
+ import androidx.compose.runtime.remember
+ import androidx.compose.runtime.setValue
+ import androidx.compose.ui.Alignment
++import org.dolphinemu.dolphinemu.features.xdnetplay.SaveImportBridge
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.res.stringResource
+ import androidx.compose.ui.text.font.FontWeight
+@@ -255,6 +257,20 @@ fun XDLauncherScreen(
+                     Spacer(Modifier.width(12.dp))
+                     TextButton(onClick = onShareDetectLog) { Text("Share log") }
+                 }
++                // Tester switch: record every message between XD and the GBAs next to the
++                // session log (for the battle transcript). Share log sends the newest one.
++                var recordLink by remember { mutableStateOf(SaveImportBridge.getRecordLinkTraffic()) }
++                Row(verticalAlignment = Alignment.CenterVertically) {
++                    Switch(
++                        checked = recordLink,
++                        onCheckedChange = {
++                            recordLink = it
++                            SaveImportBridge.setRecordLinkTraffic(it)
++                        }
++                    )
++                    Spacer(Modifier.width(8.dp))
++                    Text("Record link traffic (for testers; big files)")
++                }
+             }
+             Spacer(Modifier.height(16.dp))
+         }
+diff --git a/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp b/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
+index 4fa5f28..5ecf72c 100644
+--- a/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
++++ b/Source/Android/jni/NetPlay/NetPlayIndexBridge.cpp
+@@ -473,6 +473,22 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeDeleteS
+   return XDNetplay::DeleteSavedTeam(GetJString(env, name)) ? JNI_TRUE : JNI_FALSE;
+ }
+ 
++JNIEXPORT jboolean JNICALL
++Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeGetRecordLinkTraffic(
++    JNIEnv*, jobject)
++{
++  return Config::Get(Config::MAIN_XD_RECORD_LINK_TRAFFIC) ? JNI_TRUE : JNI_FALSE;
++}
++
++JNIEXPORT void JNICALL
++Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeSetRecordLinkTraffic(
++    JNIEnv*, jobject, jboolean on)
++{
++  // Read when the next game's first GBA starts (GBADetectLog::OnDeviceCreated).
++  Config::SetBaseOrCurrent(Config::MAIN_XD_RECORD_LINK_TRAFFIC, on == JNI_TRUE);
++  Config::Save();
++}
++
+ JNIEXPORT void JNICALL
+ Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeFlushDetectLog(JNIEnv*,
+                                                                                         jobject)
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index de852f9..5c77281 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -613,9 +613,21 @@ void XDLauncherDialog::CreateMainLayout()
+   m_share_log_button->setToolTip(
+       tr("Save the newest session log (gba_detect_*.log) to a place of your choice and open "
+          "that folder, so you can send it. Send the newest one after a problem."));
++  // Tester switch: every message between XD and the GBAs goes to a linktrace_ file next to the
++  // session log (for the battle transcript); Share Log saves the newest one with the log.
++  auto* record_link_check = new QCheckBox(tr("Record link traffic"));
++  record_link_check->setToolTip(
++      tr("For testers: save every message between XD and the GBAs next to the session log.\n"
++         "Share Log sends it too. The files are large, so turn it off afterwards."));
++  record_link_check->setChecked(Config::Get(Config::MAIN_XD_RECORD_LINK_TRAFFIC));
++  connect(record_link_check, &QCheckBox::toggled, this, [](bool on) {
++    Config::SetBaseOrCurrent(Config::MAIN_XD_RECORD_LINK_TRAFFIC, on);
++    Config::Save();
++  });
+   auto* footer_row = new QHBoxLayout;
+   footer_row->addWidget(m_show_on_startup_check);
+   footer_row->addStretch(1);
++  footer_row->addWidget(record_link_check);
+   footer_row->addWidget(m_share_log_button);
+   auto* footer = new QVBoxLayout;
+   const QMargins m = layout->contentsMargins();
+@@ -709,6 +721,19 @@ void XDLauncherDialog::OnShareLog()
+     ModalMessageBox::critical(this, tr("Share Log"), tr("Could not replace %1").arg(target));
+     return;
+   }
++  // The newest link recording (Record link traffic), saved beside the log under its own name.
++  const QStringList traces =
++      logs.entryList({QStringLiteral("linktrace_*.txt")}, QDir::Files, QDir::Time);
++  if (!traces.isEmpty())
++  {
++    const QString trace_target = QFileInfo(target).absoluteDir().filePath(traces.first());
++    if (QFileInfo(trace_target).canonicalFilePath() !=
++        QFileInfo(logs.filePath(traces.first())).canonicalFilePath())
++    {
++      QFile::remove(trace_target);
++      QFile::copy(logs.filePath(traces.first()), trace_target);
++    }
++  }
+   QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(target).absolutePath()));
+ }
+ 
+-- 
+2.39.5 (Apple Git-154)
+
