@@ -62,6 +62,7 @@
 #include "UICommon/XDNetplay/Gen3Mon.h"
 #include "UICommon/XDNetplay/SaveImport.h"
 #include "UICommon/XDNetplay/ShowdownParser.h"
+#include "UICommon/XDNetplay/TeamInjector.h"
 #include "UICommon/XDNetplay/UpdateCheck.h"
 #include "UICommon/XDNetplay/Version.h"
 
@@ -438,6 +439,38 @@ Java_org_dolphinemu_dolphinemu_features_xdnetplay_BattleStyleBridge_nativePrepar
   // disposable -- put the real import back so this solo boot plays the user's
   // own save again (DisposableSave.h). No-op while a room is open.
   XDNetplay::DisposableSave::HealLeftoverSession();
+}
+
+// Saved teams for the Submit Team sheet (UICommon/XDNetplay/TeamInjector.h). Local files only.
+JNIEXPORT jobjectArray JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeListSavedTeams(JNIEnv* env,
+                                                                                       jobject)
+{
+  const std::vector<std::string> names = XDNetplay::ListSavedTeams();
+  return SpanToJStringArray(env, std::span<const std::string>(names));
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeLoadSavedTeam(
+    JNIEnv* env, jobject, jstring name)
+{
+  return ToJString(env, XDNetplay::LoadSavedTeam(GetJString(env, name)).value_or(""));
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeSaveTeam(JNIEnv* env,
+                                                                                 jobject,
+                                                                                 jstring name,
+                                                                                 jstring text)
+{
+  return ToJString(env, XDNetplay::SaveTeamText(GetJString(env, name), GetJString(env, text)));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_dolphinemu_dolphinemu_features_xdnetplay_SaveImportBridge_nativeDeleteSavedTeam(
+    JNIEnv* env, jobject, jstring name)
+{
+  return XDNetplay::DeleteSavedTeam(GetJString(env, name)) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

@@ -66,6 +66,17 @@ object SaveImportBridge {
     /** Writes out the live session log, so a share taken mid-game is complete. */
     fun flushDetectLog() = nativeFlushDetectLog()
 
+    /** Saved teams (Showdown text files in the app's XDNetplay/Teams folder), names sorted. */
+    fun listSavedTeams(): List<String> = nativeListSavedTeams().toList()
+
+    /** The saved team's text, or "" when there is no such team. */
+    fun loadSavedTeam(name: String): String = nativeLoadSavedTeam(name)
+
+    /** Stores [text] as [name]; returns the name it was stored under, "" on failure. */
+    fun saveTeam(name: String, text: String): String = nativeSaveTeam(name, text)
+
+    fun deleteSavedTeam(name: String): Boolean = nativeDeleteSavedTeam(name)
+
     /** Outcome encoding shared with the C++ side: ["1"/"0", message]. */
     private fun parseOutcome(flat: Array<String>): Outcome =
         Outcome(ok = flat.getOrNull(0) == "1", message = flat.getOrNull(1) ?: "")
@@ -77,4 +88,12 @@ object SaveImportBridge {
     private external fun nativeHealLeftoverSession()
 
     private external fun nativeFlushDetectLog()
+
+    private external fun nativeListSavedTeams(): Array<String>
+
+    private external fun nativeLoadSavedTeam(name: String): String
+
+    private external fun nativeSaveTeam(name: String, text: String): String
+
+    private external fun nativeDeleteSavedTeam(name: String): Boolean
 }

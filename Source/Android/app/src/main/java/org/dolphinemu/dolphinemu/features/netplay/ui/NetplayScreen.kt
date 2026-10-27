@@ -46,6 +46,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
@@ -76,6 +77,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import org.dolphinemu.dolphinemu.features.xdnetplay.SaveImportBridge
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -362,6 +364,11 @@ fun NetplayScreen(
                         // Not part of a bundle submission; the draft is kept.
                         enabled = !useMySave,
                         modifier = Modifier.fillMaxWidth().height(220.dp)
+                    )
+                    SavedTeamsRow(
+                        teamText = teamDraft,
+                        onPick = { teamDraft = it },
+                        enabled = !useMySave
                     )
                     // Paste-time format note, shown immediately while the
                     // local Format pick carries team rules. NEVER blocking: Send
@@ -2222,4 +2229,94 @@ private fun PreviewNetplayScreen() {
 //            ),
 //        ),
     )
+}
+
+/**
+ * XD Netplay: the Submit Team sheet's saved teams (Showdown text files on this device). Picking
+ * one only fills the team box; Save stores what the box holds under a name.
+ */
+@Composable
+private fun SavedTeamsRow(teamText: String, onPick: (String) -> Unit, enabled: Boolean) {
+    var names by remember { mutableStateOf(SaveImportBridge.listSavedTeams()) }
+    var picked by remember { mutableStateOf<String?>(null) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var naming by remember { mutableStateOf(false) }
+    var nameDraft by remember { mutableStateOf("") }
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f)) {
+            OutlinedButton(
+                onClick = { menuOpen = true },
+                enabled = enabled && names.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    picked ?: stringResource(
+                        if (names.isEmpty()) R.string.xd_saved_teams_none
+                        else R.string.xd_saved_teams
+                    )
+                )
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                names.forEach { name ->
+                    DropdownMenuItem(
+                        text = { Text(name) },
+                        onClick = {
+                            menuOpen = false
+                            picked = name
+                            val text = SaveImportBridge.loadSavedTeam(name)
+                            if (text.isNotEmpty()) onPick(text)
+                        }
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        TextButton(
+            onClick = {
+                nameDraft = picked ?: ""
+                naming = true
+            },
+            enabled = enabled && teamText.isNotBlank()
+        ) { Text(stringResource(R.string.xd_saved_team_save)) }
+        TextButton(
+            onClick = {
+                picked?.let { SaveImportBridge.deleteSavedTeam(it) }
+                picked = null
+                names = SaveImportBridge.listSavedTeams()
+            },
+            enabled = enabled && picked != null
+        ) { Text(stringResource(R.string.xd_saved_team_delete)) }
+    }
+    if (naming) {
+        AlertDialog(
+            onDismissRequest = { naming = false },
+            title = { Text(stringResource(R.string.xd_saved_team_save)) },
+            text = {
+                OutlinedTextField(
+                    value = nameDraft,
+                    onValueChange = { nameDraft = it.take(40) },
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.xd_saved_team_name)) }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val stored = SaveImportBridge.saveTeam(nameDraft.trim(), teamText)
+                        naming = false
+                        if (stored.isNotEmpty()) {
+                            picked = stored
+                            names = SaveImportBridge.listSavedTeams()
+                        }
+                    },
+                    enabled = nameDraft.isNotBlank()
+                ) { Text(stringResource(android.R.string.ok)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { naming = false }) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+            }
+        )
+    }
 }

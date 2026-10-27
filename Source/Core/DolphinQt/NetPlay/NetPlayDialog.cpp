@@ -15,6 +15,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -747,6 +748,77 @@ QString NetPlayDialog::WatchOnlyToolTip(bool multi, bool host_watching)
             "during a battle applies to the next one.");
 }
 
+QHBoxLayout* NetPlayDialog::MakeSavedTeamsRow(QDialog* dialog, QPlainTextEdit* team_edit)
+{
+  auto* row = new QHBoxLayout;
+  auto* combo = new QComboBox(dialog);
+  combo->setToolTip(tr("Teams you saved on this device. Picking one only fills the box."));
+  auto* save_button = new QPushButton(tr("Save Team As..."), dialog);
+  save_button->setAutoDefault(false);
+  save_button->setToolTip(tr("Keep the team in the box on this device, under a name."));
+  auto* delete_button = new QPushButton(tr("Delete Saved Team"), dialog);
+  delete_button->setAutoDefault(false);
+  const auto refill = [combo, delete_button](const QString& select) {
+    const QSignalBlocker blocker(combo);
+    combo->clear();
+    combo->addItem(tr("Saved teams..."), QString());
+    for (const std::string& name : XDNetplay::ListSavedTeams())
+      combo->addItem(QString::fromStdString(name), QString::fromStdString(name));
+    const int index = select.isEmpty() ? 0 : combo->findData(select);
+    combo->setCurrentIndex(index > 0 ? index : 0);
+    delete_button->setEnabled(combo->currentIndex() > 0);
+  };
+  refill(QString());
+  connect(combo, &QComboBox::activated, dialog, [combo, team_edit, delete_button](int index) {
+    delete_button->setEnabled(index > 0);
+    if (index <= 0)
+      return;
+    if (const auto text = XDNetplay::LoadSavedTeam(combo->itemData(index).toString().toStdString()))
+      team_edit->setPlainText(QString::fromStdString(*text));
+  });
+  connect(save_button, &QPushButton::clicked, dialog, [dialog, combo, team_edit, refill] {
+    const QString text = team_edit->toPlainText().trimmed();
+    if (text.isEmpty())
+    {
+      ModalMessageBox::information(dialog, tr("Save Team"), tr("Paste a team first."));
+      return;
+    }
+    bool ok = false;
+    const QString name =
+        QInputDialog::getText(dialog, tr("Save Team"), tr("Name:"), QLineEdit::Normal,
+                              combo->currentIndex() > 0 ? combo->currentData().toString() :
+                                                          QString(),
+                              &ok)
+            .trimmed();
+    if (!ok || name.isEmpty())
+      return;
+    const std::string stored = XDNetplay::SaveTeamText(name.toStdString(), text.toStdString());
+    if (stored.empty())
+    {
+      ModalMessageBox::warning(dialog, tr("Save Team"), tr("Could not save that team."));
+      return;
+    }
+    refill(QString::fromStdString(stored));
+  });
+  connect(delete_button, &QPushButton::clicked, dialog, [dialog, combo, refill] {
+    if (combo->currentIndex() <= 0)
+      return;
+    const QString name = combo->currentData().toString();
+    if (ModalMessageBox::question(dialog, tr("Delete Saved Team"),
+                                  tr("Delete the saved team \"%1\"?").arg(name)) !=
+        QMessageBox::Yes)
+    {
+      return;
+    }
+    XDNetplay::DeleteSavedTeam(name.toStdString());
+    refill(QString());
+  });
+  row->addWidget(combo, 1);
+  row->addWidget(save_button);
+  row->addWidget(delete_button);
+  return row;
+}
+
 QString NetPlayDialog::JoinerSubmitTeamToolTip()
 {
   return tr("Send your own Showdown team to the host, so you play your own Pokémon.\n"
@@ -1379,6 +1451,7 @@ void NetPlayDialog::OnSubmitTeam()
   auto* team_edit = new QPlainTextEdit(&dialog);
   team_edit->setPlaceholderText(tr("Showdown export or pokepast.es link"));
   dialog_layout->addWidget(team_edit, 1);
+  dialog_layout->addLayout(MakeSavedTeamsRow(&dialog, team_edit));
 
   // Paste-time FORMAT feedback (FormatRules.h): under the ROOM's format (the
   // host's, from the server's XdFormat; the local pick until that arrives), a
@@ -1730,6 +1803,7 @@ void NetPlayDialog::OnSubmitHostTeam()
   team_edit->setPlaceholderText(
       tr("Showdown export or pokepast.es link. Leave empty to keep your current team."));
   dialog_layout->addWidget(team_edit, 1);
+  dialog_layout->addLayout(MakeSavedTeamsRow(&dialog, team_edit));
 
   // The same live "not <format> legal" note as the joiner's sheet. Here the
   // format is the room's own (the key the host's format change writes), and

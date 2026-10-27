@@ -22,6 +22,8 @@ class GameDigestDialog;
 class PadMappingDialog;
 class QCheckBox;
 class QComboBox;
+class QHBoxLayout;
+class QPlainTextEdit;
 class QGridLayout;
 class QGroupBox;
 class QLabel;
@@ -126,6 +128,9 @@ private:
   void OnSetHostName();
   void OnStart();
   static QString JoinerSubmitTeamToolTip();
+  // The "Saved teams" row of a Submit Team sheet: picking one fills team_edit; Save as... stores
+  // what team_edit holds; Delete removes the picked one (UICommon/XDNetplay/TeamInjector.h).
+  static QHBoxLayout* MakeSavedTeamsRow(QDialog* dialog, QPlainTextEdit* team_edit);
   static QString WatchOnlyToolTip(bool multi, bool host_watching);
   void DisplayMessage(const QString& msg, const std::string& color,
                       int duration = OSD::Duration::NORMAL);
