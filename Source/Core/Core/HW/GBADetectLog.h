@@ -25,6 +25,10 @@ std::string FilePath();
 // Writes everything buffered to disk, so a copy taken while a game runs (Share Log) is
 // complete. Any thread.
 void Flush();
+// Tester switch XDNetplay/RecordLinkTraffic: the session's full GC<->GBA data traffic goes to
+// linktrace_<stamp>.txt beside the log. IsTracingLink is cheap enough to ask per command.
+bool IsTracingLink();
+void TraceLink(int channel, u64 tick, char dir, const u8* bytes, int len, int jstat = -1);
 
 // CSIDevice_GBAEmu ctor/dtor (CPU/host thread). Reference-counted: the first
 // live GBA device of a session truncates the file, writes the banner as line 1
