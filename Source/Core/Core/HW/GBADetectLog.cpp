@@ -2,8 +2,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "Core/HW/GBADetectLog.h"
+#include "Core/HW/GBAMoveNames.h"
 
 #include <algorithm>
+#include <array>
+#include <map>
+#include <optional>
+#include <string>
+#include <utility>
 #include <atomic>
 #include <ctime>
 #include <fstream>
@@ -36,7 +42,30 @@ std::ofstream s_file;
 // session, unfiltered, to linktrace_<same stamp>.txt. Own cap; under s_mutex like s_file.
 std::ofstream s_trace;
 u64 s_trace_bytes = 0;
-constexpr u64 MAX_TRACE_BYTES = 96u << 20;    // held open for the session; never fopen'd per line
+constexpr u64 MAX_TRACE_BYTES = 96u << 20;
+
+// Battle transcript (always on for a GBA session): XD's per-decision "turn blocks" to each GBA and
+// each GBA's choice reply, collected per socket and turned into battle_<stamp>.txt when the
+// session closes. Under s_mutex. Block layout (words of 4 bytes as sent, values little-endian):
+// a 0x66 word, then 373 words: [0] party order + request (byte 3: slot 1/2, 0x80 = replace a
+// fainted Pokemon), [4] the deciding Pokemon's species, [5..6] its four move ids, then four
+// party records of 85 words from [9] (HP, item, two move words, PP, four 80-byte move texts),
+// then from [349] the four battle positions (0-1 GBA 1's side, 2-3 GBA 2's), 6 words each: name
+// (10 bytes, Gen 3 text), side and level, an id, species and current HP, max HP. The decider's
+// own position is left empty in its copy. A reply is [move slot or party index, target position
+// or 0xF7/0xFF, 1 = fight / 2 = switch, 0].
+struct BattleEvent
+{
+  u64 tick = 0;
+  int kind = 0;  // 0 = turn block, 1 = reply
+  int sock = 0;
+  std::vector<std::array<u8, 4>> words;
+  std::array<u8, 4> reply{};
+};
+constexpr size_t BATTLE_BLOCK_WORDS = 373;
+std::vector<BattleEvent> s_battle;
+std::array<std::optional<std::vector<std::array<u8, 4>>>, 4> s_battle_building;
+std::string s_session_stamp;
 std::string s_path;
 u64 s_bytes = 0;         // running size, enforces the cap
 int s_live_devices = 0;  // ref-count -> session begin/end
@@ -132,6 +161,267 @@ void WriteLine(const std::string& line, bool flush)
   if (flush)
     s_file.flush();
 }
+
+using BattleWord = std::array<u8, 4>;
+
+u16 Le16(const BattleWord& w, int offset)
+{
+  return static_cast<u16>(w[offset] | (w[offset + 1] << 8));
+}
+
+// Gen 3 text to ASCII; an all-caps name (the games' default) reads as "Metagross".
+std::string Gen3Name(const u8* bytes, size_t len)
+{
+  std::string out;
+  for (size_t i = 0; i < len; ++i)
+  {
+    const u8 b = bytes[i];
+    if (b == 0xFF)
+      break;
+    if (b >= 0xBB && b <= 0xD4)
+      out.push_back(static_cast<char>('A' + b - 0xBB));
+    else if (b >= 0xD5 && b <= 0xEE)
+      out.push_back(static_cast<char>('a' + b - 0xD5));
+    else if (b >= 0xA1 && b <= 0xAA)
+      out.push_back(static_cast<char>('0' + b - 0xA1));
+    else if (b == 0x00)
+      out.push_back(' ');
+    else if (b == 0xAD)
+      out.push_back('.');
+    else if (b == 0xAE)
+      out.push_back('-');
+    else
+      out.push_back('?');
+  }
+  while (!out.empty() && out.back() == ' ')
+    out.pop_back();
+  if (!out.empty() && std::ranges::none_of(out, [](char c) { return c >= 'a' && c <= 'z'; }))
+  {
+    for (size_t i = 1; i < out.size(); ++i)
+    {
+      if (out[i] >= 'A' && out[i] <= 'Z' && out[i - 1] != ' ' && out[i - 1] != '-')
+        out[i] = static_cast<char>(out[i] - 'A' + 'a');
+    }
+  }
+  return out;
+}
+
+std::string MoveName(u16 id)
+{
+  return id < std::size(GEN3_MOVE_NAMES) && id != 0 ? std::string(GEN3_MOVE_NAMES[id]) :
+                                                       fmt::format("move {}", id);
+}
+
+// The transcript of one session's events (see BattleEvent), or "" when there is no battle.
+std::string BuildBattleTranscript(std::vector<BattleEvent> events)
+{
+  std::ranges::stable_sort(events, [](const BattleEvent& a, const BattleEvent& b) {
+    return a.tick != b.tick ? a.tick < b.tick : a.kind < b.kind;
+  });
+  using Key = std::pair<int, std::string>;  // side 0/1, name
+  struct Turn
+  {
+    std::vector<std::string> acts;
+    std::map<Key, std::pair<int, int>> hp;  // first value seen this turn: current, max
+    std::vector<Key> order;
+  };
+  struct Pending
+  {
+    int me;
+    bool replace;
+    std::array<u16, 4> moves;
+  };
+  struct Replacement
+  {
+    int pos;
+    size_t turn;
+    size_t act;
+  };
+  std::array<std::string, 4> names;
+  std::array<u16, 4> species{};
+  std::map<Key, std::pair<int, int>> hp;
+  std::array<std::map<std::array<u8, 8>, std::string>, 2> record_names;
+  std::vector<Turn> turns;
+  std::array<std::array<bool, 3>, 3> seen{};
+  std::map<int, Pending> pending;
+  std::vector<Replacement> replacements;
+
+  const auto set_hp = [&](const Key& key, std::pair<int, int> value, bool normal) {
+    if (!hp.contains(key) && normal && turns.size() >= 2)
+    {
+      // First time on the field: it came in fresh during the previous turn.
+      Turn& previous = turns[turns.size() - 2];
+      if (previous.hp.emplace(key, std::pair{value.second, value.second}).second)
+        previous.order.push_back(key);
+    }
+    hp[key] = value;
+    if (normal && !turns.empty() && turns.back().hp.emplace(key, value).second)
+      turns.back().order.push_back(key);
+  };
+
+  for (const BattleEvent& event : events)
+  {
+    const int s = event.sock;
+    if (s != 1 && s != 2)
+      continue;
+    const int side = s - 1;
+    if (event.kind == 0)
+    {
+      const auto& w = event.words;
+      const u8 req = w[0][3];
+      const int slot = req & 0x7F;
+      const bool replace = (req & 0x80) != 0;
+      if (slot < 1 || slot > 2)
+        continue;
+      const int me = side * 2 + slot - 1;
+      if (!replace && (seen[s][slot] || turns.empty()))
+      {
+        turns.emplace_back();
+        seen = {};
+      }
+      if (!replace)
+        seen[s][slot] = true;
+      for (int p = 0; p < 4; ++p)
+      {
+        const BattleWord* e = &w[349 + 6 * p];
+        if (e[0][0] != 0xFF)
+        {
+          std::array<u8, 10> raw{};
+          std::copy(e[0].begin(), e[0].end(), raw.begin());
+          std::copy(e[1].begin(), e[1].end(), raw.begin() + 4);
+          raw[8] = e[2][0];
+          raw[9] = e[2][1];
+          const std::string name = Gen3Name(raw.data(), raw.size());
+          if (names[p] != name)
+          {
+            std::erase_if(replacements, [&](const Replacement& r) {
+              if (r.pos != p)
+                return false;
+              turns[r.turn].acts[r.act] = fmt::format("GBA {} sends in {}", p / 2 + 1, name);
+              return true;
+            });
+          }
+          names[p] = name;
+          species[p] = Le16(e[4], 0);
+          set_hp({p / 2, name}, {Le16(e[4], 2), Le16(e[5], 0)}, !replace);
+        }
+        else if (p != me && !names[p].empty())
+        {
+          // An empty position that held a Pokemon: it fainted.
+          const Key key{p / 2, names[p]};
+          if (const auto it = hp.find(key); it != hp.end())
+            set_hp(key, {0, it->second.second}, false);
+          names[p].clear();
+        }
+      }
+      std::array<u8, 8> moves_key{};
+      std::copy(w[5].begin(), w[5].end(), moves_key.begin());
+      std::copy(w[6].begin(), w[6].end(), moves_key.begin() + 4);
+      if (!replace && species[me] == Le16(w[4], 0) && !names[me].empty())
+        record_names[side][moves_key] = names[me];
+      for (int i = 0; i < 4; ++i)
+      {
+        std::array<u8, 8> record_moves{};
+        std::copy(w[11 + 85 * i].begin(), w[11 + 85 * i].end(), record_moves.begin());
+        std::copy(w[12 + 85 * i].begin(), w[12 + 85 * i].end(), record_moves.begin() + 4);
+        const auto it = record_names[side].find(record_moves);
+        if (it == record_names[side].end())
+          continue;
+        const Key key{side, it->second};
+        if (const auto known = hp.find(key); known != hp.end())
+          set_hp(key, {Le16(w[9 + 85 * i], 0), known->second.second}, !replace);
+      }
+      pending[s] = {me, replace, {Le16(w[5], 0), Le16(w[5], 2), Le16(w[6], 0), Le16(w[6], 2)}};
+    }
+    else
+    {
+      const auto it = pending.find(s);
+      if (it == pending.end() || turns.empty())
+        continue;
+      const Pending decision = it->second;
+      pending.erase(it);
+      const auto& r = event.reply;
+      std::vector<std::string>& acts = turns.back().acts;
+      if (r[2] == 2)
+      {
+        acts.push_back(fmt::format("GBA {} sends in a replacement", s));
+        replacements.push_back({decision.me, turns.size() - 1, acts.size() - 1});
+        continue;
+      }
+      const std::string move = r[0] < 4 ? MoveName(decision.moves[r[0]]) : std::string("?");
+      const std::string actor = names[decision.me].empty() ? "?" : names[decision.me];
+      std::string target;
+      if (r[1] <= 3)
+      {
+        target = fmt::format(" on GBA {} {}", r[1] / 2 + 1,
+                             names[r[1]].empty() ? std::string("?") : names[r[1]]);
+      }
+      acts.push_back(fmt::format("GBA {} {}: {}{}", s, actor, move, target));
+    }
+  }
+  if (turns.empty())
+    return {};
+
+  std::string out;
+  for (size_t n = 0; n < turns.size(); ++n)
+  {
+    out += fmt::format("Turn {}\n", n + 1);
+    for (const std::string& act : turns[n].acts)
+      out += fmt::format("  {}\n", act);
+    std::vector<std::string> changes;
+    for (const Key& key : turns[n].order)
+    {
+      const int before = turns[n].hp.at(key).first;
+      int after = hp.at(key).first;
+      if (n + 1 < turns.size())
+      {
+        if (const auto it = turns[n + 1].hp.find(key); it != turns[n + 1].hp.end())
+          after = it->second.first;
+      }
+      if (after != before)
+      {
+        changes.push_back(fmt::format("GBA {} {} {} -> {}{}", key.first + 1, key.second, before,
+                                      after, after == 0 ? " (fainted)" : ""));
+      }
+    }
+    out += "  Result: ";
+    if (changes.empty())
+    {
+      out += "no HP changes";
+    }
+    else
+    {
+      for (size_t i = 0; i < changes.size(); ++i)
+        out += (i ? "; " : "") + changes[i];
+    }
+    out += '\n';
+  }
+  std::array<bool, 2> alive{};
+  for (const auto& [key, value] : hp)
+    alive[key.first] = alive[key.first] || value.first > 0;
+  out += "Battle over.";
+  if (alive[0] != alive[1])
+    out += fmt::format(" GBA {} wins.", alive[0] ? 1 : 2);
+  out += '\n';
+  return out;
+}
+
+// Must hold s_mutex. At session close: battle_<stamp>.txt beside the log, when there was a battle.
+void WriteBattleTranscript()
+{
+  const std::string body = BuildBattleTranscript(std::move(s_battle));
+  s_battle.clear();
+  if (body.empty())
+    return;
+  const std::string path =
+      File::GetUserPath(D_GBAUSER_IDX) + "battle_" + s_session_stamp + ".txt";
+  std::ofstream out(path, std::ios::out | std::ios::trunc);
+  if (!out)
+    return;
+  out << "OrreLink battle transcript, session " << s_session_stamp << "\n";
+  out << "Moves are each Pokemon's choice; Result is the HP change over the turn.\n\n";
+  out << body;
+}
 }  // namespace
 
 void Flush()
@@ -141,6 +431,48 @@ void Flush()
     s_file.flush();
   if (s_trace.is_open())
     s_trace.flush();
+}
+
+void BattleLinkWrite(int channel, u64 tick, const u8* data)
+{
+  if (channel < 0 || channel > 3)
+    return;
+  const BattleWord word{data[0], data[1], data[2], data[3]};
+  // Keep-alives between messages.
+  if (word == BattleWord{0x47, 0x58, 0x58, 0x45} || word == BattleWord{0, 0, 0, 0xAA} ||
+      word == BattleWord{0, 0, 0, 0x11})
+  {
+    return;
+  }
+  std::lock_guard lock(s_mutex);
+  if (!s_file.is_open())
+    return;
+  auto& building = s_battle_building[channel];
+  if (word == BattleWord{0, 0, 0, 0x66})
+  {
+    building.emplace();
+    building->reserve(BATTLE_BLOCK_WORDS);
+    return;
+  }
+  if (!building)
+    return;
+  building->push_back(word);
+  if (building->size() == BATTLE_BLOCK_WORDS)
+  {
+    s_battle.push_back({tick, 0, channel, std::move(*building), {}});
+    building.reset();
+  }
+}
+
+void BattleLinkRead(int channel, u64 tick, const u8* data)
+{
+  // A choice: [slot or party index, target, 1 fight / 2 switch, 0].
+  if (data[3] != 0 || (data[2] != 1 && data[2] != 2) || data[0] > 5)
+    return;
+  std::lock_guard lock(s_mutex);
+  if (!s_file.is_open())
+    return;
+  s_battle.push_back({tick, 1, channel, {}, {data[0], data[1], data[2], data[3]}});
 }
 
 bool IsTracingLink()
@@ -179,7 +511,11 @@ void OnDeviceCreated()
   // D_GBAUSER_IDX already ends in a path separator (".../GBA/").
   const std::string dir = File::GetUserPath(D_GBAUSER_IDX);
   PruneOldLogs(dir);
-  s_path = dir + "gba_detect_" + Timestamp("%Y%m%d_%H%M%S") + ".log";
+  s_session_stamp = Timestamp("%Y%m%d_%H%M%S");
+  s_path = dir + "gba_detect_" + s_session_stamp + ".log";
+  s_battle.clear();
+  for (auto& building : s_battle_building)
+    building.reset();
   s_file.close();
   s_file.clear();
   s_file.open(s_path, std::ios::out | std::ios::trunc);
@@ -229,6 +565,7 @@ void OnDeviceDestroyed()
       s_trace.flush();
       s_trace.close();
     }
+    WriteBattleTranscript();
   }
 }
 
