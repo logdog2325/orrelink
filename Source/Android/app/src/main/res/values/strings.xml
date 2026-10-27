@@ -1082,6 +1082,11 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="xd_role_opponent">Opponent</string>
     <string name="xd_role_waiting">Waiting</string>
     <string name="xd_role_watching">Watching</string>
+    <string name="xd_saved_teams">Saved teams</string>
+    <string name="xd_saved_teams_none">No saved teams yet</string>
+    <string name="xd_saved_team_save">Save team</string>
+    <string name="xd_saved_team_delete">Delete</string>
+    <string name="xd_saved_team_name">Team name</string>
     <string name="xd_role_host_watching">Host, watching</string>
     <string name="xd_role_gba">GBA %1$d</string>
     <string name="xd_role_seat">Seat %1$d</string>
