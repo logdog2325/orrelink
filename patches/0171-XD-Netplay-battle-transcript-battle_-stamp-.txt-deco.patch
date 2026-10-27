@@ -1,0 +1,900 @@
+From 71a160f769220fb8e876499e29d759be280f1be4 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 13:42:07 -0700
+Subject: [PATCH 171/172] XD Netplay: battle transcript (battle_<stamp>.txt)
+ decoded from the GBA link
+
+XD sends each GBA a turn block per decision (both sides' active Pokemon with
+names, species and HP, the decider's party with HP and moves) and reads back
+the GBA's choice. Collect both per socket and, when the session closes, write
+each turn's moves and the HP changes over the turn. Share Log includes it.
+---
+ .../xdnetplay/ui/XDLauncherActivity.kt        |   4 +
+ Source/Core/Core/CMakeLists.txt               |   1 +
+ Source/Core/Core/HW/GBADetectLog.cpp          | 341 +++++++++++++++-
+ Source/Core/Core/HW/GBADetectLog.h            |   4 +
+ Source/Core/Core/HW/GBAMoveNames.h            | 369 ++++++++++++++++++
+ Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp    |   6 +
+ Source/Core/DolphinLib.props                  |   1 +
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  |  20 +-
+ 8 files changed, 735 insertions(+), 11 deletions(-)
+ create mode 100644 Source/Core/Core/HW/GBAMoveNames.h
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+index 6d32d28..c57bdb9 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+@@ -407,6 +407,10 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+             // The newest link trace, when the RecordLinkTraffic tester switch made one.
+             (dir.listFiles { f ->
+                 f.isFile && f.name.startsWith("linktrace_") && f.name.endsWith(".txt")
++            } ?: emptyArray()).sortedByDescending { it.name }.take(1) +
++            // The newest battle transcript.
++            (dir.listFiles { f ->
++                f.isFile && f.name.startsWith("battle_") && f.name.endsWith(".txt")
+             } ?: emptyArray()).sortedByDescending { it.name }.take(1)
+         if (logs.isEmpty()) {
+             android.widget.Toast.makeText(
+diff --git a/Source/Core/Core/CMakeLists.txt b/Source/Core/Core/CMakeLists.txt
+index f52ec8e..7e5495d 100644
+--- a/Source/Core/Core/CMakeLists.txt
++++ b/Source/Core/Core/CMakeLists.txt
+@@ -754,6 +754,7 @@ if(USE_MGBA)
+     HW/GBACore.h
+     HW/GBADetectLog.cpp
+     HW/GBADetectLog.h
++    HW/GBAMoveNames.h
+     HW/SI/SI_DeviceGBAEmu.cpp
+     HW/SI/SI_DeviceGBAEmu.h
+     HW/SI/SI_DeviceXDMultiPort.cpp
+diff --git a/Source/Core/Core/HW/GBADetectLog.cpp b/Source/Core/Core/HW/GBADetectLog.cpp
+index b83f350..8b1f27a 100644
+--- a/Source/Core/Core/HW/GBADetectLog.cpp
++++ b/Source/Core/Core/HW/GBADetectLog.cpp
+@@ -2,8 +2,14 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "Core/HW/GBADetectLog.h"
++#include "Core/HW/GBAMoveNames.h"
+ 
+ #include <algorithm>
++#include <array>
++#include <map>
++#include <optional>
++#include <string>
++#include <utility>
+ #include <atomic>
+ #include <ctime>
+ #include <fstream>
+@@ -36,7 +42,30 @@ std::ofstream s_file;
+ // session, unfiltered, to linktrace_<same stamp>.txt. Own cap; under s_mutex like s_file.
+ std::ofstream s_trace;
+ u64 s_trace_bytes = 0;
+-constexpr u64 MAX_TRACE_BYTES = 96u << 20;    // held open for the session; never fopen'd per line
++constexpr u64 MAX_TRACE_BYTES = 96u << 20;
++
++// Battle transcript (always on for a GBA session): XD's per-decision "turn blocks" to each GBA and
++// each GBA's choice reply, collected per socket and turned into battle_<stamp>.txt when the
++// session closes. Under s_mutex. Block layout (words of 4 bytes as sent, values little-endian):
++// a 0x66 word, then 373 words: [0] party order + request (byte 3: slot 1/2, 0x80 = replace a
++// fainted Pokemon), [4] the deciding Pokemon's species, [5..6] its four move ids, then four
++// party records of 85 words from [9] (HP, item, two move words, PP, four 80-byte move texts),
++// then from [349] the four battle positions (0-1 GBA 1's side, 2-3 GBA 2's), 6 words each: name
++// (10 bytes, Gen 3 text), side and level, an id, species and current HP, max HP. The decider's
++// own position is left empty in its copy. A reply is [move slot or party index, target position
++// or 0xF7/0xFF, 1 = fight / 2 = switch, 0].
++struct BattleEvent
++{
++  u64 tick = 0;
++  int kind = 0;  // 0 = turn block, 1 = reply
++  int sock = 0;
++  std::vector<std::array<u8, 4>> words;
++  std::array<u8, 4> reply{};
++};
++constexpr size_t BATTLE_BLOCK_WORDS = 373;
++std::vector<BattleEvent> s_battle;
++std::array<std::optional<std::vector<std::array<u8, 4>>>, 4> s_battle_building;
++std::string s_session_stamp;
+ std::string s_path;
+ u64 s_bytes = 0;         // running size, enforces the cap
+ int s_live_devices = 0;  // ref-count -> session begin/end
+@@ -132,6 +161,267 @@ void WriteLine(const std::string& line, bool flush)
+   if (flush)
+     s_file.flush();
+ }
++
++using BattleWord = std::array<u8, 4>;
++
++u16 Le16(const BattleWord& w, int offset)
++{
++  return static_cast<u16>(w[offset] | (w[offset + 1] << 8));
++}
++
++// Gen 3 text to ASCII; an all-caps name (the games' default) reads as "Metagross".
++std::string Gen3Name(const u8* bytes, size_t len)
++{
++  std::string out;
++  for (size_t i = 0; i < len; ++i)
++  {
++    const u8 b = bytes[i];
++    if (b == 0xFF)
++      break;
++    if (b >= 0xBB && b <= 0xD4)
++      out.push_back(static_cast<char>('A' + b - 0xBB));
++    else if (b >= 0xD5 && b <= 0xEE)
++      out.push_back(static_cast<char>('a' + b - 0xD5));
++    else if (b >= 0xA1 && b <= 0xAA)
++      out.push_back(static_cast<char>('0' + b - 0xA1));
++    else if (b == 0x00)
++      out.push_back(' ');
++    else if (b == 0xAD)
++      out.push_back('.');
++    else if (b == 0xAE)
++      out.push_back('-');
++    else
++      out.push_back('?');
++  }
++  while (!out.empty() && out.back() == ' ')
++    out.pop_back();
++  if (!out.empty() && std::ranges::none_of(out, [](char c) { return c >= 'a' && c <= 'z'; }))
++  {
++    for (size_t i = 1; i < out.size(); ++i)
++    {
++      if (out[i] >= 'A' && out[i] <= 'Z' && out[i - 1] != ' ' && out[i - 1] != '-')
++        out[i] = static_cast<char>(out[i] - 'A' + 'a');
++    }
++  }
++  return out;
++}
++
++std::string MoveName(u16 id)
++{
++  return id < std::size(GEN3_MOVE_NAMES) && id != 0 ? std::string(GEN3_MOVE_NAMES[id]) :
++                                                       fmt::format("move {}", id);
++}
++
++// The transcript of one session's events (see BattleEvent), or "" when there is no battle.
++std::string BuildBattleTranscript(std::vector<BattleEvent> events)
++{
++  std::ranges::stable_sort(events, [](const BattleEvent& a, const BattleEvent& b) {
++    return a.tick != b.tick ? a.tick < b.tick : a.kind < b.kind;
++  });
++  using Key = std::pair<int, std::string>;  // side 0/1, name
++  struct Turn
++  {
++    std::vector<std::string> acts;
++    std::map<Key, std::pair<int, int>> hp;  // first value seen this turn: current, max
++    std::vector<Key> order;
++  };
++  struct Pending
++  {
++    int me;
++    bool replace;
++    std::array<u16, 4> moves;
++  };
++  struct Replacement
++  {
++    int pos;
++    size_t turn;
++    size_t act;
++  };
++  std::array<std::string, 4> names;
++  std::array<u16, 4> species{};
++  std::map<Key, std::pair<int, int>> hp;
++  std::array<std::map<std::array<u8, 8>, std::string>, 2> record_names;
++  std::vector<Turn> turns;
++  std::array<std::array<bool, 3>, 3> seen{};
++  std::map<int, Pending> pending;
++  std::vector<Replacement> replacements;
++
++  const auto set_hp = [&](const Key& key, std::pair<int, int> value, bool normal) {
++    if (!hp.contains(key) && normal && turns.size() >= 2)
++    {
++      // First time on the field: it came in fresh during the previous turn.
++      Turn& previous = turns[turns.size() - 2];
++      if (previous.hp.emplace(key, std::pair{value.second, value.second}).second)
++        previous.order.push_back(key);
++    }
++    hp[key] = value;
++    if (normal && !turns.empty() && turns.back().hp.emplace(key, value).second)
++      turns.back().order.push_back(key);
++  };
++
++  for (const BattleEvent& event : events)
++  {
++    const int s = event.sock;
++    if (s != 1 && s != 2)
++      continue;
++    const int side = s - 1;
++    if (event.kind == 0)
++    {
++      const auto& w = event.words;
++      const u8 req = w[0][3];
++      const int slot = req & 0x7F;
++      const bool replace = (req & 0x80) != 0;
++      if (slot < 1 || slot > 2)
++        continue;
++      const int me = side * 2 + slot - 1;
++      if (!replace && (seen[s][slot] || turns.empty()))
++      {
++        turns.emplace_back();
++        seen = {};
++      }
++      if (!replace)
++        seen[s][slot] = true;
++      for (int p = 0; p < 4; ++p)
++      {
++        const BattleWord* e = &w[349 + 6 * p];
++        if (e[0][0] != 0xFF)
++        {
++          std::array<u8, 10> raw{};
++          std::copy(e[0].begin(), e[0].end(), raw.begin());
++          std::copy(e[1].begin(), e[1].end(), raw.begin() + 4);
++          raw[8] = e[2][0];
++          raw[9] = e[2][1];
++          const std::string name = Gen3Name(raw.data(), raw.size());
++          if (names[p] != name)
++          {
++            std::erase_if(replacements, [&](const Replacement& r) {
++              if (r.pos != p)
++                return false;
++              turns[r.turn].acts[r.act] = fmt::format("GBA {} sends in {}", p / 2 + 1, name);
++              return true;
++            });
++          }
++          names[p] = name;
++          species[p] = Le16(e[4], 0);
++          set_hp({p / 2, name}, {Le16(e[4], 2), Le16(e[5], 0)}, !replace);
++        }
++        else if (p != me && !names[p].empty())
++        {
++          // An empty position that held a Pokemon: it fainted.
++          const Key key{p / 2, names[p]};
++          if (const auto it = hp.find(key); it != hp.end())
++            set_hp(key, {0, it->second.second}, false);
++          names[p].clear();
++        }
++      }
++      std::array<u8, 8> moves_key{};
++      std::copy(w[5].begin(), w[5].end(), moves_key.begin());
++      std::copy(w[6].begin(), w[6].end(), moves_key.begin() + 4);
++      if (!replace && species[me] == Le16(w[4], 0) && !names[me].empty())
++        record_names[side][moves_key] = names[me];
++      for (int i = 0; i < 4; ++i)
++      {
++        std::array<u8, 8> record_moves{};
++        std::copy(w[11 + 85 * i].begin(), w[11 + 85 * i].end(), record_moves.begin());
++        std::copy(w[12 + 85 * i].begin(), w[12 + 85 * i].end(), record_moves.begin() + 4);
++        const auto it = record_names[side].find(record_moves);
++        if (it == record_names[side].end())
++          continue;
++        const Key key{side, it->second};
++        if (const auto known = hp.find(key); known != hp.end())
++          set_hp(key, {Le16(w[9 + 85 * i], 0), known->second.second}, !replace);
++      }
++      pending[s] = {me, replace, {Le16(w[5], 0), Le16(w[5], 2), Le16(w[6], 0), Le16(w[6], 2)}};
++    }
++    else
++    {
++      const auto it = pending.find(s);
++      if (it == pending.end() || turns.empty())
++        continue;
++      const Pending decision = it->second;
++      pending.erase(it);
++      const auto& r = event.reply;
++      std::vector<std::string>& acts = turns.back().acts;
++      if (r[2] == 2)
++      {
++        acts.push_back(fmt::format("GBA {} sends in a replacement", s));
++        replacements.push_back({decision.me, turns.size() - 1, acts.size() - 1});
++        continue;
++      }
++      const std::string move = r[0] < 4 ? MoveName(decision.moves[r[0]]) : std::string("?");
++      const std::string actor = names[decision.me].empty() ? "?" : names[decision.me];
++      std::string target;
++      if (r[1] <= 3)
++      {
++        target = fmt::format(" on GBA {} {}", r[1] / 2 + 1,
++                             names[r[1]].empty() ? std::string("?") : names[r[1]]);
++      }
++      acts.push_back(fmt::format("GBA {} {}: {}{}", s, actor, move, target));
++    }
++  }
++  if (turns.empty())
++    return {};
++
++  std::string out;
++  for (size_t n = 0; n < turns.size(); ++n)
++  {
++    out += fmt::format("Turn {}\n", n + 1);
++    for (const std::string& act : turns[n].acts)
++      out += fmt::format("  {}\n", act);
++    std::vector<std::string> changes;
++    for (const Key& key : turns[n].order)
++    {
++      const int before = turns[n].hp.at(key).first;
++      int after = hp.at(key).first;
++      if (n + 1 < turns.size())
++      {
++        if (const auto it = turns[n + 1].hp.find(key); it != turns[n + 1].hp.end())
++          after = it->second.first;
++      }
++      if (after != before)
++      {
++        changes.push_back(fmt::format("GBA {} {} {} -> {}{}", key.first + 1, key.second, before,
++                                      after, after == 0 ? " (fainted)" : ""));
++      }
++    }
++    out += "  Result: ";
++    if (changes.empty())
++    {
++      out += "no HP changes";
++    }
++    else
++    {
++      for (size_t i = 0; i < changes.size(); ++i)
++        out += (i ? "; " : "") + changes[i];
++    }
++    out += '\n';
++  }
++  std::array<bool, 2> alive{};
++  for (const auto& [key, value] : hp)
++    alive[key.first] = alive[key.first] || value.first > 0;
++  out += "Battle over.";
++  if (alive[0] != alive[1])
++    out += fmt::format(" GBA {} wins.", alive[0] ? 1 : 2);
++  out += '\n';
++  return out;
++}
++
++// Must hold s_mutex. At session close: battle_<stamp>.txt beside the log, when there was a battle.
++void WriteBattleTranscript()
++{
++  const std::string body = BuildBattleTranscript(std::move(s_battle));
++  s_battle.clear();
++  if (body.empty())
++    return;
++  const std::string path =
++      File::GetUserPath(D_GBAUSER_IDX) + "battle_" + s_session_stamp + ".txt";
++  std::ofstream out(path, std::ios::out | std::ios::trunc);
++  if (!out)
++    return;
++  out << "OrreLink battle transcript, session " << s_session_stamp << "\n";
++  out << "Moves are each Pokemon's choice; Result is the HP change over the turn.\n\n";
++  out << body;
++}
+ }  // namespace
+ 
+ void Flush()
+@@ -143,6 +433,48 @@ void Flush()
+     s_trace.flush();
+ }
+ 
++void BattleLinkWrite(int channel, u64 tick, const u8* data)
++{
++  if (channel < 0 || channel > 3)
++    return;
++  const BattleWord word{data[0], data[1], data[2], data[3]};
++  // Keep-alives between messages.
++  if (word == BattleWord{0x47, 0x58, 0x58, 0x45} || word == BattleWord{0, 0, 0, 0xAA} ||
++      word == BattleWord{0, 0, 0, 0x11})
++  {
++    return;
++  }
++  std::lock_guard lock(s_mutex);
++  if (!s_file.is_open())
++    return;
++  auto& building = s_battle_building[channel];
++  if (word == BattleWord{0, 0, 0, 0x66})
++  {
++    building.emplace();
++    building->reserve(BATTLE_BLOCK_WORDS);
++    return;
++  }
++  if (!building)
++    return;
++  building->push_back(word);
++  if (building->size() == BATTLE_BLOCK_WORDS)
++  {
++    s_battle.push_back({tick, 0, channel, std::move(*building), {}});
++    building.reset();
++  }
++}
++
++void BattleLinkRead(int channel, u64 tick, const u8* data)
++{
++  // A choice: [slot or party index, target, 1 fight / 2 switch, 0].
++  if (data[3] != 0 || (data[2] != 1 && data[2] != 2) || data[0] > 5)
++    return;
++  std::lock_guard lock(s_mutex);
++  if (!s_file.is_open())
++    return;
++  s_battle.push_back({tick, 1, channel, {}, {data[0], data[1], data[2], data[3]}});
++}
++
+ bool IsTracingLink()
+ {
+   std::lock_guard lock(s_mutex);
+@@ -179,7 +511,11 @@ void OnDeviceCreated()
+   // D_GBAUSER_IDX already ends in a path separator (".../GBA/").
+   const std::string dir = File::GetUserPath(D_GBAUSER_IDX);
+   PruneOldLogs(dir);
+-  s_path = dir + "gba_detect_" + Timestamp("%Y%m%d_%H%M%S") + ".log";
++  s_session_stamp = Timestamp("%Y%m%d_%H%M%S");
++  s_path = dir + "gba_detect_" + s_session_stamp + ".log";
++  s_battle.clear();
++  for (auto& building : s_battle_building)
++    building.reset();
+   s_file.close();
+   s_file.clear();
+   s_file.open(s_path, std::ios::out | std::ios::trunc);
+@@ -229,6 +565,7 @@ void OnDeviceDestroyed()
+       s_trace.flush();
+       s_trace.close();
+     }
++    WriteBattleTranscript();
+   }
+ }
+ 
+diff --git a/Source/Core/Core/HW/GBADetectLog.h b/Source/Core/Core/HW/GBADetectLog.h
+index 3fa4879..57204b6 100644
+--- a/Source/Core/Core/HW/GBADetectLog.h
++++ b/Source/Core/Core/HW/GBADetectLog.h
+@@ -27,6 +27,10 @@ std::string FilePath();
+ void Flush();
+ // Tester switch XDNetplay/RecordLinkTraffic: the session's full GC<->GBA data traffic goes to
+ // linktrace_<stamp>.txt beside the log. IsTracingLink is cheap enough to ask per command.
++// The battle transcript (battle_<stamp>.txt at session close): every GC->GBA WRITE's data and
++// every GBA READ reply of the session's GBAs. CPU thread, from the GBA device.
++void BattleLinkWrite(int channel, u64 tick, const u8* data);
++void BattleLinkRead(int channel, u64 tick, const u8* data);
+ bool IsTracingLink();
+ void TraceLink(int channel, u64 tick, char dir, const u8* bytes, int len, int jstat = -1);
+ 
+diff --git a/Source/Core/Core/HW/GBAMoveNames.h b/Source/Core/Core/HW/GBAMoveNames.h
+new file mode 100644
+index 0000000..4c12397
+--- /dev/null
++++ b/Source/Core/Core/HW/GBAMoveNames.h
+@@ -0,0 +1,369 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <string_view>
++
++// Gen 3 move names by move id (1..354), for the XD battle transcript (GBADetectLog). Index 0 is
++// "no move".
++namespace GBADetectLog
++{
++constexpr std::string_view GEN3_MOVE_NAMES[] = {
++    "",
++    "Pound",
++    "Karate Chop",
++    "Double Slap",
++    "Comet Punch",
++    "Mega Punch",
++    "Pay Day",
++    "Fire Punch",
++    "Ice Punch",
++    "Thunder Punch",
++    "Scratch",
++    "Vise Grip",
++    "Guillotine",
++    "Razor Wind",
++    "Swords Dance",
++    "Cut",
++    "Gust",
++    "Wing Attack",
++    "Whirlwind",
++    "Fly",
++    "Bind",
++    "Slam",
++    "Vine Whip",
++    "Stomp",
++    "Double Kick",
++    "Mega Kick",
++    "Jump Kick",
++    "Rolling Kick",
++    "Sand Attack",
++    "Headbutt",
++    "Horn Attack",
++    "Fury Attack",
++    "Horn Drill",
++    "Tackle",
++    "Body Slam",
++    "Wrap",
++    "Take Down",
++    "Thrash",
++    "Double-Edge",
++    "Tail Whip",
++    "Poison Sting",
++    "Twineedle",
++    "Pin Missile",
++    "Leer",
++    "Bite",
++    "Growl",
++    "Roar",
++    "Sing",
++    "Supersonic",
++    "Sonic Boom",
++    "Disable",
++    "Acid",
++    "Ember",
++    "Flamethrower",
++    "Mist",
++    "Water Gun",
++    "Hydro Pump",
++    "Surf",
++    "Ice Beam",
++    "Blizzard",
++    "Psybeam",
++    "Bubble Beam",
++    "Aurora Beam",
++    "Hyper Beam",
++    "Peck",
++    "Drill Peck",
++    "Submission",
++    "Low Kick",
++    "Counter",
++    "Seismic Toss",
++    "Strength",
++    "Absorb",
++    "Mega Drain",
++    "Leech Seed",
++    "Growth",
++    "Razor Leaf",
++    "Solar Beam",
++    "Poison Powder",
++    "Stun Spore",
++    "Sleep Powder",
++    "Petal Dance",
++    "String Shot",
++    "Dragon Rage",
++    "Fire Spin",
++    "Thunder Shock",
++    "Thunderbolt",
++    "Thunder Wave",
++    "Thunder",
++    "Rock Throw",
++    "Earthquake",
++    "Fissure",
++    "Dig",
++    "Toxic",
++    "Confusion",
++    "Psychic",
++    "Hypnosis",
++    "Meditate",
++    "Agility",
++    "Quick Attack",
++    "Rage",
++    "Teleport",
++    "Night Shade",
++    "Mimic",
++    "Screech",
++    "Double Team",
++    "Recover",
++    "Harden",
++    "Minimize",
++    "Smokescreen",
++    "Confuse Ray",
++    "Withdraw",
++    "Defense Curl",
++    "Barrier",
++    "Light Screen",
++    "Haze",
++    "Reflect",
++    "Focus Energy",
++    "Bide",
++    "Metronome",
++    "Mirror Move",
++    "Self-Destruct",
++    "Egg Bomb",
++    "Lick",
++    "Smog",
++    "Sludge",
++    "Bone Club",
++    "Fire Blast",
++    "Waterfall",
++    "Clamp",
++    "Swift",
++    "Skull Bash",
++    "Spike Cannon",
++    "Constrict",
++    "Amnesia",
++    "Kinesis",
++    "Soft-Boiled",
++    "High Jump Kick",
++    "Glare",
++    "Dream Eater",
++    "Poison Gas",
++    "Barrage",
++    "Leech Life",
++    "Lovely Kiss",
++    "Sky Attack",
++    "Transform",
++    "Bubble",
++    "Dizzy Punch",
++    "Spore",
++    "Flash",
++    "Psywave",
++    "Splash",
++    "Acid Armor",
++    "Crabhammer",
++    "Explosion",
++    "Fury Swipes",
++    "Bonemerang",
++    "Rest",
++    "Rock Slide",
++    "Hyper Fang",
++    "Sharpen",
++    "Conversion",
++    "Tri Attack",
++    "Super Fang",
++    "Slash",
++    "Substitute",
++    "Struggle",
++    "Sketch",
++    "Triple Kick",
++    "Thief",
++    "Spider Web",
++    "Mind Reader",
++    "Nightmare",
++    "Flame Wheel",
++    "Snore",
++    "Curse",
++    "Flail",
++    "Conversion 2",
++    "Aeroblast",
++    "Cotton Spore",
++    "Reversal",
++    "Spite",
++    "Powder Snow",
++    "Protect",
++    "Mach Punch",
++    "Scary Face",
++    "Feint Attack",
++    "Sweet Kiss",
++    "Belly Drum",
++    "Sludge Bomb",
++    "Mud-Slap",
++    "Octazooka",
++    "Spikes",
++    "Zap Cannon",
++    "Foresight",
++    "Destiny Bond",
++    "Perish Song",
++    "Icy Wind",
++    "Detect",
++    "Bone Rush",
++    "Lock-On",
++    "Outrage",
++    "Sandstorm",
++    "Giga Drain",
++    "Endure",
++    "Charm",
++    "Rollout",
++    "False Swipe",
++    "Swagger",
++    "Milk Drink",
++    "Spark",
++    "Fury Cutter",
++    "Steel Wing",
++    "Mean Look",
++    "Attract",
++    "Sleep Talk",
++    "Heal Bell",
++    "Return",
++    "Present",
++    "Frustration",
++    "Safeguard",
++    "Pain Split",
++    "Sacred Fire",
++    "Magnitude",
++    "Dynamic Punch",
++    "Megahorn",
++    "Dragon Breath",
++    "Baton Pass",
++    "Encore",
++    "Pursuit",
++    "Rapid Spin",
++    "Sweet Scent",
++    "Iron Tail",
++    "Metal Claw",
++    "Vital Throw",
++    "Morning Sun",
++    "Synthesis",
++    "Moonlight",
++    "Hidden Power",
++    "Cross Chop",
++    "Twister",
++    "Rain Dance",
++    "Sunny Day",
++    "Crunch",
++    "Mirror Coat",
++    "Psych Up",
++    "Extreme Speed",
++    "Ancient Power",
++    "Shadow Ball",
++    "Future Sight",
++    "Rock Smash",
++    "Whirlpool",
++    "Beat Up",
++    "Fake Out",
++    "Uproar",
++    "Stockpile",
++    "Spit Up",
++    "Swallow",
++    "Heat Wave",
++    "Hail",
++    "Torment",
++    "Flatter",
++    "Will-O-Wisp",
++    "Memento",
++    "Facade",
++    "Focus Punch",
++    "Smelling Salts",
++    "Follow Me",
++    "Nature Power",
++    "Charge",
++    "Taunt",
++    "Helping Hand",
++    "Trick",
++    "Role Play",
++    "Wish",
++    "Assist",
++    "Ingrain",
++    "Superpower",
++    "Magic Coat",
++    "Recycle",
++    "Revenge",
++    "Brick Break",
++    "Yawn",
++    "Knock Off",
++    "Endeavor",
++    "Eruption",
++    "Skill Swap",
++    "Imprison",
++    "Refresh",
++    "Grudge",
++    "Snatch",
++    "Secret Power",
++    "Dive",
++    "Arm Thrust",
++    "Camouflage",
++    "Tail Glow",
++    "Luster Purge",
++    "Mist Ball",
++    "Feather Dance",
++    "Teeter Dance",
++    "Blaze Kick",
++    "Mud Sport",
++    "Ice Ball",
++    "Needle Arm",
++    "Slack Off",
++    "Hyper Voice",
++    "Poison Fang",
++    "Crush Claw",
++    "Blast Burn",
++    "Hydro Cannon",
++    "Meteor Mash",
++    "Astonish",
++    "Weather Ball",
++    "Aromatherapy",
++    "Fake Tears",
++    "Air Cutter",
++    "Overheat",
++    "Odor Sleuth",
++    "Rock Tomb",
++    "Silver Wind",
++    "Metal Sound",
++    "Grass Whistle",
++    "Tickle",
++    "Cosmic Power",
++    "Water Spout",
++    "Signal Beam",
++    "Shadow Punch",
++    "Extrasensory",
++    "Sky Uppercut",
++    "Sand Tomb",
++    "Sheer Cold",
++    "Muddy Water",
++    "Bullet Seed",
++    "Aerial Ace",
++    "Icicle Spear",
++    "Iron Defense",
++    "Block",
++    "Howl",
++    "Dragon Claw",
++    "Frenzy Plant",
++    "Bulk Up",
++    "Bounce",
++    "Mud Shot",
++    "Poison Tail",
++    "Covet",
++    "Volt Tackle",
++    "Magical Leaf",
++    "Water Sport",
++    "Calm Mind",
++    "Leaf Blade",
++    "Dragon Dance",
++    "Rock Blast",
++    "Shock Wave",
++    "Water Pulse",
++    "Doom Desire",
++    "Psycho Boost",
++};
++}  // namespace GBADetectLog
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+index 6934061..7471b46 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+@@ -796,6 +796,9 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
+     // Tester trace: every data command (not the status probes), unfiltered.
+     if (data_cmd_now && GBADetectLog::IsTracingLink())
+       GBADetectLog::TraceLink(m_device_number, m_timestamp_sent, '>', buffer, request_length);
++    // Battle transcript: every data word XD writes to this GBA.
++    if (m_last_cmd == EBufferCommands::CMD_WRITE_GBA && request_length >= 5)
++      GBADetectLog::BattleLinkWrite(m_device_number, m_timestamp_sent, buffer + 1);
+     const u8 cmd_class = probing ? 1u : (data_cmd_now ? 2u : 0u);
+     const bool class_changed = cmd_class != m_diag_prev_cmd_class;
+     m_diag_prev_cmd_class = cmd_class;
+@@ -874,6 +877,9 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
+                               static_cast<int>(response_length),
+                               m_core->GetJoyStatAfterCommand());
+     }
++    // Battle transcript: every word XD reads back (the GBA's choices among them).
++    if (m_last_cmd == EBufferCommands::CMD_READ_GBA && response_length >= 4)
++      GBADetectLog::BattleLinkRead(m_device_number, m_timestamp_sent, buffer);
+ 
+     // H9 (gba_detect.log). A withheld command (m_diag_cmd_sent == false) makes
+     // the core return 0 with nothing having been asked, so it must NEVER be
+diff --git a/Source/Core/DolphinLib.props b/Source/Core/DolphinLib.props
+index 33a724b..bba9a81 100644
+--- a/Source/Core/DolphinLib.props
++++ b/Source/Core/DolphinLib.props
+@@ -303,6 +303,7 @@
+     <ClInclude Include="Core\HW\EXI\EXI.h" />
+     <ClInclude Include="Core\HW\GBACore.h" />
+     <ClInclude Include="Core\HW\GBADetectLog.h" />
++    <ClInclude Include="Core\HW\GBAMoveNames.h" />
+     <ClInclude Include="Core\HW\GBAPad.h" />
+     <ClInclude Include="Core\HW\GBAPadEmu.h" />
+     <ClInclude Include="Core\HW\GCKeyboard.h" />
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 5c77281..921710c 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -721,17 +721,19 @@ void XDLauncherDialog::OnShareLog()
+     ModalMessageBox::critical(this, tr("Share Log"), tr("Could not replace %1").arg(target));
+     return;
+   }
+-  // The newest link recording (Record link traffic), saved beside the log under its own name.
+-  const QStringList traces =
+-      logs.entryList({QStringLiteral("linktrace_*.txt")}, QDir::Files, QDir::Time);
+-  if (!traces.isEmpty())
++  // The newest link recording (Record link traffic) and battle transcript, saved beside the log
++  // under their own names.
++  for (const QString& pattern : {QStringLiteral("linktrace_*.txt"), QStringLiteral("battle_*.txt")})
+   {
+-    const QString trace_target = QFileInfo(target).absoluteDir().filePath(traces.first());
+-    if (QFileInfo(trace_target).canonicalFilePath() !=
+-        QFileInfo(logs.filePath(traces.first())).canonicalFilePath())
++    const QStringList extras = logs.entryList({pattern}, QDir::Files, QDir::Time);
++    if (extras.isEmpty())
++      continue;
++    const QString extra_target = QFileInfo(target).absoluteDir().filePath(extras.first());
++    if (QFileInfo(extra_target).canonicalFilePath() !=
++        QFileInfo(logs.filePath(extras.first())).canonicalFilePath())
+     {
+-      QFile::remove(trace_target);
+-      QFile::copy(logs.filePath(traces.first()), trace_target);
++      QFile::remove(extra_target);
++      QFile::copy(logs.filePath(extras.first()), extra_target);
+     }
+   }
+   QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(target).absolutePath()));
+-- 
+2.39.5 (Apple Git-154)
+
