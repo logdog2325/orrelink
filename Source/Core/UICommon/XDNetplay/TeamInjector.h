@@ -392,4 +392,13 @@ struct MultiTeamCheck
 };
 MultiTeamCheck CheckMultiTeams(int format, const std::array<u32, 3>& seat_serials,
                                bool host_fills_seat2);
+// Saved teams for the Submit Team sheets: plain Showdown text files in <User>/XDNetplay/Teams/,
+// one per team, named by the player (a name that cannot be a file name is cleaned up). Local
+// only; nothing here touches a socket save or the room.
+std::vector<std::string> ListSavedTeams();
+std::optional<std::string> LoadSavedTeam(const std::string& name);
+// Writes (or replaces) the team; returns the name it was stored under, "" on failure.
+std::string SaveTeamText(const std::string& name, const std::string& text);
+bool DeleteSavedTeam(const std::string& name);
+
 }  // namespace XDNetplay

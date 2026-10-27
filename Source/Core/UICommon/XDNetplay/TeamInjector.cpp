@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <charconv>
 #include <functional>
 #include <map>
@@ -1690,4 +1691,79 @@ MultiTeamCheck CheckMultiTeams(int format, const std::array<u32, 3>& seat_serial
 #endif
   return check;
 }
+namespace
+{
+std::string SavedTeamDir()
+{
+  return File::GetUserPath(D_USER_IDX) + "XDNetplay/Teams/";
+}
+
+// Letters, digits, spaces and a few marks; at most 40 characters. "" when nothing is left.
+std::string SavedTeamFileStem(const std::string& name)
+{
+  std::string stem;
+  for (const char c : name)
+  {
+    const auto u = static_cast<unsigned char>(c);
+    if (std::isalnum(u) || c == ' ' || c == '-' || c == '_' || c == '.' || c == '(' ||
+        c == ')' || c == '\'' || c == '+' || c == '!')
+    {
+      stem.push_back(c);
+    }
+  }
+  stem = std::string(StripWhitespace(stem));
+  while (!stem.empty() && stem.front() == '.')
+    stem.erase(stem.begin());
+  if (stem.size() > 40)
+    stem.resize(40);
+  return std::string(StripWhitespace(stem));
+}
+}  // namespace
+
+std::vector<std::string> ListSavedTeams()
+{
+  std::vector<std::string> names;
+  const std::string dir = SavedTeamDir();
+  if (!File::IsDirectory(dir))
+    return names;
+  for (const File::FSTEntry& entry : File::ScanDirectoryTree(dir, false).children)
+  {
+    if (entry.isDirectory || !entry.virtualName.ends_with(".txt"))
+      continue;
+    names.push_back(entry.virtualName.substr(0, entry.virtualName.size() - 4));
+  }
+  std::ranges::sort(names, [](const std::string& a, const std::string& b) {
+    return std::ranges::lexicographical_compare(a, b, [](char x, char y) {
+      return std::tolower(static_cast<unsigned char>(x)) <
+             std::tolower(static_cast<unsigned char>(y));
+    });
+  });
+  return names;
+}
+
+std::optional<std::string> LoadSavedTeam(const std::string& name)
+{
+  const std::string stem = SavedTeamFileStem(name);
+  std::string text;
+  if (stem.empty() || !File::ReadFileToString(SavedTeamDir() + stem + ".txt", text))
+    return std::nullopt;
+  return text;
+}
+
+std::string SaveTeamText(const std::string& name, const std::string& text)
+{
+  const std::string stem = SavedTeamFileStem(name);
+  if (stem.empty())
+    return {};
+  const std::string path = SavedTeamDir() + stem + ".txt";
+  File::CreateFullPath(path);
+  return File::WriteStringToFile(path, text) ? stem : std::string{};
+}
+
+bool DeleteSavedTeam(const std::string& name)
+{
+  const std::string stem = SavedTeamFileStem(name);
+  return !stem.empty() && File::Delete(SavedTeamDir() + stem + ".txt");
+}
+
 }  // namespace XDNetplay
