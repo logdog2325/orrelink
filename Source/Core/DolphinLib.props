@@ -303,6 +303,7 @@
     <ClInclude Include="Core\HW\EXI\EXI.h" />
     <ClInclude Include="Core\HW\GBACore.h" />
     <ClInclude Include="Core\HW\GBADetectLog.h" />
+    <ClInclude Include="Core\HW\GBAMoveNames.h" />
     <ClInclude Include="Core\HW\GBAPad.h" />
     <ClInclude Include="Core\HW\GBAPadEmu.h" />
     <ClInclude Include="Core\HW\GCKeyboard.h" />

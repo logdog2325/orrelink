@@ -796,6 +796,9 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     // Tester trace: every data command (not the status probes), unfiltered.
     if (data_cmd_now && GBADetectLog::IsTracingLink())
       GBADetectLog::TraceLink(m_device_number, m_timestamp_sent, '>', buffer, request_length);
+    // Battle transcript: every data word XD writes to this GBA.
+    if (m_last_cmd == EBufferCommands::CMD_WRITE_GBA && request_length >= 5)
+      GBADetectLog::BattleLinkWrite(m_device_number, m_timestamp_sent, buffer + 1);
     const u8 cmd_class = probing ? 1u : (data_cmd_now ? 2u : 0u);
     const bool class_changed = cmd_class != m_diag_prev_cmd_class;
     m_diag_prev_cmd_class = cmd_class;
@@ -874,6 +877,9 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
                               static_cast<int>(response_length),
                               m_core->GetJoyStatAfterCommand());
     }
+    // Battle transcript: every word XD reads back (the GBA's choices among them).
+    if (m_last_cmd == EBufferCommands::CMD_READ_GBA && response_length >= 4)
+      GBADetectLog::BattleLinkRead(m_device_number, m_timestamp_sent, buffer);
 
     // H9 (gba_detect.log). A withheld command (m_diag_cmd_sent == false) makes
     // the core return 0 with nothing having been asked, so it must NEVER be

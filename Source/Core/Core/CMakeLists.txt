@@ -754,6 +754,7 @@ if(USE_MGBA)
     HW/GBACore.h
     HW/GBADetectLog.cpp
     HW/GBADetectLog.h
+    HW/GBAMoveNames.h
     HW/SI/SI_DeviceGBAEmu.cpp
     HW/SI/SI_DeviceGBAEmu.h
     HW/SI/SI_DeviceXDMultiPort.cpp

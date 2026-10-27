@@ -721,17 +721,19 @@ void XDLauncherDialog::OnShareLog()
     ModalMessageBox::critical(this, tr("Share Log"), tr("Could not replace %1").arg(target));
     return;
   }
-  // The newest link recording (Record link traffic), saved beside the log under its own name.
-  const QStringList traces =
-      logs.entryList({QStringLiteral("linktrace_*.txt")}, QDir::Files, QDir::Time);
-  if (!traces.isEmpty())
+  // The newest link recording (Record link traffic) and battle transcript, saved beside the log
+  // under their own names.
+  for (const QString& pattern : {QStringLiteral("linktrace_*.txt"), QStringLiteral("battle_*.txt")})
   {
-    const QString trace_target = QFileInfo(target).absoluteDir().filePath(traces.first());
-    if (QFileInfo(trace_target).canonicalFilePath() !=
-        QFileInfo(logs.filePath(traces.first())).canonicalFilePath())
+    const QStringList extras = logs.entryList({pattern}, QDir::Files, QDir::Time);
+    if (extras.isEmpty())
+      continue;
+    const QString extra_target = QFileInfo(target).absoluteDir().filePath(extras.first());
+    if (QFileInfo(extra_target).canonicalFilePath() !=
+        QFileInfo(logs.filePath(extras.first())).canonicalFilePath())
     {
-      QFile::remove(trace_target);
-      QFile::copy(logs.filePath(traces.first()), trace_target);
+      QFile::remove(extra_target);
+      QFile::copy(logs.filePath(extras.first()), extra_target);
     }
   }
   QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(target).absolutePath()));
