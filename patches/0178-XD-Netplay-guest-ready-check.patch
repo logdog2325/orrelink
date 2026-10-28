@@ -1,0 +1,344 @@
+From c19f462195bbe91fea259a72238022c9b72b69a6 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 15:23:10 -0700
+Subject: [PATCH] XD Netplay: guest ready check
+
+A seated joiner presses Ready (new XdReady message); the host's Start, on
+desktop and Android, waits for every seated joiner's Ready and names who it
+is waiting for. Each Start clears it.
+---
+ .../features/netplay/NetplaySession.kt        |  5 +++
+ .../netplay/model/NetplayViewModel.kt         |  2 ++
+ .../features/netplay/ui/NetplayActivity.kt    |  1 +
+ .../features/netplay/ui/NetplayScreen.kt      | 11 ++++--
+ Source/Android/jni/NetPlay/Netplay.cpp        | 11 ++++++
+ Source/Core/Core/NetPlayClient.cpp            |  8 +++++
+ Source/Core/Core/NetPlayClient.h              |  1 +
+ Source/Core/Core/NetPlayProto.h               |  3 ++
+ Source/Core/Core/NetPlayServer.cpp            | 35 +++++++++++++++++++
+ Source/Core/Core/NetPlayServer.h              |  6 ++++
+ .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  | 18 ++++++++++
+ Source/Core/DolphinQt/NetPlay/NetPlayDialog.h |  1 +
+ 12 files changed, 100 insertions(+), 2 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/NetplaySession.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/NetplaySession.kt
+index 7c5d19c..eff279b 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/NetplaySession.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/NetplaySession.kt
+@@ -337,6 +337,9 @@ class NetplaySession(
+     /** Joiner: only watch the next battles (true), or play again (false). */
+     fun setWatchOnly(watching: Boolean) = nativeSetWatchOnly(watching)
+ 
++    /** XD Netplay: this joiner is ready for the next battle; the host's Start waits for it. */
++    fun sendReady() = nativeSendReady()
++
+     fun getPort(): Int = nativeGetPort()
+ 
+     fun getExternalIpAddress(): String? = nativeGetExternalIpAddress()
+@@ -464,6 +467,8 @@ class NetplaySession(
+ 
+     private external fun nativeSetWatchOnly(watching: Boolean)
+ 
++    private external fun nativeSendReady()
++
+     private external fun nativeGetPort(): Int
+ 
+     private external fun nativeGetExternalIpAddress(): String?
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt
+index 13d8cdc..2682d99 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/model/NetplayViewModel.kt
+@@ -494,6 +494,8 @@ class NetplayViewModel(
+      * here (the save's real trainer name always wins; see NetplaySession), so
+      * only [modelId] rides along.
+      */
++    fun sendReady() = netplaySession.sendReady()
++
+     fun submitSaveBundle(modelId: Int, raiseToLevel100: Boolean = false) {
+         viewModelScope.launch(Dispatchers.IO) {
+             val error = netplaySession.submitSaveBundle(modelId, raiseToLevel100)
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayActivity.kt
+index 8fcda6b..995c315 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayActivity.kt
+@@ -95,6 +95,7 @@ class NetplayActivity : AppCompatActivity(), ThemeProvider {
+                     onSendMessage = viewModel::sendMessage,
+                     onSubmitTeam = viewModel::submitTeam,
+                     onSubmitSaveBundle = viewModel::submitSaveBundle,
++                    onReady = viewModel::sendReady,
+                     onSetHostName = viewModel::setHostTrainerName,
+                     hostTrainerName = viewModel.hostTrainerName.collectAsState().value,
+                     initialTeamText = submitPrefill.teamText,
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
+index dd40d85..6f350f4 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
+@@ -160,6 +160,7 @@ fun NetplayScreen(
+     joinAddresses: Map<JoinInfoType, JoinAddress>,
+     onSubmitTeam: (String, String, Int, Boolean) -> Unit,
+     onSubmitSaveBundle: (Int, Boolean) -> Unit,
++    onReady: () -> Unit,
+     initialTeamText: String,
+     initialTrainerName: String,
+     initialModelId: Int,
+@@ -598,8 +599,13 @@ fun NetplayScreen(
+                 // Only the opponent (a seated player in Multi) may submit (the
+                 // server refuses anyone else), and a FAB has no disabled state,
+                 // so a watcher or a player waiting for a seat does not get one.
+-                ExtendedFloatingActionButton(onClick = { showSubmitTeam = true }) {
+-                    Text("Submit Team")
++                // Ready: the host's Start waits for every seated joiner's, once per battle.
++                Row {
++                    ExtendedFloatingActionButton(onClick = onReady) { Text("Ready") }
++                    Spacer(Modifier.width(12.dp))
++                    ExtendedFloatingActionButton(onClick = { showSubmitTeam = true }) {
++                        Text("Submit Team")
++                    }
+                 }
+             }
+         },
+@@ -2200,6 +2206,7 @@ private fun PreviewNetplayScreen() {
+         ),
+         onSubmitTeam = { _, _, _, _ -> },
+         onSubmitSaveBundle = { _, _ -> },
++        onReady = {},
+         initialTeamText = "",
+         initialTrainerName = "PLAYER",
+         initialModelId = 0,
+diff --git a/Source/Android/jni/NetPlay/Netplay.cpp b/Source/Android/jni/NetPlay/Netplay.cpp
+index 9c21e12..84fb3d7 100644
+--- a/Source/Android/jni/NetPlay/Netplay.cpp
++++ b/Source/Android/jni/NetPlay/Netplay.cpp
+@@ -720,6 +720,8 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
+   // compare.
+   if (s_host_game_is_xd)
+   {
++    if (const std::string not_ready = server->XdNotReadyRefusal(); !not_ready.empty())
++      return reply(false, not_ready);
+     std::string guest_note;
+     const std::string refusal = XDNetplay::StartFormatRefusal(
+         room_format, XDNetplay::CheckRoomTeams(room_format, /*judge_slot=*/true),
+@@ -810,6 +812,15 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetWatchOnl
+     client->SendXdWatch(watching == JNI_TRUE);
+ }
+ 
++JNIEXPORT void JNICALL
++Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSendReady(JNIEnv* env,
++                                                                                jobject obj)
++{
++  // XD Netplay: this joiner is ready for the next battle (the host's Start waits for it).
++  if (auto* client = GetClientPointer(env, obj))
++    client->SendXdReady();
++}
++
+ JNIEXPORT jint JNICALL Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeGetPort(
+     JNIEnv* env, jobject obj)
+ {
+diff --git a/Source/Core/Core/NetPlayClient.cpp b/Source/Core/Core/NetPlayClient.cpp
+index 1e54069..d1e37db 100644
+--- a/Source/Core/Core/NetPlayClient.cpp
++++ b/Source/Core/Core/NetPlayClient.cpp
+@@ -2467,6 +2467,14 @@ void NetPlayClient::SendTeamSubmission(const std::string& payload)
+   SendAsync(std::move(packet));
+ }
+ 
++void NetPlayClient::SendXdReady()
++{
++  sf::Packet packet;
++  packet << MessageID::XdReady;
++
++  SendAsync(std::move(packet));
++}
++
+ void NetPlayClient::SendXdWatch(bool watching)
+ {
+   sf::Packet packet;
+diff --git a/Source/Core/Core/NetPlayClient.h b/Source/Core/Core/NetPlayClient.h
+index d3ecbba..e62aea1 100644
+--- a/Source/Core/Core/NetPlayClient.h
++++ b/Source/Core/Core/NetPlayClient.h
+@@ -214,6 +214,7 @@ public:
+   // XD Netplay: this player only watches (true) or wants to play (false). Takes effect at the
+   // next Start; the server answers with XdSeats.
+   void SendXdWatch(bool watching);
++  void SendXdReady();
+   // XD Netplay: pid's part in the next battle, from the last XdSeats. Display only; the pad map
+   // is decided by the host at Start. Takes m_crit.players.
+   XdRole GetXdRole(PlayerId pid);
+diff --git a/Source/Core/Core/NetPlayProto.h b/Source/Core/Core/NetPlayProto.h
+index 7549f8e..7612440 100644
+--- a/Source/Core/Core/NetPlayProto.h
++++ b/Source/Core/Core/NetPlayProto.h
+@@ -256,6 +256,9 @@ enum class MessageID : u8
+   // clients: u8 XdNoticeKind, PlayerId who, u8 arg. Each client writes the line itself, into the
+   // room chat only, never on screen.
+   XdNotice = 0xAC,
++  // XD Netplay: client -> server, no payload. A seated joiner is ready; the host's Start waits
++  // for every one of them, and each Start clears it.
++  XdReady = 0xAD,
+ 
+   TimeBase = 0xB0,
+   DesyncDetected = 0xB1,
+diff --git a/Source/Core/Core/NetPlayServer.cpp b/Source/Core/Core/NetPlayServer.cpp
+index 210f6fe..36bb8b1 100644
+--- a/Source/Core/Core/NetPlayServer.cpp
++++ b/Source/Core/Core/NetPlayServer.cpp
+@@ -1508,6 +1508,18 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
+   }
+   break;
+ 
++  case MessageID::XdReady:
++  {
++    bool added;
++    {
++      std::lock_guard lk(m_xd_ready_mutex);
++      added = m_xd_ready.insert(player.pid).second;
++    }
++    if (added)
++      SendChatMessage(player.name + " is ready.");
++  }
++  break;
++
+   case MessageID::ChunkedDataProgress:
+   {
+     u32 cid;
+@@ -2690,6 +2702,11 @@ bool NetPlayServer::StartGame()
+   // Running goes up before pending comes down: see IsStartingOrRunning().
+   m_is_running = true;
+   m_start_pending = false;
++  {
++    // Every battle asks again.
++    std::lock_guard lk(m_xd_ready_mutex);
++    m_xd_ready.clear();
++  }
+ 
+   return true;
+ }
+@@ -3471,6 +3488,24 @@ void NetPlayServer::SendXdSeats()
+ }
+ 
+ // called from ---GUI--- thread
++std::string NetPlayServer::XdNotReadyRefusal()
++{
++  std::set<PlayerId> ready;
++  {
++    std::lock_guard lk(m_xd_ready_mutex);
++    ready = m_xd_ready;
++  }
++  std::string names;
++  std::lock_guard lkp(m_crit.players);
++  for (const Client& client : std::views::values(m_players))
++  {
++    if (client.IsHost() || client.xd_seat < 2 || client.xd_watching || ready.contains(client.pid))
++      continue;
++    names += (names.empty() ? "" : ", ") + client.name;
++  }
++  return names.empty() ? std::string{} : "Waiting for " + names + " to press Ready.";
++}
++
+ XdStartClaim NetPlayServer::ClaimXdStart()
+ {
+   // Read before any netplay lock (config stays outside them all). Tester switch, see
+diff --git a/Source/Core/Core/NetPlayServer.h b/Source/Core/Core/NetPlayServer.h
+index 6cab66c..7cd5235 100644
+--- a/Source/Core/Core/NetPlayServer.h
++++ b/Source/Core/Core/NetPlayServer.h
+@@ -9,6 +9,7 @@
+ #include <atomic>
+ #include <functional>
+ #include <map>
++#include <set>
+ #include <mutex>
+ #include <optional>
+ #include <string>
+@@ -149,6 +150,8 @@ public:
+   // StartGame() raises m_is_running before it clears m_start_pending, so there
+   // is no instant where a start is in flight and both read false.
+   bool IsStartingOrRunning() const { return m_start_pending.load() || m_is_running.load(); }
++  // XD Netplay: "Waiting for <names> to press Ready." while a seated joiner has not, else "".
++  std::string XdNotReadyRefusal();
+   // Separately, for the room's live battle style: a start in flight still refuses (the saves and
+   // codes are being sent), a running game takes the change live. StartGame raises running before
+   // it clears pending, so a caller testing pending first never sees neither during the switch.
+@@ -450,6 +453,9 @@ private:
+   // held. Nothing under it may wait on a UI thread (no RunOnObject, PanicAlert, modal or blocking
+   // JNI call), because the host UI thread waits on it in ClaimXdStart.
+   std::mutex m_xd_seat_mutex;
++  // Seated joiners who pressed Ready since the last Start. Own lock, taken alone.
++  std::mutex m_xd_ready_mutex;
++  std::set<PlayerId> m_xd_ready;
+   // Written under m_xd_seat_mutex; read by OnConnect under m_crit.game, which ClaimXdStart takes
+   // once after raising it. Up from ClaimXdStart until ReleaseXdStart; by then m_start_pending or
+   // m_is_running carries the refusal if a start began.
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+index 5aec076..d8ec026 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+@@ -330,6 +330,13 @@ void NetPlayDialog::CreateChatLayout()
+   m_submit_team_button->setDefault(false);
+   m_submit_team_button->setAutoDefault(false);
+   m_submit_team_button->hide();
++  // A seated joiner's Ready: the host's Start waits for every one, once per battle.
++  m_ready_button = new QPushButton(tr("Ready"));
++  m_ready_button->setDefault(false);
++  m_ready_button->setAutoDefault(false);
++  m_ready_button->setToolTip(tr("Tell the host you are ready. Start waits for every player's "
++                                "Ready, and asks again before each battle."));
++  m_ready_button->hide();
+ 
+   // XD Netplay, host side: battle music and location without a trip back to
+   // the launcher. Same config keys as the launcher's Battle Style group.
+@@ -380,6 +387,7 @@ void NetPlayDialog::CreateChatLayout()
+   // One row for both buttons. A hidden widget takes no room in a box layout,
+   // so a joiner (no Music & Location button) gets [Submit Team...][Watch only].
+   auto* team_row = new QHBoxLayout;
++  team_row->addWidget(m_ready_button, 1);
+   team_row->addWidget(m_submit_team_button, 1);
+   team_row->addWidget(m_style_button, 1);
+   team_row->addWidget(m_format_button, 1);
+@@ -455,6 +463,10 @@ void NetPlayDialog::ConnectWidgets()
+   connect(m_chat_send_button, &QPushButton::clicked, this, &NetPlayDialog::OnChat);
+   connect(m_chat_type_edit, &QLineEdit::returnPressed, this, &NetPlayDialog::OnChat);
+   connect(m_submit_team_button, &QPushButton::clicked, this, &NetPlayDialog::OnSubmitTeam);
++  connect(m_ready_button, &QPushButton::clicked, this, [] {
++    if (const auto client = Settings::Instance().GetNetPlayClient())
++      client->SendXdReady();
++  });
+   connect(m_style_button, &QPushButton::clicked, this, &NetPlayDialog::OnStyleSettings);
+   connect(m_format_button, &QPushButton::clicked, this, &NetPlayDialog::OnChangeFormat);
+   connect(m_watch_box, &QCheckBox::toggled, this, [](bool checked) {
+@@ -711,6 +723,11 @@ void NetPlayDialog::OnStart()
+       Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, room_format);
+     // The format's legality gate. The freeze keeps TeamData out, so the slot
+     // judged here is the one the start sends. Free/OU: one int compare.
++    if (const std::string not_ready = server->XdNotReadyRefusal(); !not_ready.empty())
++    {
++      DisplayMessage(QString::fromStdString(not_ready), "red");
++      return;
++    }
+     std::string guest_note;
+     const std::string refusal = XDNetplay::StartFormatRefusal(
+         room_format, XDNetplay::CheckRoomTeams(room_format, /*judge_slot=*/true),
+@@ -1116,6 +1133,7 @@ void NetPlayDialog::UpdateGUI()
+                             local_role == NetPlay::XdRole::Seated ||
+                             local_role == NetPlay::XdRole::Unknown;
+     m_submit_team_button->setEnabled(may_submit);
++    m_ready_button->setVisible(is_xd && may_submit);
+     m_submit_team_button->setToolTip(
+         may_submit                    ? JoinerSubmitTeamToolTip() :
+         multi_seats || host_watching ? tr("Only seated players can submit a team.") :
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
+index c4bcb74..9ae7e15 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
+@@ -147,6 +147,7 @@ private:
+   QTextEdit* m_chat_edit;
+   QLineEdit* m_chat_type_edit;
+   QPushButton* m_chat_send_button;
++  QPushButton* m_ready_button = nullptr;
+   QPushButton* m_submit_team_button;
+   QPushButton* m_style_button;
+   QPushButton* m_format_button;
+-- 
+2.39.5 (Apple Git-154)
+
