@@ -2467,6 +2467,14 @@ void NetPlayClient::SendTeamSubmission(const std::string& payload)
   SendAsync(std::move(packet));
 }
 
+void NetPlayClient::SendXdReady()
+{
+  sf::Packet packet;
+  packet << MessageID::XdReady;
+
+  SendAsync(std::move(packet));
+}
+
 void NetPlayClient::SendXdWatch(bool watching)
 {
   sf::Packet packet;

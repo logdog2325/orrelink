@@ -1508,6 +1508,18 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
   }
   break;
 
+  case MessageID::XdReady:
+  {
+    bool added;
+    {
+      std::lock_guard lk(m_xd_ready_mutex);
+      added = m_xd_ready.insert(player.pid).second;
+    }
+    if (added)
+      SendChatMessage(player.name + " is ready.");
+  }
+  break;
+
   case MessageID::ChunkedDataProgress:
   {
     u32 cid;
@@ -2690,6 +2702,11 @@ bool NetPlayServer::StartGame()
   // Running goes up before pending comes down: see IsStartingOrRunning().
   m_is_running = true;
   m_start_pending = false;
+  {
+    // Every battle asks again.
+    std::lock_guard lk(m_xd_ready_mutex);
+    m_xd_ready.clear();
+  }
 
   return true;
 }
@@ -3471,6 +3488,24 @@ void NetPlayServer::SendXdSeats()
 }
 
 // called from ---GUI--- thread
+std::string NetPlayServer::XdNotReadyRefusal()
+{
+  std::set<PlayerId> ready;
+  {
+    std::lock_guard lk(m_xd_ready_mutex);
+    ready = m_xd_ready;
+  }
+  std::string names;
+  std::lock_guard lkp(m_crit.players);
+  for (const Client& client : std::views::values(m_players))
+  {
+    if (client.IsHost() || client.xd_seat < 2 || client.xd_watching || ready.contains(client.pid))
+      continue;
+    names += (names.empty() ? "" : ", ") + client.name;
+  }
+  return names.empty() ? std::string{} : "Waiting for " + names + " to press Ready.";
+}
+
 XdStartClaim NetPlayServer::ClaimXdStart()
 {
   // Read before any netplay lock (config stays outside them all). Tester switch, see

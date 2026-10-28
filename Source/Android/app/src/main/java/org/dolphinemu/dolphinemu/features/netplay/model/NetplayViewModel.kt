@@ -494,6 +494,8 @@ class NetplayViewModel(
      * here (the save's real trainer name always wins; see NetplaySession), so
      * only [modelId] rides along.
      */
+    fun sendReady() = netplaySession.sendReady()
+
     fun submitSaveBundle(modelId: Int, raiseToLevel100: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
             val error = netplaySession.submitSaveBundle(modelId, raiseToLevel100)

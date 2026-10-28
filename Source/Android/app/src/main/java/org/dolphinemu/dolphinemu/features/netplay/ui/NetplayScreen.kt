@@ -160,6 +160,7 @@ fun NetplayScreen(
     joinAddresses: Map<JoinInfoType, JoinAddress>,
     onSubmitTeam: (String, String, Int, Boolean) -> Unit,
     onSubmitSaveBundle: (Int, Boolean) -> Unit,
+    onReady: () -> Unit,
     initialTeamText: String,
     initialTrainerName: String,
     initialModelId: Int,
@@ -598,8 +599,13 @@ fun NetplayScreen(
                 // Only the opponent (a seated player in Multi) may submit (the
                 // server refuses anyone else), and a FAB has no disabled state,
                 // so a watcher or a player waiting for a seat does not get one.
-                ExtendedFloatingActionButton(onClick = { showSubmitTeam = true }) {
-                    Text("Submit Team")
+                // Ready: the host's Start waits for every seated joiner's, once per battle.
+                Row {
+                    ExtendedFloatingActionButton(onClick = onReady) { Text("Ready") }
+                    Spacer(Modifier.width(12.dp))
+                    ExtendedFloatingActionButton(onClick = { showSubmitTeam = true }) {
+                        Text("Submit Team")
+                    }
                 }
             }
         },
@@ -2200,6 +2206,7 @@ private fun PreviewNetplayScreen() {
         ),
         onSubmitTeam = { _, _, _, _ -> },
         onSubmitSaveBundle = { _, _ -> },
+        onReady = {},
         initialTeamText = "",
         initialTrainerName = "PLAYER",
         initialModelId = 0,
