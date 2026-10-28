@@ -9,6 +9,7 @@
 #include <atomic>
 #include <functional>
 #include <map>
+#include <set>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -149,6 +150,8 @@ public:
   // StartGame() raises m_is_running before it clears m_start_pending, so there
   // is no instant where a start is in flight and both read false.
   bool IsStartingOrRunning() const { return m_start_pending.load() || m_is_running.load(); }
+  // XD Netplay: "Waiting for <names> to press Ready." while a seated joiner has not, else "".
+  std::string XdNotReadyRefusal();
   // Separately, for the room's live battle style: a start in flight still refuses (the saves and
   // codes are being sent), a running game takes the change live. StartGame raises running before
   // it clears pending, so a caller testing pending first never sees neither during the switch.
@@ -450,6 +453,9 @@ private:
   // held. Nothing under it may wait on a UI thread (no RunOnObject, PanicAlert, modal or blocking
   // JNI call), because the host UI thread waits on it in ClaimXdStart.
   std::mutex m_xd_seat_mutex;
+  // Seated joiners who pressed Ready since the last Start. Own lock, taken alone.
+  std::mutex m_xd_ready_mutex;
+  std::set<PlayerId> m_xd_ready;
   // Written under m_xd_seat_mutex; read by OnConnect under m_crit.game, which ClaimXdStart takes
   // once after raising it. Up from ClaimXdStart until ReleaseXdStart; by then m_start_pending or
   // m_is_running carries the refusal if a start began.

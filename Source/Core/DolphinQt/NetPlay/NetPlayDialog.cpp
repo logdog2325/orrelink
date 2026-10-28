@@ -330,6 +330,13 @@ void NetPlayDialog::CreateChatLayout()
   m_submit_team_button->setDefault(false);
   m_submit_team_button->setAutoDefault(false);
   m_submit_team_button->hide();
+  // A seated joiner's Ready: the host's Start waits for every one, once per battle.
+  m_ready_button = new QPushButton(tr("Ready"));
+  m_ready_button->setDefault(false);
+  m_ready_button->setAutoDefault(false);
+  m_ready_button->setToolTip(tr("Tell the host you are ready. Start waits for every player's "
+                                "Ready, and asks again before each battle."));
+  m_ready_button->hide();
 
   // XD Netplay, host side: battle music and location without a trip back to
   // the launcher. Same config keys as the launcher's Battle Style group.
@@ -380,6 +387,7 @@ void NetPlayDialog::CreateChatLayout()
   // One row for both buttons. A hidden widget takes no room in a box layout,
   // so a joiner (no Music & Location button) gets [Submit Team...][Watch only].
   auto* team_row = new QHBoxLayout;
+  team_row->addWidget(m_ready_button, 1);
   team_row->addWidget(m_submit_team_button, 1);
   team_row->addWidget(m_style_button, 1);
   team_row->addWidget(m_format_button, 1);
@@ -455,6 +463,10 @@ void NetPlayDialog::ConnectWidgets()
   connect(m_chat_send_button, &QPushButton::clicked, this, &NetPlayDialog::OnChat);
   connect(m_chat_type_edit, &QLineEdit::returnPressed, this, &NetPlayDialog::OnChat);
   connect(m_submit_team_button, &QPushButton::clicked, this, &NetPlayDialog::OnSubmitTeam);
+  connect(m_ready_button, &QPushButton::clicked, this, [] {
+    if (const auto client = Settings::Instance().GetNetPlayClient())
+      client->SendXdReady();
+  });
   connect(m_style_button, &QPushButton::clicked, this, &NetPlayDialog::OnStyleSettings);
   connect(m_format_button, &QPushButton::clicked, this, &NetPlayDialog::OnChangeFormat);
   connect(m_watch_box, &QCheckBox::toggled, this, [](bool checked) {
@@ -711,6 +723,11 @@ void NetPlayDialog::OnStart()
       Config::SetBaseOrCurrent(Config::MAIN_XD_FORMAT, room_format);
     // The format's legality gate. The freeze keeps TeamData out, so the slot
     // judged here is the one the start sends. Free/OU: one int compare.
+    if (const std::string not_ready = server->XdNotReadyRefusal(); !not_ready.empty())
+    {
+      DisplayMessage(QString::fromStdString(not_ready), "red");
+      return;
+    }
     std::string guest_note;
     const std::string refusal = XDNetplay::StartFormatRefusal(
         room_format, XDNetplay::CheckRoomTeams(room_format, /*judge_slot=*/true),
@@ -1116,6 +1133,7 @@ void NetPlayDialog::UpdateGUI()
                             local_role == NetPlay::XdRole::Seated ||
                             local_role == NetPlay::XdRole::Unknown;
     m_submit_team_button->setEnabled(may_submit);
+    m_ready_button->setVisible(is_xd && may_submit);
     m_submit_team_button->setToolTip(
         may_submit                    ? JoinerSubmitTeamToolTip() :
         multi_seats || host_watching ? tr("Only seated players can submit a team.") :
