@@ -259,6 +259,10 @@ fun XDLauncherScreen(
                     TextButton(onClick = onShareDetectLog) { Text("Share log") }
                     Spacer(Modifier.width(12.dp))
                     TextButton(onClick = onLastBattle) { Text("Last battle") }
+                    Spacer(Modifier.width(12.dp))
+                    var showTeams by remember { mutableStateOf(false) }
+                    TextButton(onClick = { showTeams = true }) { Text("Saved teams") }
+                    if (showTeams) SavedTeamsDialog(onClose = { showTeams = false })
                 }
                 // Tester switch: record every message between XD and the GBAs next to the
                 // session log (for the battle transcript). Share log sends the newest one.
@@ -710,5 +714,75 @@ private fun NumberField(
         enabled = enabled,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         modifier = modifier
+    )
+}
+
+/** Saved teams (XDNetplay/Teams/*.txt): pick one to read or edit its Showdown text. */
+@Composable
+private fun SavedTeamsDialog(onClose: () -> Unit) {
+    var names by remember { mutableStateOf(SaveImportBridge.listSavedTeams()) }
+    var name by remember { mutableStateOf(names.firstOrNull() ?: "") }
+    var text by remember { mutableStateOf(names.firstOrNull()?.let { SaveImportBridge.loadSavedTeam(it) } ?: "") }
+    var menuOpen by remember { mutableStateOf(false) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Saved teams") },
+        text = {
+            Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                androidx.compose.foundation.layout.Box {
+                    androidx.compose.material3.OutlinedButton(
+                        onClick = { menuOpen = true },
+                        enabled = names.isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text(if (names.isEmpty()) "No saved teams yet" else "Pick a team") }
+                    androidx.compose.material3.DropdownMenu(
+                        expanded = menuOpen, onDismissRequest = { menuOpen = false }
+                    ) {
+                        names.forEach { team ->
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text(team) },
+                                onClick = {
+                                    menuOpen = false
+                                    name = team
+                                    text = SaveImportBridge.loadSavedTeam(team)
+                                }
+                            )
+                        }
+                    }
+                }
+                androidx.compose.material3.OutlinedTextField(
+                    value = name, onValueChange = { name = it.take(40) }, singleLine = true,
+                    label = { Text("Team name") }, modifier = Modifier.fillMaxWidth()
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = text, onValueChange = { text = it },
+                    label = { Text("Showdown text") },
+                    modifier = Modifier.fillMaxWidth().height(260.dp)
+                )
+                Row {
+                    TextButton(
+                        onClick = {
+                            val stored = SaveImportBridge.saveTeam(name.trim(), text)
+                            if (stored.isNotEmpty()) {
+                                name = stored
+                                names = SaveImportBridge.listSavedTeams()
+                            }
+                        },
+                        enabled = name.isNotBlank() && text.isNotBlank()
+                    ) { Text("Save") }
+                    TextButton(
+                        onClick = {
+                            SaveImportBridge.deleteSavedTeam(name.trim())
+                            names = SaveImportBridge.listSavedTeams()
+                            name = ""
+                            text = ""
+                        },
+                        enabled = name.trim() in names
+                    ) { Text("Delete") }
+                    TextButton(onClick = { name = ""; text = "" }) { Text("New") }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("Close") } }
     )
 }

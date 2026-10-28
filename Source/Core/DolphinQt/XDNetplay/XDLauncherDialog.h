@@ -82,6 +82,7 @@ private:
   void FitToScreen();
   void OnShareLog();
   void OnLastBattle();
+  void OnSavedTeams();
   void OnCustomizeGbaInput();
 
   std::shared_ptr<const UICommon::GameFile> FindXdGame() const;
@@ -163,6 +164,7 @@ private:
   bool m_first_show_sized = false;
   QPushButton* m_share_log_button = nullptr;
   QPushButton* m_last_battle_button = nullptr;
+  QPushButton* m_saved_teams_button = nullptr;
   QPushButton* m_gba_customize_button = nullptr;
   TeamEditorDialog* m_team_editor = nullptr;
 };
