@@ -453,8 +453,9 @@ void WriteBattleTranscript()
   s_battle.clear();
   if (body.empty())
     return;
-  const std::string path =
-      File::GetUserPath(D_GBAUSER_IDX) + "battle_" + s_session_stamp + ".txt";
+  const std::string path = File::GetUserPath(D_GBAUSER_IDX) + "Battle Records/battle_" +
+                           s_session_stamp + ".txt";
+  File::CreateFullPath(path);
   std::ofstream out(path, std::ios::out | std::ios::trunc);
   if (!out)
     return;

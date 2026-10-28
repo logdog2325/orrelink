@@ -410,7 +410,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                 f.isFile && f.name.startsWith("linktrace_") && f.name.endsWith(".txt")
             } ?: emptyArray()).sortedByDescending { it.name }.take(1) +
             // The newest battle transcript.
-            (dir.listFiles { f ->
+            (java.io.File(dir, "Battle Records").listFiles { f ->
                 f.isFile && f.name.startsWith("battle_") && f.name.endsWith(".txt")
             } ?: emptyArray()).sortedByDescending { it.name }.take(1)
         if (logs.isEmpty()) {
@@ -431,9 +431,11 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         startActivity(android.content.Intent.createChooser(send, "Share detect logs"))
     }
 
-    /** Open the newest battle transcript (GBA/battle_*.txt) in a text viewer, or share it. */
+    /** Open the newest battle transcript (GBA/Battle Records/battle_*.txt) in a text viewer, or
+     * share it. App storage has no folder a file manager can open, so this is the Android side
+     * of the desktop's Battle Records folder button. */
     private fun openLastBattle() {
-        val dir = java.io.File(getExternalFilesDir(null), "GBA")
+        val dir = java.io.File(getExternalFilesDir(null), "GBA/Battle Records")
         val newest = (dir.listFiles { f ->
             f.isFile && f.name.startsWith("battle_") && f.name.endsWith(".txt")
         } ?: emptyArray()).maxByOrNull { it.name }
@@ -455,7 +457,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         // Viewers and share targets (Discord, Drive) in one chooser.
-        startActivity(android.content.Intent.createChooser(send, "Last battle").apply {
+        startActivity(android.content.Intent.createChooser(send, "Battle records").apply {
             putExtra(android.content.Intent.EXTRA_INITIAL_INTENTS, arrayOf(view))
         })
     }
