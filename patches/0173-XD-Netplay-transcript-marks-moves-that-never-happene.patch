@@ -1,0 +1,389 @@
+From ba193c58ba7b7e5a59edc45f5cafc3ca9e13ac6c Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 15:11:32 -0700
+Subject: [PATCH 173/174] XD Netplay: transcript marks moves that never
+ happened; Last Battle button; saved teams above the team box; keep the sent
+ team as Last sent
+
+A chosen move is confirmed by its PP in that GBA's next turn block: a Pokemon
+knocked out, flinched or asleep before moving spends none. The last turn's
+result is marked unknown, since XD sends nothing after it.
+---
+ .../features/netplay/ui/NetplayScreen.kt      | 13 +++---
+ .../features/xdnetplay/SaveImportBridge.kt    |  9 ++++
+ .../xdnetplay/ui/XDLauncherActivity.kt        | 32 +++++++++++++-
+ .../features/xdnetplay/ui/XDLauncherScreen.kt |  5 ++-
+ Source/Core/Core/HW/GBADetectLog.cpp          | 44 ++++++++++++++++++-
+ .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  |  9 +++-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 21 +++++++++
+ .../DolphinQt/XDNetplay/XDLauncherDialog.h    |  2 +
+ .../Core/UICommon/XDNetplay/TeamInjector.cpp  |  7 +++
+ Source/Core/UICommon/XDNetplay/TeamInjector.h |  2 +
+ 10 files changed, 133 insertions(+), 11 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
+index d763939..dd40d85 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/netplay/ui/NetplayScreen.kt
+@@ -358,6 +358,12 @@ fun NetplayScreen(
+                         Switch(checked = raiseTo100, onCheckedChange = { raiseTo100 = it })
+                     }
+                     Spacer(Modifier.height(12.dp))
++                    // Above the team box, so it shows without scrolling.
++                    SavedTeamsRow(
++                        teamText = teamDraft,
++                        onPick = { teamDraft = it },
++                        enabled = !useMySave
++                    )
+                     OutlinedTextField(
+                         value = teamDraft,
+                         onValueChange = { teamDraft = it },
+@@ -365,11 +371,6 @@ fun NetplayScreen(
+                         enabled = !useMySave,
+                         modifier = Modifier.fillMaxWidth().height(220.dp)
+                     )
+-                    SavedTeamsRow(
+-                        teamText = teamDraft,
+-                        onPick = { teamDraft = it },
+-                        enabled = !useMySave
+-                    )
+                     // Paste-time format note, shown immediately while the
+                     // local Format pick carries team rules. NEVER blocking: Send
+                     // stays enabled — the note exists so a refusal from the
+@@ -404,6 +405,7 @@ fun NetplayScreen(
+                             onSubmitHostTeam(
+                                 teamDraft.trim(), hostNameDraft.trim(), modelDraft, raiseTo100
+                             )
++                            SaveImportBridge.rememberSentTeam(teamDraft.trim())
+                             showSubmitTeam = false
+                         },
+                         enabled = !gameRunning
+@@ -419,6 +421,7 @@ fun NetplayScreen(
+                                 onSubmitTeam(
+                                     teamDraft.trim(), nameDraft.trim(), modelDraft, raiseTo100
+                                 )
++                                SaveImportBridge.rememberSentTeam(teamDraft.trim())
+                             }
+                             showSubmitTeam = false
+                         },
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/SaveImportBridge.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/SaveImportBridge.kt
+index 378e96c..4006f45 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/SaveImportBridge.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/SaveImportBridge.kt
+@@ -75,6 +75,15 @@ object SaveImportBridge {
+     /** Stores [text] as [name]; returns the name it was stored under, "" on failure. */
+     fun saveTeam(name: String, text: String): String = nativeSaveTeam(name, text)
+ 
++    /** Keeps a sent or applied team as the saved team "Last sent" (a pokepast.es link is skipped). */
++    fun rememberSentTeam(text: String) {
++        if (org.dolphinemu.dolphinemu.features.xdnetplay.gen3.ShowdownParser.parseTeam(text)
++                .isNotEmpty()
++        ) {
++            nativeSaveTeam("Last sent", text)
++        }
++    }
++
+     fun deleteSavedTeam(name: String): Boolean = nativeDeleteSavedTeam(name)
+ 
+     /** The RecordLinkTraffic tester switch ([XDNetplay] in Dolphin.ini). */
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+index c57bdb9..280e262 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+@@ -387,7 +387,8 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+                     onOpenDolphin = {
+                         startActivity(Intent(this, MainActivity::class.java))
+                     },
+-                    onShareDetectLog = { shareDetectLog() }
++                    onShareDetectLog = { shareDetectLog() },
++                    onLastBattle = { openLastBattle() }
+                 )
+             }
+         }
+@@ -430,6 +431,35 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+         startActivity(android.content.Intent.createChooser(send, "Share detect logs"))
+     }
+ 
++    /** Open the newest battle transcript (GBA/battle_*.txt) in a text viewer, or share it. */
++    private fun openLastBattle() {
++        val dir = java.io.File(getExternalFilesDir(null), "GBA")
++        val newest = (dir.listFiles { f ->
++            f.isFile && f.name.startsWith("battle_") && f.name.endsWith(".txt")
++        } ?: emptyArray()).maxByOrNull { it.name }
++        if (newest == null) {
++            android.widget.Toast.makeText(
++                this, "No battle transcript yet. One is written when a game stops.",
++                android.widget.Toast.LENGTH_LONG).show()
++            return
++        }
++        val uri = androidx.core.content.FileProvider.getUriForFile(
++            this, "$packageName.xdshare", newest)
++        val view = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
++            setDataAndType(uri, "text/plain")
++            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
++        }
++        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
++            type = "text/plain"
++            putExtra(android.content.Intent.EXTRA_STREAM, uri)
++            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
++        }
++        // Viewers and share targets (Discord, Drive) in one chooser.
++        startActivity(android.content.Intent.createChooser(send, "Last battle").apply {
++            putExtra(android.content.Intent.EXTRA_INITIAL_INTENTS, arrayOf(view))
++        })
++    }
++
+     /** Boot Pokemon XD directly by game ID, bypassing the game picker (which
+      * would otherwise default to whatever ISO sorts first in the folder). */
+     private fun bootXd() {
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+index e4b7741..bcdeaba 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+@@ -105,7 +105,8 @@ fun XDLauncherScreen(
+     onFindBattles: () -> Unit,
+     onOpenSettings: () -> Unit,
+     onOpenDolphin: () -> Unit,
+-    onShareDetectLog: () -> Unit
++    onShareDetectLog: () -> Unit,
++    onLastBattle: () -> Unit
+ ) {
+     Scaffold { padding ->
+         Column(
+@@ -256,6 +257,8 @@ fun XDLauncherScreen(
+                     TextButton(onClick = onOpenDolphin) { Text("Full Dolphin") }
+                     Spacer(Modifier.width(12.dp))
+                     TextButton(onClick = onShareDetectLog) { Text("Share log") }
++                    Spacer(Modifier.width(12.dp))
++                    TextButton(onClick = onLastBattle) { Text("Last battle") }
+                 }
+                 // Tester switch: record every message between XD and the GBAs next to the
+                 // session log (for the battle transcript). Share log sends the newest one.
+diff --git a/Source/Core/Core/HW/GBADetectLog.cpp b/Source/Core/Core/HW/GBADetectLog.cpp
+index 8b1f27a..5955db9 100644
+--- a/Source/Core/Core/HW/GBADetectLog.cpp
++++ b/Source/Core/Core/HW/GBADetectLog.cpp
+@@ -230,6 +230,19 @@ std::string BuildBattleTranscript(std::vector<BattleEvent> events)
+     int me;
+     bool replace;
+     std::array<u16, 4> moves;
++    std::array<u8, 8> moves_key;
++    BattleWord pp;
++  };
++  // A chosen move, confirmed by its PP in that GBA's next block after the turn: a Pokemon that
++  // fainted, flinched or slept before moving spends none.
++  struct Unconfirmed
++  {
++    int side;
++    size_t turn;
++    size_t act;
++    std::array<u8, 8> moves_key;
++    int slot;
++    u8 pp;
+   };
+   struct Replacement
+   {
+@@ -245,6 +258,7 @@ std::string BuildBattleTranscript(std::vector<BattleEvent> events)
+   std::array<std::array<bool, 3>, 3> seen{};
+   std::map<int, Pending> pending;
+   std::vector<Replacement> replacements;
++  std::vector<Unconfirmed> unconfirmed;
+ 
+   const auto set_hp = [&](const Key& key, std::pair<int, int> value, bool normal) {
+     if (!hp.contains(key) && normal && turns.size() >= 2)
+@@ -317,6 +331,24 @@ std::string BuildBattleTranscript(std::vector<BattleEvent> events)
+       std::array<u8, 8> moves_key{};
+       std::copy(w[5].begin(), w[5].end(), moves_key.begin());
+       std::copy(w[6].begin(), w[6].end(), moves_key.begin() + 4);
++      // Moves chosen in earlier turns. Not at a replacement: XD sends a fainted Pokemon's
++      // replacement in mid-turn, before the rest have moved.
++      std::erase_if(unconfirmed, [&](const Unconfirmed& u) {
++        if (u.side != side || replace || u.turn + 1 >= turns.size())
++          return false;
++        for (int i = 0; i < 4; ++i)
++        {
++          std::array<u8, 8> record_moves{};
++          std::copy(w[11 + 85 * i].begin(), w[11 + 85 * i].end(), record_moves.begin());
++          std::copy(w[12 + 85 * i].begin(), w[12 + 85 * i].end(), record_moves.begin() + 4);
++          if (record_moves != u.moves_key)
++            continue;
++          if (w[13 + 85 * i][u.slot] == u.pp)
++            turns[u.turn].acts[u.act] += " (did not move)";
++          return true;
++        }
++        return false;
++      });
+       if (!replace && species[me] == Le16(w[4], 0) && !names[me].empty())
+         record_names[side][moves_key] = names[me];
+       for (int i = 0; i < 4; ++i)
+@@ -331,7 +363,8 @@ std::string BuildBattleTranscript(std::vector<BattleEvent> events)
+         if (const auto known = hp.find(key); known != hp.end())
+           set_hp(key, {Le16(w[9 + 85 * i], 0), known->second.second}, !replace);
+       }
+-      pending[s] = {me, replace, {Le16(w[5], 0), Le16(w[5], 2), Le16(w[6], 0), Le16(w[6], 2)}};
++      pending[s] = {me,      replace, {Le16(w[5], 0), Le16(w[5], 2), Le16(w[6], 0), Le16(w[6], 2)},
++                    moves_key, w[7]};
+     }
+     else
+     {
+@@ -357,6 +390,11 @@ std::string BuildBattleTranscript(std::vector<BattleEvent> events)
+                              names[r[1]].empty() ? std::string("?") : names[r[1]]);
+       }
+       acts.push_back(fmt::format("GBA {} {}: {}{}", s, actor, move, target));
++      if (r[0] < 4)
++      {
++        unconfirmed.push_back(
++            {side, turns.size() - 1, acts.size() - 1, decision.moves_key, r[0], decision.pp[r[0]]});
++      }
+     }
+   }
+   if (turns.empty())
+@@ -385,7 +423,9 @@ std::string BuildBattleTranscript(std::vector<BattleEvent> events)
+       }
+     }
+     out += "  Result: ";
+-    if (changes.empty())
++    if (n + 1 == turns.size())
++      out += "not known (XD sends the GBAs nothing after the last turn)";
++    else if (changes.empty())
+     {
+       out += "no HP changes";
+     }
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+index ad33b66..5aec076 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+@@ -1710,6 +1710,7 @@ void NetPlayDialog::OnSubmitTeam()
+   {
+     Settings::Instance().GetNetPlayClient()->SendTeamSubmission(
+         XDNetplay::BuildTeamSubmissionPayload(text.toStdString(), trainer_name, model, raise));
++    XDNetplay::RememberSentTeam(text.toStdString());
+     persist_submission();
+     DisplayMessage(tr("Team sent to the host."), "");
+     return;
+@@ -1739,8 +1740,10 @@ void NetPlayDialog::OnSubmitTeam()
+       }
+       if (auto client = Settings::Instance().GetNetPlayClient())
+       {
+-        client->SendTeamSubmission(XDNetplay::BuildTeamSubmissionPayload(
+-            std::string(response->begin(), response->end()), trainer_name, model, raise));
++        const std::string fetched(response->begin(), response->end());
++        client->SendTeamSubmission(
++            XDNetplay::BuildTeamSubmissionPayload(fetched, trainer_name, model, raise));
++        XDNetplay::RememberSentTeam(fetched);
+         self->DisplayMessage(tr("Team sent to the host."), "");
+       }
+     });
+@@ -1963,6 +1966,8 @@ void NetPlayDialog::ApplyHostTeam(const std::string& showdown_text,
+   std::string status;
+   const bool ok =
+       XDNetplay::SubmitHostTeam(showdown_text, trainer_name, &status, raise_to_level_100);
++  if (ok)
++    XDNetplay::RememberSentTeam(showdown_text);
+   DisplayMessage(ok ? QString::fromStdString(status) :
+                       tr("Team not applied: %1").arg(QString::fromStdString(status)),
+                  ok ? "green" : "red");
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 921710c..e2caad6 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -613,6 +613,9 @@ void XDLauncherDialog::CreateMainLayout()
+   m_share_log_button->setToolTip(
+       tr("Save the newest session log (gba_detect_*.log) to a place of your choice and open "
+          "that folder, so you can send it. Send the newest one after a problem."));
++  m_last_battle_button = new NonDefaultQPushButton(tr("Last Battle"));
++  m_last_battle_button->setToolTip(tr("Open the newest battle transcript: each turn's moves and "
++                                      "HP changes, written when the game stops."));
+   // Tester switch: every message between XD and the GBAs goes to a linktrace_ file next to the
+   // session log (for the battle transcript); Share Log saves the newest one with the log.
+   auto* record_link_check = new QCheckBox(tr("Record link traffic"));
+@@ -628,6 +631,7 @@ void XDLauncherDialog::CreateMainLayout()
+   footer_row->addWidget(m_show_on_startup_check);
+   footer_row->addStretch(1);
+   footer_row->addWidget(record_link_check);
++  footer_row->addWidget(m_last_battle_button);
+   footer_row->addWidget(m_share_log_button);
+   auto* footer = new QVBoxLayout;
+   const QMargins m = layout->contentsMargins();
+@@ -668,6 +672,22 @@ void XDLauncherDialog::FitToScreen()
+   move(r.topLeft());
+ }
+ 
++void XDLauncherDialog::OnLastBattle()
++{
++  const QString dir = QString::fromStdString(File::GetUserPath(D_GBAUSER_IDX));
++  const QDir logs(dir);
++  const QStringList battles =
++      logs.entryList({QStringLiteral("battle_*.txt")}, QDir::Files, QDir::Time);
++  if (battles.isEmpty())
++  {
++    ModalMessageBox::information(
++        this, tr("Last Battle"),
++        tr("No battle transcript yet. One is written when a game with a battle stops."));
++    return;
++  }
++  QDesktopServices::openUrl(QUrl::fromLocalFile(logs.filePath(battles.first())));
++}
++
+ void XDLauncherDialog::OnShareLog()
+ {
+ #ifdef HAS_LIBMGBA
+@@ -843,6 +863,7 @@ void XDLauncherDialog::ConnectWidgets()
+           [this](int) { RefreshTimerRow(); });
+ 
+   connect(m_share_log_button, &QPushButton::clicked, this, &XDLauncherDialog::OnShareLog);
++  connect(m_last_battle_button, &QPushButton::clicked, this, &XDLauncherDialog::OnLastBattle);
+   connect(m_gba_customize_button, &QPushButton::clicked, this,
+           &XDLauncherDialog::OnCustomizeGbaInput);
+   connect(m_show_on_startup_check, &QCheckBox::toggled, this, [](bool checked) {
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+index 8844c9a..12b030d 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+@@ -81,6 +81,7 @@ private:
+   void AutoDiscoverFromGameFolder();
+   void FitToScreen();
+   void OnShareLog();
++  void OnLastBattle();
+   void OnCustomizeGbaInput();
+ 
+   std::shared_ptr<const UICommon::GameFile> FindXdGame() const;
+@@ -161,6 +162,7 @@ private:
+   bool m_searching = false;
+   bool m_first_show_sized = false;
+   QPushButton* m_share_log_button = nullptr;
++  QPushButton* m_last_battle_button = nullptr;
+   QPushButton* m_gba_customize_button = nullptr;
+   TeamEditorDialog* m_team_editor = nullptr;
+ };
+diff --git a/Source/Core/UICommon/XDNetplay/TeamInjector.cpp b/Source/Core/UICommon/XDNetplay/TeamInjector.cpp
+index 98dc505..cbe2455 100644
+--- a/Source/Core/UICommon/XDNetplay/TeamInjector.cpp
++++ b/Source/Core/UICommon/XDNetplay/TeamInjector.cpp
+@@ -1766,4 +1766,11 @@ bool DeleteSavedTeam(const std::string& name)
+   return !stem.empty() && File::Delete(SavedTeamDir() + stem + ".txt");
+ }
+ 
++void RememberSentTeam(const std::string& text)
++{
++  if (ShowdownParser::ParseTeam(text).empty())
++    return;
++  SaveTeamText("Last sent", text);
++}
++
+ }  // namespace XDNetplay
+diff --git a/Source/Core/UICommon/XDNetplay/TeamInjector.h b/Source/Core/UICommon/XDNetplay/TeamInjector.h
+index d28d190..ac50ea7 100644
+--- a/Source/Core/UICommon/XDNetplay/TeamInjector.h
++++ b/Source/Core/UICommon/XDNetplay/TeamInjector.h
+@@ -400,5 +400,7 @@ std::optional<std::string> LoadSavedTeam(const std::string& name);
+ // Writes (or replaces) the team; returns the name it was stored under, "" on failure.
+ std::string SaveTeamText(const std::string& name, const std::string& text);
+ bool DeleteSavedTeam(const std::string& name);
++// Keeps a sent or applied team as the saved team "Last sent" (a pokepast.es link is skipped).
++void RememberSentTeam(const std::string& text);
+ 
+ }  // namespace XDNetplay
+-- 
+2.39.5 (Apple Git-154)
+
