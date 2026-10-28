@@ -358,17 +358,18 @@ fun NetplayScreen(
                         Switch(checked = raiseTo100, onCheckedChange = { raiseTo100 = it })
                     }
                     Spacer(Modifier.height(12.dp))
+                    // Above the team box, so it shows without scrolling.
+                    SavedTeamsRow(
+                        teamText = teamDraft,
+                        onPick = { teamDraft = it },
+                        enabled = !useMySave
+                    )
                     OutlinedTextField(
                         value = teamDraft,
                         onValueChange = { teamDraft = it },
                         // Not part of a bundle submission; the draft is kept.
                         enabled = !useMySave,
                         modifier = Modifier.fillMaxWidth().height(220.dp)
-                    )
-                    SavedTeamsRow(
-                        teamText = teamDraft,
-                        onPick = { teamDraft = it },
-                        enabled = !useMySave
                     )
                     // Paste-time format note, shown immediately while the
                     // local Format pick carries team rules. NEVER blocking: Send
@@ -404,6 +405,7 @@ fun NetplayScreen(
                             onSubmitHostTeam(
                                 teamDraft.trim(), hostNameDraft.trim(), modelDraft, raiseTo100
                             )
+                            SaveImportBridge.rememberSentTeam(teamDraft.trim())
                             showSubmitTeam = false
                         },
                         enabled = !gameRunning
@@ -419,6 +421,7 @@ fun NetplayScreen(
                                 onSubmitTeam(
                                     teamDraft.trim(), nameDraft.trim(), modelDraft, raiseTo100
                                 )
+                                SaveImportBridge.rememberSentTeam(teamDraft.trim())
                             }
                             showSubmitTeam = false
                         },

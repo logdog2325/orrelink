@@ -1710,6 +1710,7 @@ void NetPlayDialog::OnSubmitTeam()
   {
     Settings::Instance().GetNetPlayClient()->SendTeamSubmission(
         XDNetplay::BuildTeamSubmissionPayload(text.toStdString(), trainer_name, model, raise));
+    XDNetplay::RememberSentTeam(text.toStdString());
     persist_submission();
     DisplayMessage(tr("Team sent to the host."), "");
     return;
@@ -1739,8 +1740,10 @@ void NetPlayDialog::OnSubmitTeam()
       }
       if (auto client = Settings::Instance().GetNetPlayClient())
       {
-        client->SendTeamSubmission(XDNetplay::BuildTeamSubmissionPayload(
-            std::string(response->begin(), response->end()), trainer_name, model, raise));
+        const std::string fetched(response->begin(), response->end());
+        client->SendTeamSubmission(
+            XDNetplay::BuildTeamSubmissionPayload(fetched, trainer_name, model, raise));
+        XDNetplay::RememberSentTeam(fetched);
         self->DisplayMessage(tr("Team sent to the host."), "");
       }
     });
@@ -1963,6 +1966,8 @@ void NetPlayDialog::ApplyHostTeam(const std::string& showdown_text,
   std::string status;
   const bool ok =
       XDNetplay::SubmitHostTeam(showdown_text, trainer_name, &status, raise_to_level_100);
+  if (ok)
+    XDNetplay::RememberSentTeam(showdown_text);
   DisplayMessage(ok ? QString::fromStdString(status) :
                       tr("Team not applied: %1").arg(QString::fromStdString(status)),
                  ok ? "green" : "red");

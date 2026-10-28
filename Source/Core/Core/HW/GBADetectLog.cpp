@@ -230,6 +230,19 @@ std::string BuildBattleTranscript(std::vector<BattleEvent> events)
     int me;
     bool replace;
     std::array<u16, 4> moves;
+    std::array<u8, 8> moves_key;
+    BattleWord pp;
+  };
+  // A chosen move, confirmed by its PP in that GBA's next block after the turn: a Pokemon that
+  // fainted, flinched or slept before moving spends none.
+  struct Unconfirmed
+  {
+    int side;
+    size_t turn;
+    size_t act;
+    std::array<u8, 8> moves_key;
+    int slot;
+    u8 pp;
   };
   struct Replacement
   {
@@ -245,6 +258,7 @@ std::string BuildBattleTranscript(std::vector<BattleEvent> events)
   std::array<std::array<bool, 3>, 3> seen{};
   std::map<int, Pending> pending;
   std::vector<Replacement> replacements;
+  std::vector<Unconfirmed> unconfirmed;
 
   const auto set_hp = [&](const Key& key, std::pair<int, int> value, bool normal) {
     if (!hp.contains(key) && normal && turns.size() >= 2)
@@ -317,6 +331,24 @@ std::string BuildBattleTranscript(std::vector<BattleEvent> events)
       std::array<u8, 8> moves_key{};
       std::copy(w[5].begin(), w[5].end(), moves_key.begin());
       std::copy(w[6].begin(), w[6].end(), moves_key.begin() + 4);
+      // Moves chosen in earlier turns. Not at a replacement: XD sends a fainted Pokemon's
+      // replacement in mid-turn, before the rest have moved.
+      std::erase_if(unconfirmed, [&](const Unconfirmed& u) {
+        if (u.side != side || replace || u.turn + 1 >= turns.size())
+          return false;
+        for (int i = 0; i < 4; ++i)
+        {
+          std::array<u8, 8> record_moves{};
+          std::copy(w[11 + 85 * i].begin(), w[11 + 85 * i].end(), record_moves.begin());
+          std::copy(w[12 + 85 * i].begin(), w[12 + 85 * i].end(), record_moves.begin() + 4);
+          if (record_moves != u.moves_key)
+            continue;
+          if (w[13 + 85 * i][u.slot] == u.pp)
+            turns[u.turn].acts[u.act] += " (did not move)";
+          return true;
+        }
+        return false;
+      });
       if (!replace && species[me] == Le16(w[4], 0) && !names[me].empty())
         record_names[side][moves_key] = names[me];
       for (int i = 0; i < 4; ++i)
@@ -331,7 +363,8 @@ std::string BuildBattleTranscript(std::vector<BattleEvent> events)
         if (const auto known = hp.find(key); known != hp.end())
           set_hp(key, {Le16(w[9 + 85 * i], 0), known->second.second}, !replace);
       }
-      pending[s] = {me, replace, {Le16(w[5], 0), Le16(w[5], 2), Le16(w[6], 0), Le16(w[6], 2)}};
+      pending[s] = {me,      replace, {Le16(w[5], 0), Le16(w[5], 2), Le16(w[6], 0), Le16(w[6], 2)},
+                    moves_key, w[7]};
     }
     else
     {
@@ -357,6 +390,11 @@ std::string BuildBattleTranscript(std::vector<BattleEvent> events)
                              names[r[1]].empty() ? std::string("?") : names[r[1]]);
       }
       acts.push_back(fmt::format("GBA {} {}: {}{}", s, actor, move, target));
+      if (r[0] < 4)
+      {
+        unconfirmed.push_back(
+            {side, turns.size() - 1, acts.size() - 1, decision.moves_key, r[0], decision.pp[r[0]]});
+      }
     }
   }
   if (turns.empty())
@@ -385,7 +423,9 @@ std::string BuildBattleTranscript(std::vector<BattleEvent> events)
       }
     }
     out += "  Result: ";
-    if (changes.empty())
+    if (n + 1 == turns.size())
+      out += "not known (XD sends the GBAs nothing after the last turn)";
+    else if (changes.empty())
     {
       out += "no HP changes";
     }

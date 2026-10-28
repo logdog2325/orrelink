@@ -75,6 +75,15 @@ object SaveImportBridge {
     /** Stores [text] as [name]; returns the name it was stored under, "" on failure. */
     fun saveTeam(name: String, text: String): String = nativeSaveTeam(name, text)
 
+    /** Keeps a sent or applied team as the saved team "Last sent" (a pokepast.es link is skipped). */
+    fun rememberSentTeam(text: String) {
+        if (org.dolphinemu.dolphinemu.features.xdnetplay.gen3.ShowdownParser.parseTeam(text)
+                .isNotEmpty()
+        ) {
+            nativeSaveTeam("Last sent", text)
+        }
+    }
+
     fun deleteSavedTeam(name: String): Boolean = nativeDeleteSavedTeam(name)
 
     /** The RecordLinkTraffic tester switch ([XDNetplay] in Dolphin.ini). */
