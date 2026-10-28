@@ -256,6 +256,9 @@ enum class MessageID : u8
   // clients: u8 XdNoticeKind, PlayerId who, u8 arg. Each client writes the line itself, into the
   // room chat only, never on screen.
   XdNotice = 0xAC,
+  // XD Netplay: client -> server, no payload. A seated joiner is ready; the host's Start waits
+  // for every one of them, and each Start clears it.
+  XdReady = 0xAD,
 
   TimeBase = 0xB0,
   DesyncDetected = 0xB1,

@@ -214,6 +214,7 @@ public:
   // XD Netplay: this player only watches (true) or wants to play (false). Takes effect at the
   // next Start; the server answers with XdSeats.
   void SendXdWatch(bool watching);
+  void SendXdReady();
   // XD Netplay: pid's part in the next battle, from the last XdSeats. Display only; the pad map
   // is decided by the host at Start. Takes m_crit.players.
   XdRole GetXdRole(PlayerId pid);

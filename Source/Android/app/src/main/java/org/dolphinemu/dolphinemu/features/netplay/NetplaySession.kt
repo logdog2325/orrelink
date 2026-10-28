@@ -337,6 +337,9 @@ class NetplaySession(
     /** Joiner: only watch the next battles (true), or play again (false). */
     fun setWatchOnly(watching: Boolean) = nativeSetWatchOnly(watching)
 
+    /** XD Netplay: this joiner is ready for the next battle; the host's Start waits for it. */
+    fun sendReady() = nativeSendReady()
+
     fun getPort(): Int = nativeGetPort()
 
     fun getExternalIpAddress(): String? = nativeGetExternalIpAddress()
@@ -463,6 +466,8 @@ class NetplaySession(
     private external fun nativeStartGame(): Array<String>
 
     private external fun nativeSetWatchOnly(watching: Boolean)
+
+    private external fun nativeSendReady()
 
     private external fun nativeGetPort(): Int
 

@@ -720,6 +720,8 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeStartGame(J
   // compare.
   if (s_host_game_is_xd)
   {
+    if (const std::string not_ready = server->XdNotReadyRefusal(); !not_ready.empty())
+      return reply(false, not_ready);
     std::string guest_note;
     const std::string refusal = XDNetplay::StartFormatRefusal(
         room_format, XDNetplay::CheckRoomTeams(room_format, /*judge_slot=*/true),
@@ -808,6 +810,15 @@ Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSetWatchOnl
   // room: two joiners then play GBA 1 and GBA 2.
   if (auto* client = GetClientPointer(env, obj))
     client->SendXdWatch(watching == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL
+Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeSendReady(JNIEnv* env,
+                                                                                jobject obj)
+{
+  // XD Netplay: this joiner is ready for the next battle (the host's Start waits for it).
+  if (auto* client = GetClientPointer(env, obj))
+    client->SendXdReady();
 }
 
 JNIEXPORT jint JNICALL Java_org_dolphinemu_dolphinemu_features_netplay_NetplaySession_nativeGetPort(

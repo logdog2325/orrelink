@@ -147,6 +147,7 @@ private:
   QTextEdit* m_chat_edit;
   QLineEdit* m_chat_type_edit;
   QPushButton* m_chat_send_button;
+  QPushButton* m_ready_button = nullptr;
   QPushButton* m_submit_team_button;
   QPushButton* m_style_button;
   QPushButton* m_format_button;
