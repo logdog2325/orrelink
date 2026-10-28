@@ -1,0 +1,253 @@
+From e874d49078603a0e562f635706f46e167b447220 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 15:12:42 -0700
+Subject: [PATCH 175/175] XD Netplay: Saved Teams in the launcher (desktop and
+ Android) to read, edit, add and delete saved teams
+
+---
+ .../features/xdnetplay/ui/XDLauncherScreen.kt | 74 +++++++++++++++++
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 83 +++++++++++++++++++
+ .../DolphinQt/XDNetplay/XDLauncherDialog.h    |  2 +
+ 3 files changed, 159 insertions(+)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+index bcdeaba..b8892e2 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+@@ -259,6 +259,10 @@ fun XDLauncherScreen(
+                     TextButton(onClick = onShareDetectLog) { Text("Share log") }
+                     Spacer(Modifier.width(12.dp))
+                     TextButton(onClick = onLastBattle) { Text("Last battle") }
++                    Spacer(Modifier.width(12.dp))
++                    var showTeams by remember { mutableStateOf(false) }
++                    TextButton(onClick = { showTeams = true }) { Text("Saved teams") }
++                    if (showTeams) SavedTeamsDialog(onClose = { showTeams = false })
+                 }
+                 // Tester switch: record every message between XD and the GBAs next to the
+                 // session log (for the battle transcript). Share log sends the newest one.
+@@ -712,3 +716,73 @@ private fun NumberField(
+         modifier = modifier
+     )
+ }
++
++/** Saved teams (XDNetplay/Teams/*.txt): pick one to read or edit its Showdown text. */
++@Composable
++private fun SavedTeamsDialog(onClose: () -> Unit) {
++    var names by remember { mutableStateOf(SaveImportBridge.listSavedTeams()) }
++    var name by remember { mutableStateOf(names.firstOrNull() ?: "") }
++    var text by remember { mutableStateOf(names.firstOrNull()?.let { SaveImportBridge.loadSavedTeam(it) } ?: "") }
++    var menuOpen by remember { mutableStateOf(false) }
++    androidx.compose.material3.AlertDialog(
++        onDismissRequest = onClose,
++        title = { Text("Saved teams") },
++        text = {
++            Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
++                androidx.compose.foundation.layout.Box {
++                    androidx.compose.material3.OutlinedButton(
++                        onClick = { menuOpen = true },
++                        enabled = names.isNotEmpty(),
++                        modifier = Modifier.fillMaxWidth()
++                    ) { Text(if (names.isEmpty()) "No saved teams yet" else "Pick a team") }
++                    androidx.compose.material3.DropdownMenu(
++                        expanded = menuOpen, onDismissRequest = { menuOpen = false }
++                    ) {
++                        names.forEach { team ->
++                            androidx.compose.material3.DropdownMenuItem(
++                                text = { Text(team) },
++                                onClick = {
++                                    menuOpen = false
++                                    name = team
++                                    text = SaveImportBridge.loadSavedTeam(team)
++                                }
++                            )
++                        }
++                    }
++                }
++                androidx.compose.material3.OutlinedTextField(
++                    value = name, onValueChange = { name = it.take(40) }, singleLine = true,
++                    label = { Text("Team name") }, modifier = Modifier.fillMaxWidth()
++                )
++                androidx.compose.material3.OutlinedTextField(
++                    value = text, onValueChange = { text = it },
++                    label = { Text("Showdown text") },
++                    modifier = Modifier.fillMaxWidth().height(260.dp)
++                )
++                Row {
++                    TextButton(
++                        onClick = {
++                            val stored = SaveImportBridge.saveTeam(name.trim(), text)
++                            if (stored.isNotEmpty()) {
++                                name = stored
++                                names = SaveImportBridge.listSavedTeams()
++                            }
++                        },
++                        enabled = name.isNotBlank() && text.isNotBlank()
++                    ) { Text("Save") }
++                    TextButton(
++                        onClick = {
++                            SaveImportBridge.deleteSavedTeam(name.trim())
++                            names = SaveImportBridge.listSavedTeams()
++                            name = ""
++                            text = ""
++                        },
++                        enabled = name.trim() in names
++                    ) { Text("Delete") }
++                    TextButton(onClick = { name = ""; text = "" }) { Text("New") }
++                }
++            }
++        },
++        confirmButton = { TextButton(onClick = onClose) { Text("Close") } }
++    )
++}
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index e2caad6..672470a 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -29,6 +29,8 @@
+ #include <QGroupBox>
+ #include <QLabel>
+ #include <QLineEdit>
++#include <QListWidget>
++#include <QPlainTextEdit>
+ #include <QPointer>
+ #include <QPushButton>
+ #include <QScreen>
+@@ -67,6 +69,7 @@
+ #include "DolphinQt/QtUtils/QueueOnObject.h"
+ #include "DolphinQt/Settings.h"
+ #include "DolphinQt/XDNetplay/TeamEditorDialog.h"
++#include "UICommon/XDNetplay/TeamInjector.h"
+ #include "DolphinQt/XDNetplay/XDNetplayConfig.h"
+ #include "DolphinQt/XDNetplay/XDStyleCombo.h"
+ 
+@@ -613,6 +616,8 @@ void XDLauncherDialog::CreateMainLayout()
+   m_share_log_button->setToolTip(
+       tr("Save the newest session log (gba_detect_*.log) to a place of your choice and open "
+          "that folder, so you can send it. Send the newest one after a problem."));
++  m_saved_teams_button = new NonDefaultQPushButton(tr("Saved Teams..."));
++  m_saved_teams_button->setToolTip(tr("Look at, edit, add and delete your saved teams."));
+   m_last_battle_button = new NonDefaultQPushButton(tr("Last Battle"));
+   m_last_battle_button->setToolTip(tr("Open the newest battle transcript: each turn's moves and "
+                                       "HP changes, written when the game stops."));
+@@ -631,6 +636,7 @@ void XDLauncherDialog::CreateMainLayout()
+   footer_row->addWidget(m_show_on_startup_check);
+   footer_row->addStretch(1);
+   footer_row->addWidget(record_link_check);
++  footer_row->addWidget(m_saved_teams_button);
+   footer_row->addWidget(m_last_battle_button);
+   footer_row->addWidget(m_share_log_button);
+   auto* footer = new QVBoxLayout;
+@@ -672,6 +678,82 @@ void XDLauncherDialog::FitToScreen()
+   move(r.topLeft());
+ }
+ 
++void XDLauncherDialog::OnSavedTeams()
++{
++  // Saved teams (XDNetplay/Teams/*.txt): pick one to read or edit its Showdown text.
++  QDialog dialog(this);
++  dialog.setWindowTitle(tr("Saved Teams"));
++  auto* list = new QListWidget(&dialog);
++  auto* text = new QPlainTextEdit(&dialog);
++  text->setPlaceholderText(tr("Paste or type a team in Showdown format."));
++  auto* name = new QLineEdit(&dialog);
++  name->setPlaceholderText(tr("Team name"));
++  auto* save = new QPushButton(tr("Save"), &dialog);
++  auto* remove = new QPushButton(tr("Delete"), &dialog);
++  auto* add = new QPushButton(tr("New"), &dialog);
++  auto* close = new QPushButton(tr("Close"), &dialog);
++  const auto refresh = [list](const QString& select) {
++    list->clear();
++    for (const std::string& team : XDNetplay::ListSavedTeams())
++      list->addItem(QString::fromStdString(team));
++    const auto found = list->findItems(select, Qt::MatchExactly);
++    if (!found.isEmpty())
++      list->setCurrentItem(found.first());
++  };
++  connect(list, &QListWidget::currentTextChanged, &dialog, [text, name](const QString& team) {
++    if (team.isEmpty())
++      return;
++    name->setText(team);
++    text->setPlainText(
++        QString::fromStdString(XDNetplay::LoadSavedTeam(team.toStdString()).value_or("")));
++  });
++  connect(add, &QPushButton::clicked, &dialog, [list, text, name] {
++    list->clearSelection();
++    name->clear();
++    text->clear();
++    name->setFocus();
++  });
++  connect(save, &QPushButton::clicked, &dialog, [&dialog, refresh, text, name] {
++    const std::string stored = XDNetplay::SaveTeamText(name->text().trimmed().toStdString(),
++                                                       text->toPlainText().toStdString());
++    if (stored.empty())
++    {
++      ModalMessageBox::warning(&dialog, tr("Saved Teams"), tr("Give the team a name first."));
++      return;
++    }
++    refresh(QString::fromStdString(stored));
++  });
++  connect(remove, &QPushButton::clicked, &dialog, [list, refresh, text, name] {
++    if (!list->currentItem())
++      return;
++    XDNetplay::DeleteSavedTeam(list->currentItem()->text().toStdString());
++    name->clear();
++    text->clear();
++    refresh({});
++  });
++  connect(close, &QPushButton::clicked, &dialog, &QDialog::accept);
++  auto* buttons = new QHBoxLayout;
++  buttons->addWidget(add);
++  buttons->addWidget(save);
++  buttons->addWidget(remove);
++  buttons->addStretch(1);
++  buttons->addWidget(close);
++  auto* right = new QVBoxLayout;
++  right->addWidget(name);
++  right->addWidget(text, 1);
++  auto* body = new QHBoxLayout;
++  body->addWidget(list, 1);
++  body->addLayout(right, 3);
++  auto* layout = new QVBoxLayout(&dialog);
++  layout->addLayout(body, 1);
++  layout->addLayout(buttons);
++  dialog.resize(760, 520);
++  refresh({});
++  if (list->count() > 0)
++    list->setCurrentRow(0);
++  dialog.exec();
++}
++
+ void XDLauncherDialog::OnLastBattle()
+ {
+   const QString dir = QString::fromStdString(File::GetUserPath(D_GBAUSER_IDX));
+@@ -864,6 +946,7 @@ void XDLauncherDialog::ConnectWidgets()
+ 
+   connect(m_share_log_button, &QPushButton::clicked, this, &XDLauncherDialog::OnShareLog);
+   connect(m_last_battle_button, &QPushButton::clicked, this, &XDLauncherDialog::OnLastBattle);
++  connect(m_saved_teams_button, &QPushButton::clicked, this, &XDLauncherDialog::OnSavedTeams);
+   connect(m_gba_customize_button, &QPushButton::clicked, this,
+           &XDLauncherDialog::OnCustomizeGbaInput);
+   connect(m_show_on_startup_check, &QCheckBox::toggled, this, [](bool checked) {
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+index 12b030d..afa101b 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+@@ -82,6 +82,7 @@ private:
+   void FitToScreen();
+   void OnShareLog();
+   void OnLastBattle();
++  void OnSavedTeams();
+   void OnCustomizeGbaInput();
+ 
+   std::shared_ptr<const UICommon::GameFile> FindXdGame() const;
+@@ -163,6 +164,7 @@ private:
+   bool m_first_show_sized = false;
+   QPushButton* m_share_log_button = nullptr;
+   QPushButton* m_last_battle_button = nullptr;
++  QPushButton* m_saved_teams_button = nullptr;
+   QPushButton* m_gba_customize_button = nullptr;
+   TeamEditorDialog* m_team_editor = nullptr;
+ };
+-- 
+2.39.5 (Apple Git-154)
+

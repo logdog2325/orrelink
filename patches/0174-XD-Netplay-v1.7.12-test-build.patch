@@ -1,7 +1,7 @@
 From 17ba69591bd9bbd29fc58db68c648426412316db Mon Sep 17 00:00:00 2001
 From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
 Date: Wed, 28 Oct 2026 15:11:32 -0700
-Subject: [PATCH 174/174] XD Netplay v1.7.12 (test build)
+Subject: [PATCH 174/175] XD Netplay v1.7.12 (test build)
 
 ---
  Source/Core/UICommon/XDNetplay/Version.h | 2 +-

@@ -1,7 +1,7 @@
 From ba193c58ba7b7e5a59edc45f5cafc3ca9e13ac6c Mon Sep 17 00:00:00 2001
 From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
 Date: Wed, 28 Oct 2026 15:11:32 -0700
-Subject: [PATCH 173/174] XD Netplay: transcript marks moves that never
+Subject: [PATCH 173/175] XD Netplay: transcript marks moves that never
  happened; Last Battle button; saved teams above the team box; keep the sent
  team as Last sent
 
