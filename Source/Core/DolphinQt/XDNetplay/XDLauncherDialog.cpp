@@ -29,6 +29,8 @@
 #include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
+#include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
 #include <QScreen>
@@ -67,6 +69,7 @@
 #include "DolphinQt/QtUtils/QueueOnObject.h"
 #include "DolphinQt/Settings.h"
 #include "DolphinQt/XDNetplay/TeamEditorDialog.h"
+#include "UICommon/XDNetplay/TeamInjector.h"
 #include "DolphinQt/XDNetplay/XDNetplayConfig.h"
 #include "DolphinQt/XDNetplay/XDStyleCombo.h"
 
@@ -613,6 +616,8 @@ void XDLauncherDialog::CreateMainLayout()
   m_share_log_button->setToolTip(
       tr("Save the newest session log (gba_detect_*.log) to a place of your choice and open "
          "that folder, so you can send it. Send the newest one after a problem."));
+  m_saved_teams_button = new NonDefaultQPushButton(tr("Saved Teams..."));
+  m_saved_teams_button->setToolTip(tr("Look at, edit, add and delete your saved teams."));
   m_last_battle_button = new NonDefaultQPushButton(tr("Last Battle"));
   m_last_battle_button->setToolTip(tr("Open the newest battle transcript: each turn's moves and "
                                       "HP changes, written when the game stops."));
@@ -631,6 +636,7 @@ void XDLauncherDialog::CreateMainLayout()
   footer_row->addWidget(m_show_on_startup_check);
   footer_row->addStretch(1);
   footer_row->addWidget(record_link_check);
+  footer_row->addWidget(m_saved_teams_button);
   footer_row->addWidget(m_last_battle_button);
   footer_row->addWidget(m_share_log_button);
   auto* footer = new QVBoxLayout;
@@ -670,6 +676,82 @@ void XDLauncherDialog::FitToScreen()
   r.moveLeft(std::clamp(r.left(), avail.left(), std::max(avail.left(), avail.right() - r.width())));
   r.moveTop(std::clamp(r.top(), top_min, std::max(top_min, avail.bottom() - 8 - r.height())));
   move(r.topLeft());
+}
+
+void XDLauncherDialog::OnSavedTeams()
+{
+  // Saved teams (XDNetplay/Teams/*.txt): pick one to read or edit its Showdown text.
+  QDialog dialog(this);
+  dialog.setWindowTitle(tr("Saved Teams"));
+  auto* list = new QListWidget(&dialog);
+  auto* text = new QPlainTextEdit(&dialog);
+  text->setPlaceholderText(tr("Paste or type a team in Showdown format."));
+  auto* name = new QLineEdit(&dialog);
+  name->setPlaceholderText(tr("Team name"));
+  auto* save = new QPushButton(tr("Save"), &dialog);
+  auto* remove = new QPushButton(tr("Delete"), &dialog);
+  auto* add = new QPushButton(tr("New"), &dialog);
+  auto* close = new QPushButton(tr("Close"), &dialog);
+  const auto refresh = [list](const QString& select) {
+    list->clear();
+    for (const std::string& team : XDNetplay::ListSavedTeams())
+      list->addItem(QString::fromStdString(team));
+    const auto found = list->findItems(select, Qt::MatchExactly);
+    if (!found.isEmpty())
+      list->setCurrentItem(found.first());
+  };
+  connect(list, &QListWidget::currentTextChanged, &dialog, [text, name](const QString& team) {
+    if (team.isEmpty())
+      return;
+    name->setText(team);
+    text->setPlainText(
+        QString::fromStdString(XDNetplay::LoadSavedTeam(team.toStdString()).value_or("")));
+  });
+  connect(add, &QPushButton::clicked, &dialog, [list, text, name] {
+    list->clearSelection();
+    name->clear();
+    text->clear();
+    name->setFocus();
+  });
+  connect(save, &QPushButton::clicked, &dialog, [&dialog, refresh, text, name] {
+    const std::string stored = XDNetplay::SaveTeamText(name->text().trimmed().toStdString(),
+                                                       text->toPlainText().toStdString());
+    if (stored.empty())
+    {
+      ModalMessageBox::warning(&dialog, tr("Saved Teams"), tr("Give the team a name first."));
+      return;
+    }
+    refresh(QString::fromStdString(stored));
+  });
+  connect(remove, &QPushButton::clicked, &dialog, [list, refresh, text, name] {
+    if (!list->currentItem())
+      return;
+    XDNetplay::DeleteSavedTeam(list->currentItem()->text().toStdString());
+    name->clear();
+    text->clear();
+    refresh({});
+  });
+  connect(close, &QPushButton::clicked, &dialog, &QDialog::accept);
+  auto* buttons = new QHBoxLayout;
+  buttons->addWidget(add);
+  buttons->addWidget(save);
+  buttons->addWidget(remove);
+  buttons->addStretch(1);
+  buttons->addWidget(close);
+  auto* right = new QVBoxLayout;
+  right->addWidget(name);
+  right->addWidget(text, 1);
+  auto* body = new QHBoxLayout;
+  body->addWidget(list, 1);
+  body->addLayout(right, 3);
+  auto* layout = new QVBoxLayout(&dialog);
+  layout->addLayout(body, 1);
+  layout->addLayout(buttons);
+  dialog.resize(760, 520);
+  refresh({});
+  if (list->count() > 0)
+    list->setCurrentRow(0);
+  dialog.exec();
 }
 
 void XDLauncherDialog::OnLastBattle()
@@ -864,6 +946,7 @@ void XDLauncherDialog::ConnectWidgets()
 
   connect(m_share_log_button, &QPushButton::clicked, this, &XDLauncherDialog::OnShareLog);
   connect(m_last_battle_button, &QPushButton::clicked, this, &XDLauncherDialog::OnLastBattle);
+  connect(m_saved_teams_button, &QPushButton::clicked, this, &XDLauncherDialog::OnSavedTeams);
   connect(m_gba_customize_button, &QPushButton::clicked, this,
           &XDLauncherDialog::OnCustomizeGbaInput);
   connect(m_show_on_startup_check, &QCheckBox::toggled, this, [](bool checked) {
