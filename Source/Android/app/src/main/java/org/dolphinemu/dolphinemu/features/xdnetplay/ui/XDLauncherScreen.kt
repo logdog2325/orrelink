@@ -105,7 +105,8 @@ fun XDLauncherScreen(
     onFindBattles: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDolphin: () -> Unit,
-    onShareDetectLog: () -> Unit
+    onShareDetectLog: () -> Unit,
+    onLastBattle: () -> Unit
 ) {
     Scaffold { padding ->
         Column(
@@ -256,6 +257,8 @@ fun XDLauncherScreen(
                     TextButton(onClick = onOpenDolphin) { Text("Full Dolphin") }
                     Spacer(Modifier.width(12.dp))
                     TextButton(onClick = onShareDetectLog) { Text("Share log") }
+                    Spacer(Modifier.width(12.dp))
+                    TextButton(onClick = onLastBattle) { Text("Last battle") }
                 }
                 // Tester switch: record every message between XD and the GBAs next to the
                 // session log (for the battle transcript). Share log sends the newest one.
