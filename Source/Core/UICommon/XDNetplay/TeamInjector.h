@@ -400,5 +400,7 @@ std::optional<std::string> LoadSavedTeam(const std::string& name);
 // Writes (or replaces) the team; returns the name it was stored under, "" on failure.
 std::string SaveTeamText(const std::string& name, const std::string& text);
 bool DeleteSavedTeam(const std::string& name);
+// Keeps a sent or applied team as the saved team "Last sent" (a pokepast.es link is skipped).
+void RememberSentTeam(const std::string& text);
 
 }  // namespace XDNetplay

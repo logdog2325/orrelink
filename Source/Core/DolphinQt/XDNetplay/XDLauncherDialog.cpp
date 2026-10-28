@@ -613,6 +613,9 @@ void XDLauncherDialog::CreateMainLayout()
   m_share_log_button->setToolTip(
       tr("Save the newest session log (gba_detect_*.log) to a place of your choice and open "
          "that folder, so you can send it. Send the newest one after a problem."));
+  m_last_battle_button = new NonDefaultQPushButton(tr("Last Battle"));
+  m_last_battle_button->setToolTip(tr("Open the newest battle transcript: each turn's moves and "
+                                      "HP changes, written when the game stops."));
   // Tester switch: every message between XD and the GBAs goes to a linktrace_ file next to the
   // session log (for the battle transcript); Share Log saves the newest one with the log.
   auto* record_link_check = new QCheckBox(tr("Record link traffic"));
@@ -628,6 +631,7 @@ void XDLauncherDialog::CreateMainLayout()
   footer_row->addWidget(m_show_on_startup_check);
   footer_row->addStretch(1);
   footer_row->addWidget(record_link_check);
+  footer_row->addWidget(m_last_battle_button);
   footer_row->addWidget(m_share_log_button);
   auto* footer = new QVBoxLayout;
   const QMargins m = layout->contentsMargins();
@@ -666,6 +670,22 @@ void XDLauncherDialog::FitToScreen()
   r.moveLeft(std::clamp(r.left(), avail.left(), std::max(avail.left(), avail.right() - r.width())));
   r.moveTop(std::clamp(r.top(), top_min, std::max(top_min, avail.bottom() - 8 - r.height())));
   move(r.topLeft());
+}
+
+void XDLauncherDialog::OnLastBattle()
+{
+  const QString dir = QString::fromStdString(File::GetUserPath(D_GBAUSER_IDX));
+  const QDir logs(dir);
+  const QStringList battles =
+      logs.entryList({QStringLiteral("battle_*.txt")}, QDir::Files, QDir::Time);
+  if (battles.isEmpty())
+  {
+    ModalMessageBox::information(
+        this, tr("Last Battle"),
+        tr("No battle transcript yet. One is written when a game with a battle stops."));
+    return;
+  }
+  QDesktopServices::openUrl(QUrl::fromLocalFile(logs.filePath(battles.first())));
 }
 
 void XDLauncherDialog::OnShareLog()
@@ -843,6 +863,7 @@ void XDLauncherDialog::ConnectWidgets()
           [this](int) { RefreshTimerRow(); });
 
   connect(m_share_log_button, &QPushButton::clicked, this, &XDLauncherDialog::OnShareLog);
+  connect(m_last_battle_button, &QPushButton::clicked, this, &XDLauncherDialog::OnLastBattle);
   connect(m_gba_customize_button, &QPushButton::clicked, this,
           &XDLauncherDialog::OnCustomizeGbaInput);
   connect(m_show_on_startup_check, &QCheckBox::toggled, this, [](bool checked) {

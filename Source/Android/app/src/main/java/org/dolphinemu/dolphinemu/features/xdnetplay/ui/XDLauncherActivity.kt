@@ -387,7 +387,8 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                     onOpenDolphin = {
                         startActivity(Intent(this, MainActivity::class.java))
                     },
-                    onShareDetectLog = { shareDetectLog() }
+                    onShareDetectLog = { shareDetectLog() },
+                    onLastBattle = { openLastBattle() }
                 )
             }
         }
@@ -428,6 +429,35 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         startActivity(android.content.Intent.createChooser(send, "Share detect logs"))
+    }
+
+    /** Open the newest battle transcript (GBA/battle_*.txt) in a text viewer, or share it. */
+    private fun openLastBattle() {
+        val dir = java.io.File(getExternalFilesDir(null), "GBA")
+        val newest = (dir.listFiles { f ->
+            f.isFile && f.name.startsWith("battle_") && f.name.endsWith(".txt")
+        } ?: emptyArray()).maxByOrNull { it.name }
+        if (newest == null) {
+            android.widget.Toast.makeText(
+                this, "No battle transcript yet. One is written when a game stops.",
+                android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            this, "$packageName.xdshare", newest)
+        val view = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "text/plain")
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        // Viewers and share targets (Discord, Drive) in one chooser.
+        startActivity(android.content.Intent.createChooser(send, "Last battle").apply {
+            putExtra(android.content.Intent.EXTRA_INITIAL_INTENTS, arrayOf(view))
+        })
     }
 
     /** Boot Pokemon XD directly by game ID, bypassing the game picker (which

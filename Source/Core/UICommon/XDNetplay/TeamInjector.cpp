@@ -1766,4 +1766,11 @@ bool DeleteSavedTeam(const std::string& name)
   return !stem.empty() && File::Delete(SavedTeamDir() + stem + ".txt");
 }
 
+void RememberSentTeam(const std::string& text)
+{
+  if (ShowdownParser::ParseTeam(text).empty())
+    return;
+  SaveTeamText("Last sent", text);
+}
+
 }  // namespace XDNetplay
