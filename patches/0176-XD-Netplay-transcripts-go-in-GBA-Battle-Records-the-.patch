@@ -1,0 +1,173 @@
+From dbc6dfdc37f084905715605ddef77abe052f8cb5 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 15:16:53 -0700
+Subject: [PATCH] XD Netplay: transcripts go in GBA/Battle Records; the
+ launcher's Battle Records button opens that folder
+
+---
+ .../xdnetplay/ui/XDLauncherActivity.kt        | 10 +++--
+ .../features/xdnetplay/ui/XDLauncherScreen.kt |  2 +-
+ Source/Core/Core/HW/GBADetectLog.cpp          |  5 ++-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 38 +++++++++----------
+ .../DolphinQt/XDNetplay/XDLauncherDialog.h    |  2 +-
+ 5 files changed, 28 insertions(+), 29 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+index 280e262..d5cd098 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+@@ -410,7 +410,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+                 f.isFile && f.name.startsWith("linktrace_") && f.name.endsWith(".txt")
+             } ?: emptyArray()).sortedByDescending { it.name }.take(1) +
+             // The newest battle transcript.
+-            (dir.listFiles { f ->
++            (java.io.File(dir, "Battle Records").listFiles { f ->
+                 f.isFile && f.name.startsWith("battle_") && f.name.endsWith(".txt")
+             } ?: emptyArray()).sortedByDescending { it.name }.take(1)
+         if (logs.isEmpty()) {
+@@ -431,9 +431,11 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+         startActivity(android.content.Intent.createChooser(send, "Share detect logs"))
+     }
+ 
+-    /** Open the newest battle transcript (GBA/battle_*.txt) in a text viewer, or share it. */
++    /** Open the newest battle transcript (GBA/Battle Records/battle_*.txt) in a text viewer, or
++     * share it. App storage has no folder a file manager can open, so this is the Android side
++     * of the desktop's Battle Records folder button. */
+     private fun openLastBattle() {
+-        val dir = java.io.File(getExternalFilesDir(null), "GBA")
++        val dir = java.io.File(getExternalFilesDir(null), "GBA/Battle Records")
+         val newest = (dir.listFiles { f ->
+             f.isFile && f.name.startsWith("battle_") && f.name.endsWith(".txt")
+         } ?: emptyArray()).maxByOrNull { it.name }
+@@ -455,7 +457,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+         }
+         // Viewers and share targets (Discord, Drive) in one chooser.
+-        startActivity(android.content.Intent.createChooser(send, "Last battle").apply {
++        startActivity(android.content.Intent.createChooser(send, "Battle records").apply {
+             putExtra(android.content.Intent.EXTRA_INITIAL_INTENTS, arrayOf(view))
+         })
+     }
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+index b8892e2..915ad59 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+@@ -258,7 +258,7 @@ fun XDLauncherScreen(
+                     Spacer(Modifier.width(12.dp))
+                     TextButton(onClick = onShareDetectLog) { Text("Share log") }
+                     Spacer(Modifier.width(12.dp))
+-                    TextButton(onClick = onLastBattle) { Text("Last battle") }
++                    TextButton(onClick = onLastBattle) { Text("Battle records") }
+                     Spacer(Modifier.width(12.dp))
+                     var showTeams by remember { mutableStateOf(false) }
+                     TextButton(onClick = { showTeams = true }) { Text("Saved teams") }
+diff --git a/Source/Core/Core/HW/GBADetectLog.cpp b/Source/Core/Core/HW/GBADetectLog.cpp
+index 5955db9..3b6be53 100644
+--- a/Source/Core/Core/HW/GBADetectLog.cpp
++++ b/Source/Core/Core/HW/GBADetectLog.cpp
+@@ -453,8 +453,9 @@ void WriteBattleTranscript()
+   s_battle.clear();
+   if (body.empty())
+     return;
+-  const std::string path =
+-      File::GetUserPath(D_GBAUSER_IDX) + "battle_" + s_session_stamp + ".txt";
++  const std::string path = File::GetUserPath(D_GBAUSER_IDX) + "Battle Records/battle_" +
++                           s_session_stamp + ".txt";
++  File::CreateFullPath(path);
+   std::ofstream out(path, std::ios::out | std::ios::trunc);
+   if (!out)
+     return;
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 672470a..9348ec4 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -618,9 +618,9 @@ void XDLauncherDialog::CreateMainLayout()
+          "that folder, so you can send it. Send the newest one after a problem."));
+   m_saved_teams_button = new NonDefaultQPushButton(tr("Saved Teams..."));
+   m_saved_teams_button->setToolTip(tr("Look at, edit, add and delete your saved teams."));
+-  m_last_battle_button = new NonDefaultQPushButton(tr("Last Battle"));
+-  m_last_battle_button->setToolTip(tr("Open the newest battle transcript: each turn's moves and "
+-                                      "HP changes, written when the game stops."));
++  m_last_battle_button = new NonDefaultQPushButton(tr("Battle Records"));
++  m_last_battle_button->setToolTip(tr("Open the folder of battle transcripts: each turn's moves "
++                                      "and HP changes, written when the game stops."));
+   // Tester switch: every message between XD and the GBAs goes to a linktrace_ file next to the
+   // session log (for the battle transcript); Share Log saves the newest one with the log.
+   auto* record_link_check = new QCheckBox(tr("Record link traffic"));
+@@ -754,20 +754,13 @@ void XDLauncherDialog::OnSavedTeams()
+   dialog.exec();
+ }
+ 
+-void XDLauncherDialog::OnLastBattle()
++void XDLauncherDialog::OnBattleRecords()
+ {
+-  const QString dir = QString::fromStdString(File::GetUserPath(D_GBAUSER_IDX));
+-  const QDir logs(dir);
+-  const QStringList battles =
+-      logs.entryList({QStringLiteral("battle_*.txt")}, QDir::Files, QDir::Time);
+-  if (battles.isEmpty())
+-  {
+-    ModalMessageBox::information(
+-        this, tr("Last Battle"),
+-        tr("No battle transcript yet. One is written when a game with a battle stops."));
+-    return;
+-  }
+-  QDesktopServices::openUrl(QUrl::fromLocalFile(logs.filePath(battles.first())));
++  // Battle transcripts (GBADetectLog): GBA/Battle Records/battle_<date>.txt.
++  const QString dir =
++      QString::fromStdString(File::GetUserPath(D_GBAUSER_IDX)) + QStringLiteral("Battle Records");
++  QDir().mkpath(dir);
++  QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+ }
+ 
+ void XDLauncherDialog::OnShareLog()
+@@ -825,17 +818,20 @@ void XDLauncherDialog::OnShareLog()
+   }
+   // The newest link recording (Record link traffic) and battle transcript, saved beside the log
+   // under their own names.
+-  for (const QString& pattern : {QStringLiteral("linktrace_*.txt"), QStringLiteral("battle_*.txt")})
++  const QDir records(logs.filePath(QStringLiteral("Battle Records")));
++  for (const auto& [folder, pattern] :
++       {std::pair{&logs, QStringLiteral("linktrace_*.txt")},
++        std::pair{&records, QStringLiteral("battle_*.txt")}})
+   {
+-    const QStringList extras = logs.entryList({pattern}, QDir::Files, QDir::Time);
++    const QStringList extras = folder->entryList({pattern}, QDir::Files, QDir::Time);
+     if (extras.isEmpty())
+       continue;
+     const QString extra_target = QFileInfo(target).absoluteDir().filePath(extras.first());
+     if (QFileInfo(extra_target).canonicalFilePath() !=
+-        QFileInfo(logs.filePath(extras.first())).canonicalFilePath())
++        QFileInfo(folder->filePath(extras.first())).canonicalFilePath())
+     {
+       QFile::remove(extra_target);
+-      QFile::copy(logs.filePath(extras.first()), extra_target);
++      QFile::copy(folder->filePath(extras.first()), extra_target);
+     }
+   }
+   QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(target).absolutePath()));
+@@ -945,7 +941,7 @@ void XDLauncherDialog::ConnectWidgets()
+           [this](int) { RefreshTimerRow(); });
+ 
+   connect(m_share_log_button, &QPushButton::clicked, this, &XDLauncherDialog::OnShareLog);
+-  connect(m_last_battle_button, &QPushButton::clicked, this, &XDLauncherDialog::OnLastBattle);
++  connect(m_last_battle_button, &QPushButton::clicked, this, &XDLauncherDialog::OnBattleRecords);
+   connect(m_saved_teams_button, &QPushButton::clicked, this, &XDLauncherDialog::OnSavedTeams);
+   connect(m_gba_customize_button, &QPushButton::clicked, this,
+           &XDLauncherDialog::OnCustomizeGbaInput);
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+index afa101b..e2242e7 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+@@ -81,7 +81,7 @@ private:
+   void AutoDiscoverFromGameFolder();
+   void FitToScreen();
+   void OnShareLog();
+-  void OnLastBattle();
++  void OnBattleRecords();
+   void OnSavedTeams();
+   void OnCustomizeGbaInput();
+ 
+-- 
+2.39.5 (Apple Git-154)
+
