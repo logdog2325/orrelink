@@ -81,7 +81,7 @@ private:
   void AutoDiscoverFromGameFolder();
   void FitToScreen();
   void OnShareLog();
-  void OnLastBattle();
+  void OnBattleRecords();
   void OnSavedTeams();
   void OnCustomizeGbaInput();
 

@@ -618,9 +618,9 @@ void XDLauncherDialog::CreateMainLayout()
          "that folder, so you can send it. Send the newest one after a problem."));
   m_saved_teams_button = new NonDefaultQPushButton(tr("Saved Teams..."));
   m_saved_teams_button->setToolTip(tr("Look at, edit, add and delete your saved teams."));
-  m_last_battle_button = new NonDefaultQPushButton(tr("Last Battle"));
-  m_last_battle_button->setToolTip(tr("Open the newest battle transcript: each turn's moves and "
-                                      "HP changes, written when the game stops."));
+  m_last_battle_button = new NonDefaultQPushButton(tr("Battle Records"));
+  m_last_battle_button->setToolTip(tr("Open the folder of battle transcripts: each turn's moves "
+                                      "and HP changes, written when the game stops."));
   // Tester switch: every message between XD and the GBAs goes to a linktrace_ file next to the
   // session log (for the battle transcript); Share Log saves the newest one with the log.
   auto* record_link_check = new QCheckBox(tr("Record link traffic"));
@@ -754,20 +754,13 @@ void XDLauncherDialog::OnSavedTeams()
   dialog.exec();
 }
 
-void XDLauncherDialog::OnLastBattle()
+void XDLauncherDialog::OnBattleRecords()
 {
-  const QString dir = QString::fromStdString(File::GetUserPath(D_GBAUSER_IDX));
-  const QDir logs(dir);
-  const QStringList battles =
-      logs.entryList({QStringLiteral("battle_*.txt")}, QDir::Files, QDir::Time);
-  if (battles.isEmpty())
-  {
-    ModalMessageBox::information(
-        this, tr("Last Battle"),
-        tr("No battle transcript yet. One is written when a game with a battle stops."));
-    return;
-  }
-  QDesktopServices::openUrl(QUrl::fromLocalFile(logs.filePath(battles.first())));
+  // Battle transcripts (GBADetectLog): GBA/Battle Records/battle_<date>.txt.
+  const QString dir =
+      QString::fromStdString(File::GetUserPath(D_GBAUSER_IDX)) + QStringLiteral("Battle Records");
+  QDir().mkpath(dir);
+  QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
 }
 
 void XDLauncherDialog::OnShareLog()
@@ -825,17 +818,20 @@ void XDLauncherDialog::OnShareLog()
   }
   // The newest link recording (Record link traffic) and battle transcript, saved beside the log
   // under their own names.
-  for (const QString& pattern : {QStringLiteral("linktrace_*.txt"), QStringLiteral("battle_*.txt")})
+  const QDir records(logs.filePath(QStringLiteral("Battle Records")));
+  for (const auto& [folder, pattern] :
+       {std::pair{&logs, QStringLiteral("linktrace_*.txt")},
+        std::pair{&records, QStringLiteral("battle_*.txt")}})
   {
-    const QStringList extras = logs.entryList({pattern}, QDir::Files, QDir::Time);
+    const QStringList extras = folder->entryList({pattern}, QDir::Files, QDir::Time);
     if (extras.isEmpty())
       continue;
     const QString extra_target = QFileInfo(target).absoluteDir().filePath(extras.first());
     if (QFileInfo(extra_target).canonicalFilePath() !=
-        QFileInfo(logs.filePath(extras.first())).canonicalFilePath())
+        QFileInfo(folder->filePath(extras.first())).canonicalFilePath())
     {
       QFile::remove(extra_target);
-      QFile::copy(logs.filePath(extras.first()), extra_target);
+      QFile::copy(folder->filePath(extras.first()), extra_target);
     }
   }
   QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(target).absolutePath()));
@@ -945,7 +941,7 @@ void XDLauncherDialog::ConnectWidgets()
           [this](int) { RefreshTimerRow(); });
 
   connect(m_share_log_button, &QPushButton::clicked, this, &XDLauncherDialog::OnShareLog);
-  connect(m_last_battle_button, &QPushButton::clicked, this, &XDLauncherDialog::OnLastBattle);
+  connect(m_last_battle_button, &QPushButton::clicked, this, &XDLauncherDialog::OnBattleRecords);
   connect(m_saved_teams_button, &QPushButton::clicked, this, &XDLauncherDialog::OnSavedTeams);
   connect(m_gba_customize_button, &QPushButton::clicked, this,
           &XDLauncherDialog::OnCustomizeGbaInput);

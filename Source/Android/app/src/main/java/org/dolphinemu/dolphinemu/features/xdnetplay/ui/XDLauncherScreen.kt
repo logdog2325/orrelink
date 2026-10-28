@@ -258,7 +258,7 @@ fun XDLauncherScreen(
                     Spacer(Modifier.width(12.dp))
                     TextButton(onClick = onShareDetectLog) { Text("Share log") }
                     Spacer(Modifier.width(12.dp))
-                    TextButton(onClick = onLastBattle) { Text("Last battle") }
+                    TextButton(onClick = onLastBattle) { Text("Battle records") }
                     Spacer(Modifier.width(12.dp))
                     var showTeams by remember { mutableStateOf(false) }
                     TextButton(onClick = { showTeams = true }) { Text("Saved teams") }
