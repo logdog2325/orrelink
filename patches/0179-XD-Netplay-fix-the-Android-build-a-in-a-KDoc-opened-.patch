@@ -1,0 +1,26 @@
+From 228a5cf8f0ad857c44569f1d81acb2d52d6f9050 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 23:15:11 -0700
+Subject: [PATCH] XD Netplay: fix the Android build (a /* in a KDoc opened a
+ nested comment)
+
+---
+ .../dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt        | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+index 915ad59..c891af8 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+@@ -717,7 +717,7 @@ private fun NumberField(
+     )
+ }
+ 
+-/** Saved teams (XDNetplay/Teams/*.txt): pick one to read or edit its Showdown text. */
++/** Saved teams (the files in XDNetplay/Teams): pick one to read or edit its Showdown text. */
+ @Composable
+ private fun SavedTeamsDialog(onClose: () -> Unit) {
+     var names by remember { mutableStateOf(SaveImportBridge.listSavedTeams()) }
+-- 
+2.39.5 (Apple Git-154)
+
