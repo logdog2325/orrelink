@@ -717,7 +717,7 @@ private fun NumberField(
     )
 }
 
-/** Saved teams (XDNetplay/Teams/*.txt): pick one to read or edit its Showdown text. */
+/** Saved teams (the files in XDNetplay/Teams): pick one to read or edit its Showdown text. */
 @Composable
 private fun SavedTeamsDialog(onClose: () -> Unit) {
     var names by remember { mutableStateOf(SaveImportBridge.listSavedTeams()) }
