@@ -754,6 +754,8 @@ if(USE_MGBA)
     HW/GBACore.h
     HW/GBADetectLog.cpp
     HW/GBADetectLog.h
+    HW/XDBattleRecorder.cpp
+    HW/XDBattleRecorder.h
     HW/GBAMoveNames.h
     HW/SI/SI_DeviceGBAEmu.cpp
     HW/SI/SI_DeviceGBAEmu.h
