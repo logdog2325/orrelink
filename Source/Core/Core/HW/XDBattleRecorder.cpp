@@ -27,6 +27,8 @@ namespace
 {
 // XD (GXXE01) addresses and offsets. Battle floor: the current attacker, target and switch-in.
 constexpr u32 FLOOR = 0x804A1730;
+constexpr u32 FLOOR_TURN = FLOOR + 0x10;   // u16, the current turn
+constexpr u32 FLOOR_PHASE = FLOOR + 0x12;  // u16, 0 outside a battle
 constexpr u32 FLOOR_ATTACKER = FLOOR + 0xDDF4;
 constexpr u32 FLOOR_TARGET = FLOOR + 0xDDF8;
 constexpr u32 FLOOR_SWITCH = FLOOR + 0xDE00;
@@ -70,10 +72,8 @@ struct Battle
   std::map<u32, int> max_hp;  // by battle Pokemon: its HP when first seen
   std::vector<std::string> log;
   std::vector<std::string> text;
-  std::array<bool, 4> acted{};
   std::array<u16, 4> move_this_turn{};
-  int turn = 1;
-  bool turn_over = false;
+  int turn = 0;
   int acting = -1;
   bool crit_shown = false;
   bool result_shown = false;
@@ -82,7 +82,6 @@ struct Battle
 std::optional<Battle> s_battle;
 std::string s_session_stamp;
 int s_battle_count = 0;
-bool s_was_idle = true;
 
 u32 Read32(const Memory::MemoryManager& mem, u32 address)
 {
@@ -197,33 +196,20 @@ void AddSwitch(Battle& battle, int slot)
   battle.text.push_back(fmt::format("{} comes in ({}/{})", TextWho(battle, slot), state.hp, max));
 }
 
-void StartTurnIfPending(Battle& battle)
-{
-  if (!battle.turn_over)
-    return;
-  battle.turn_over = false;
-  ++battle.turn;
-  battle.acted = {};
-  battle.move_this_turn = {};
-  battle.log.push_back("|");
-  battle.log.push_back(fmt::format("|turn|{}", battle.turn));
-  battle.text.push_back(fmt::format("Turn {}", battle.turn));
-}
-
-bool AllLiveSlotsActed(const Battle& battle)
-{
-  for (size_t i = 0; i < battle.slots.size(); ++i)
-  {
-    if (battle.slots[i].pokemon != 0 && battle.slots[i].hp > 0 && !battle.acted[i])
-      return false;
-  }
-  return true;
-}
-
 void Step(const Memory::MemoryManager& mem, Battle& battle)
 {
   const u32 attacker = Read32(mem, FLOOR_ATTACKER);
   const u32 target = Read32(mem, FLOOR_TARGET);
+
+  const int turn = Read16(mem, FLOOR_TURN);
+  if (turn != battle.turn && turn != 0)
+  {
+    battle.turn = turn;
+    battle.move_this_turn = {};
+    battle.log.push_back("|");
+    battle.log.push_back(fmt::format("|turn|{}", turn));
+    battle.text.push_back(fmt::format("Turn {}", turn));
+  }
 
   for (int i = 0; i < 4; ++i)
   {
@@ -234,7 +220,6 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
 
     if (now.pokemon != was.pokemon)
     {
-      StartTurnIfPending(battle);
       was = now;
       AddSwitch(battle, i);
       continue;
@@ -243,9 +228,6 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
     // Move used: its PP went down (flinched, asleep or fainted Pokemon spend none).
     if (now.pp < was.pp && attacker == SLOTS[i])
     {
-      if (battle.acted[i])
-        battle.turn_over = true;
-      StartTurnIfPending(battle);
       const u16 move = Read16(mem, SLOTS[i] + SLOT_MOVE + MOVE_ID);
       const std::optional<int> aim = SlotOf(target);
       battle.log.push_back("|");
@@ -253,7 +235,6 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
                                        aim ? Who(battle, *aim) : std::string{}));
       battle.text.push_back(fmt::format("  {}: {}{}", TextWho(battle, i), MoveName(move),
                                         aim ? " on " + TextWho(battle, *aim) : std::string{}));
-      battle.acted[i] = true;
       battle.move_this_turn[i] = move;
       battle.acting = i;
       battle.crit_shown = false;
@@ -341,9 +322,6 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
       }
     }
   }
-
-  if (AllLiveSlotsActed(battle))
-    battle.turn_over = true;
 }
 
 std::string Stamp()
@@ -412,35 +390,27 @@ void OnField(Core::System& system)
   if (mem.GetRAM() == nullptr)
     return;
 
-  const u32 attacker = Read32(mem, FLOOR_ATTACKER);
-  const u32 switching = Read32(mem, FLOOR_SWITCH);
-  const bool active = SlotOf(attacker).has_value() || SlotOf(switching).has_value();
-
-  if (!s_battle)
+  const bool in_battle = Read16(mem, FLOOR_PHASE) != 0;
+  if (!in_battle)
   {
-    // XD clears these at each battle's start, so a stale value from the last one cannot start one.
-    if (active && s_was_idle)
-    {
-      s_battle.emplace();
-      for (int i = 0; i < 4; ++i)
-      {
-        s_battle->slots[i] = ReadSlot(mem, i);
-        if (s_battle->slots[i].pokemon != 0)
-          AddSwitch(*s_battle, i);
-      }
-      s_battle->log.push_back("|turn|1");
-      s_battle->text.push_back("Turn 1");
-    }
-    s_was_idle = !active;
+    if (s_battle)
+      WriteBattle(*s_battle);
+    s_battle.reset();
     return;
   }
 
-  if (!active)
+  if (!s_battle)
   {
-    WriteBattle(*s_battle);
-    s_battle.reset();
-    s_was_idle = true;
-    return;
+    // Wait for the first action: the field is not set up before it.
+    if (!SlotOf(Read32(mem, FLOOR_ATTACKER)) && !SlotOf(Read32(mem, FLOOR_SWITCH)))
+      return;
+    s_battle.emplace();
+    for (int i = 0; i < 4; ++i)
+    {
+      s_battle->slots[i] = ReadSlot(mem, i);
+      if (s_battle->slots[i].pokemon != 0)
+        AddSwitch(*s_battle, i);
+    }
   }
   Step(mem, *s_battle);
 }
@@ -450,7 +420,6 @@ void Finish()
   if (s_battle)
     WriteBattle(*s_battle);
   s_battle.reset();
-  s_was_idle = true;
   s_session_stamp.clear();
   s_battle_count = 0;
 }
