@@ -422,3 +422,5 @@ OrreLink stands on other people's work.
 - **pret** decompilation projects (pokeruby, pokefirered, pokeemerald) for the
   Gen 3 save layout and character map.
 - **Pokémon Showdown** for the team paste format the editor reads.
+
+OrreLink was made with the help of Claude, an AI assistant by Anthropic.
