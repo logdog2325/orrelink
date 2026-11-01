@@ -267,7 +267,33 @@ jobs:
         # Qt6 + Ninja only. Deliberately NO ffmpeg: linking Homebrew's ffmpeg
         # would make the .app depend on dylibs the tester doesn't have (frame
         # dumping auto-disables when it's absent), same choice OrreLink made.
-        run: brew install qt ninja
+        run: |
+          brew install qt ninja
+          # Newer Homebrew dylibs (brotli) name their dependencies through @rpath, which CMake's
+          # fixup_bundle cannot resolve. Give them absolute names again.
+          lib="$(brew --prefix)/lib"
+          for f in "$lib"/*.dylib; do
+            real="$(realpath "$f")"
+            [ -w "$real" ] || chmod u+w "$real"
+            changed=0
+            for dep in $(otool -L "$real" | tail -n +2 | awk '{print $1}' | grep '^@rpath/[^/]*\.dylib$' || true); do
+              name="${dep#@rpath/}"
+              if [ -e "$lib/$name" ]; then
+                install_name_tool -change "$dep" "$lib/$name" "$real"
+                changed=1
+              fi
+            done
+            id="$(otool -D "$real" | tail -n +2 | head -1)"
+            case "$id" in
+              @rpath/*)
+                install_name_tool -id "$lib/${id#@rpath/}" "$real"
+                changed=1
+                ;;
+            esac
+            if [ "$changed" = 1 ]; then
+              codesign --force --sign - "$real"
+            fi
+          done
       - name: Configure
         # Flags mirror BuildMacOSUniversalBinary.py (proven) for a single arm64
         # build. USE_MGBA=ON keeps the integrated-GBA support XD needs;
