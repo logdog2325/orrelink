@@ -75,6 +75,7 @@
 #include "Core/NetPlayClient.h"
 #include "Core/NetPlayProto.h"
 #include "Core/PatchEngine.h"
+#include "Core/HW/XDBattleRecorder.h"
 #include "Core/PowerPC/GDBStub.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
@@ -979,6 +980,7 @@ void Callback_NewField(Core::System& system)
   }
 
   AchievementManager::GetInstance().DoFrame();
+  XDBattleRecorder::OnField(system);
 }
 
 void UpdateTitle(Core::System& system)
