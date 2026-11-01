@@ -278,7 +278,7 @@ jobs:
           curl -fsSL "https://download.savannah.gnu.org/releases/freetype/freetype-$ver.tar.xz" | tar xJ -C "$RUNNER_TEMP"
           (cd "$RUNNER_TEMP/freetype-$ver" && \
             CFLAGS="-O2 -mmacosx-version-min=11.0" LDFLAGS="-mmacosx-version-min=11.0" \
-            ./configure --prefix="$RUNNER_TEMP/ft" --with-harfbuzz=no --with-brotli=no --with-bzip2=no --with-png=no >/dev/null && \
+            ./configure --prefix="$RUNNER_TEMP/ft" ac_cv_header_hvf_Scaler_h=no --with-harfbuzz=no --with-brotli=no --with-bzip2=no --with-png=no >/dev/null && \
             make -j4 >/dev/null && make install >/dev/null)
           real="$(realpath "$lib/libfreetype.6.dylib")"
           chmod u+w "$real"
