@@ -423,5 +423,5 @@ OrreLink stands on other people's work.
   Gen 3 save layout and character map.
 - **Pokémon Showdown** for the team paste format the editor reads.
 
-OrreLink is developed with extensive assistance from AI coding agents. Its design and release
-decisions are human-led. The software is extensively tested before deployment.
+OrreLink is developed with extensive assistance from AI coding agents. Its direction, design and
+release decisions are human-led. The software is extensively tested before deployment.
