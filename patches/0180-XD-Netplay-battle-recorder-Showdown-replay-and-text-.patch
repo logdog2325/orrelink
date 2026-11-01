@@ -1,0 +1,1461 @@
+From 4500488595bb9003d96497248ec4405a95d94c29 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 14:04:18 -0800
+Subject: [PATCH] XD Netplay: battle recorder (Showdown replay and text log per
+ battle), replacing the link transcript
+
+Reads XD's battle state once per field: moves by PP drop, HP, faints, switches,
+status and stat stages, written to GBA/Battle Records per battle. Only reads memory.
+v1.8.1 (test build)
+---
+ Source/Core/Core/CMakeLists.txt            |   2 +
+ Source/Core/Core/Core.cpp                  |   2 +
+ Source/Core/Core/HW/GBADetectLog.cpp       | 371 +----------------
+ Source/Core/Core/HW/GBADetectLog.h         |   4 -
+ Source/Core/Core/HW/GBAMoveNames.h         | 416 +++++++++++++++++++
+ Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp |   6 -
+ Source/Core/Core/HW/XDBattleRecorder.cpp   | 457 +++++++++++++++++++++
+ Source/Core/Core/HW/XDBattleRecorder.h     |  20 +
+ Source/Core/DolphinLib.props               |   2 +
+ Source/Core/UICommon/XDNetplay/Version.h   |   2 +-
+ 10 files changed, 902 insertions(+), 380 deletions(-)
+ create mode 100644 Source/Core/Core/HW/XDBattleRecorder.cpp
+ create mode 100644 Source/Core/Core/HW/XDBattleRecorder.h
+
+diff --git a/Source/Core/Core/CMakeLists.txt b/Source/Core/Core/CMakeLists.txt
+index 7e5495d..3c3826e 100644
+--- a/Source/Core/Core/CMakeLists.txt
++++ b/Source/Core/Core/CMakeLists.txt
+@@ -754,6 +754,8 @@ if(USE_MGBA)
+     HW/GBACore.h
+     HW/GBADetectLog.cpp
+     HW/GBADetectLog.h
++    HW/XDBattleRecorder.cpp
++    HW/XDBattleRecorder.h
+     HW/GBAMoveNames.h
+     HW/SI/SI_DeviceGBAEmu.cpp
+     HW/SI/SI_DeviceGBAEmu.h
+diff --git a/Source/Core/Core/Core.cpp b/Source/Core/Core/Core.cpp
+index d93ddb4..e038dfa 100644
+--- a/Source/Core/Core/Core.cpp
++++ b/Source/Core/Core/Core.cpp
+@@ -75,6 +75,7 @@
+ #include "Core/NetPlayClient.h"
+ #include "Core/NetPlayProto.h"
+ #include "Core/PatchEngine.h"
++#include "Core/HW/XDBattleRecorder.h"
+ #include "Core/PowerPC/GDBStub.h"
+ #include "Core/PowerPC/JitInterface.h"
+ #include "Core/PowerPC/PowerPC.h"
+@@ -979,6 +980,7 @@ void Callback_NewField(Core::System& system)
+   }
+ 
+   AchievementManager::GetInstance().DoFrame();
++  XDBattleRecorder::OnField(system);
+ }
+ 
+ void UpdateTitle(Core::System& system)
+diff --git a/Source/Core/Core/HW/GBADetectLog.cpp b/Source/Core/Core/HW/GBADetectLog.cpp
+index 3b6be53..8d56745 100644
+--- a/Source/Core/Core/HW/GBADetectLog.cpp
++++ b/Source/Core/Core/HW/GBADetectLog.cpp
+@@ -2,7 +2,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "Core/HW/GBADetectLog.h"
+-#include "Core/HW/GBAMoveNames.h"
++#include "Core/HW/XDBattleRecorder.h"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -44,27 +44,6 @@ std::ofstream s_trace;
+ u64 s_trace_bytes = 0;
+ constexpr u64 MAX_TRACE_BYTES = 96u << 20;
+ 
+-// Battle transcript (always on for a GBA session): XD's per-decision "turn blocks" to each GBA and
+-// each GBA's choice reply, collected per socket and turned into battle_<stamp>.txt when the
+-// session closes. Under s_mutex. Block layout (words of 4 bytes as sent, values little-endian):
+-// a 0x66 word, then 373 words: [0] party order + request (byte 3: slot 1/2, 0x80 = replace a
+-// fainted Pokemon), [4] the deciding Pokemon's species, [5..6] its four move ids, then four
+-// party records of 85 words from [9] (HP, item, two move words, PP, four 80-byte move texts),
+-// then from [349] the four battle positions (0-1 GBA 1's side, 2-3 GBA 2's), 6 words each: name
+-// (10 bytes, Gen 3 text), side and level, an id, species and current HP, max HP. The decider's
+-// own position is left empty in its copy. A reply is [move slot or party index, target position
+-// or 0xF7/0xFF, 1 = fight / 2 = switch, 0].
+-struct BattleEvent
+-{
+-  u64 tick = 0;
+-  int kind = 0;  // 0 = turn block, 1 = reply
+-  int sock = 0;
+-  std::vector<std::array<u8, 4>> words;
+-  std::array<u8, 4> reply{};
+-};
+-constexpr size_t BATTLE_BLOCK_WORDS = 373;
+-std::vector<BattleEvent> s_battle;
+-std::array<std::optional<std::vector<std::array<u8, 4>>>, 4> s_battle_building;
+ std::string s_session_stamp;
+ std::string s_path;
+ u64 s_bytes = 0;         // running size, enforces the cap
+@@ -162,307 +141,6 @@ void WriteLine(const std::string& line, bool flush)
+     s_file.flush();
+ }
+ 
+-using BattleWord = std::array<u8, 4>;
+-
+-u16 Le16(const BattleWord& w, int offset)
+-{
+-  return static_cast<u16>(w[offset] | (w[offset + 1] << 8));
+-}
+-
+-// Gen 3 text to ASCII; an all-caps name (the games' default) reads as "Metagross".
+-std::string Gen3Name(const u8* bytes, size_t len)
+-{
+-  std::string out;
+-  for (size_t i = 0; i < len; ++i)
+-  {
+-    const u8 b = bytes[i];
+-    if (b == 0xFF)
+-      break;
+-    if (b >= 0xBB && b <= 0xD4)
+-      out.push_back(static_cast<char>('A' + b - 0xBB));
+-    else if (b >= 0xD5 && b <= 0xEE)
+-      out.push_back(static_cast<char>('a' + b - 0xD5));
+-    else if (b >= 0xA1 && b <= 0xAA)
+-      out.push_back(static_cast<char>('0' + b - 0xA1));
+-    else if (b == 0x00)
+-      out.push_back(' ');
+-    else if (b == 0xAD)
+-      out.push_back('.');
+-    else if (b == 0xAE)
+-      out.push_back('-');
+-    else
+-      out.push_back('?');
+-  }
+-  while (!out.empty() && out.back() == ' ')
+-    out.pop_back();
+-  if (!out.empty() && std::ranges::none_of(out, [](char c) { return c >= 'a' && c <= 'z'; }))
+-  {
+-    for (size_t i = 1; i < out.size(); ++i)
+-    {
+-      if (out[i] >= 'A' && out[i] <= 'Z' && out[i - 1] != ' ' && out[i - 1] != '-')
+-        out[i] = static_cast<char>(out[i] - 'A' + 'a');
+-    }
+-  }
+-  return out;
+-}
+-
+-std::string MoveName(u16 id)
+-{
+-  return id < std::size(GEN3_MOVE_NAMES) && id != 0 ? std::string(GEN3_MOVE_NAMES[id]) :
+-                                                       fmt::format("move {}", id);
+-}
+-
+-// The transcript of one session's events (see BattleEvent), or "" when there is no battle.
+-std::string BuildBattleTranscript(std::vector<BattleEvent> events)
+-{
+-  std::ranges::stable_sort(events, [](const BattleEvent& a, const BattleEvent& b) {
+-    return a.tick != b.tick ? a.tick < b.tick : a.kind < b.kind;
+-  });
+-  using Key = std::pair<int, std::string>;  // side 0/1, name
+-  struct Turn
+-  {
+-    std::vector<std::string> acts;
+-    std::map<Key, std::pair<int, int>> hp;  // first value seen this turn: current, max
+-    std::vector<Key> order;
+-  };
+-  struct Pending
+-  {
+-    int me;
+-    bool replace;
+-    std::array<u16, 4> moves;
+-    std::array<u8, 8> moves_key;
+-    BattleWord pp;
+-  };
+-  // A chosen move, confirmed by its PP in that GBA's next block after the turn: a Pokemon that
+-  // fainted, flinched or slept before moving spends none.
+-  struct Unconfirmed
+-  {
+-    int side;
+-    size_t turn;
+-    size_t act;
+-    std::array<u8, 8> moves_key;
+-    int slot;
+-    u8 pp;
+-  };
+-  struct Replacement
+-  {
+-    int pos;
+-    size_t turn;
+-    size_t act;
+-  };
+-  std::array<std::string, 4> names;
+-  std::array<u16, 4> species{};
+-  std::map<Key, std::pair<int, int>> hp;
+-  std::array<std::map<std::array<u8, 8>, std::string>, 2> record_names;
+-  std::vector<Turn> turns;
+-  std::array<std::array<bool, 3>, 3> seen{};
+-  std::map<int, Pending> pending;
+-  std::vector<Replacement> replacements;
+-  std::vector<Unconfirmed> unconfirmed;
+-
+-  const auto set_hp = [&](const Key& key, std::pair<int, int> value, bool normal) {
+-    if (!hp.contains(key) && normal && turns.size() >= 2)
+-    {
+-      // First time on the field: it came in fresh during the previous turn.
+-      Turn& previous = turns[turns.size() - 2];
+-      if (previous.hp.emplace(key, std::pair{value.second, value.second}).second)
+-        previous.order.push_back(key);
+-    }
+-    hp[key] = value;
+-    if (normal && !turns.empty() && turns.back().hp.emplace(key, value).second)
+-      turns.back().order.push_back(key);
+-  };
+-
+-  for (const BattleEvent& event : events)
+-  {
+-    const int s = event.sock;
+-    if (s != 1 && s != 2)
+-      continue;
+-    const int side = s - 1;
+-    if (event.kind == 0)
+-    {
+-      const auto& w = event.words;
+-      const u8 req = w[0][3];
+-      const int slot = req & 0x7F;
+-      const bool replace = (req & 0x80) != 0;
+-      if (slot < 1 || slot > 2)
+-        continue;
+-      const int me = side * 2 + slot - 1;
+-      if (!replace && (seen[s][slot] || turns.empty()))
+-      {
+-        turns.emplace_back();
+-        seen = {};
+-      }
+-      if (!replace)
+-        seen[s][slot] = true;
+-      for (int p = 0; p < 4; ++p)
+-      {
+-        const BattleWord* e = &w[349 + 6 * p];
+-        if (e[0][0] != 0xFF)
+-        {
+-          std::array<u8, 10> raw{};
+-          std::copy(e[0].begin(), e[0].end(), raw.begin());
+-          std::copy(e[1].begin(), e[1].end(), raw.begin() + 4);
+-          raw[8] = e[2][0];
+-          raw[9] = e[2][1];
+-          const std::string name = Gen3Name(raw.data(), raw.size());
+-          if (names[p] != name)
+-          {
+-            std::erase_if(replacements, [&](const Replacement& r) {
+-              if (r.pos != p)
+-                return false;
+-              turns[r.turn].acts[r.act] = fmt::format("GBA {} sends in {}", p / 2 + 1, name);
+-              return true;
+-            });
+-          }
+-          names[p] = name;
+-          species[p] = Le16(e[4], 0);
+-          set_hp({p / 2, name}, {Le16(e[4], 2), Le16(e[5], 0)}, !replace);
+-        }
+-        else if (p != me && !names[p].empty())
+-        {
+-          // An empty position that held a Pokemon: it fainted.
+-          const Key key{p / 2, names[p]};
+-          if (const auto it = hp.find(key); it != hp.end())
+-            set_hp(key, {0, it->second.second}, false);
+-          names[p].clear();
+-        }
+-      }
+-      std::array<u8, 8> moves_key{};
+-      std::copy(w[5].begin(), w[5].end(), moves_key.begin());
+-      std::copy(w[6].begin(), w[6].end(), moves_key.begin() + 4);
+-      // Moves chosen in earlier turns. Not at a replacement: XD sends a fainted Pokemon's
+-      // replacement in mid-turn, before the rest have moved.
+-      std::erase_if(unconfirmed, [&](const Unconfirmed& u) {
+-        if (u.side != side || replace || u.turn + 1 >= turns.size())
+-          return false;
+-        for (int i = 0; i < 4; ++i)
+-        {
+-          std::array<u8, 8> record_moves{};
+-          std::copy(w[11 + 85 * i].begin(), w[11 + 85 * i].end(), record_moves.begin());
+-          std::copy(w[12 + 85 * i].begin(), w[12 + 85 * i].end(), record_moves.begin() + 4);
+-          if (record_moves != u.moves_key)
+-            continue;
+-          if (w[13 + 85 * i][u.slot] == u.pp)
+-            turns[u.turn].acts[u.act] += " (did not move)";
+-          return true;
+-        }
+-        return false;
+-      });
+-      if (!replace && species[me] == Le16(w[4], 0) && !names[me].empty())
+-        record_names[side][moves_key] = names[me];
+-      for (int i = 0; i < 4; ++i)
+-      {
+-        std::array<u8, 8> record_moves{};
+-        std::copy(w[11 + 85 * i].begin(), w[11 + 85 * i].end(), record_moves.begin());
+-        std::copy(w[12 + 85 * i].begin(), w[12 + 85 * i].end(), record_moves.begin() + 4);
+-        const auto it = record_names[side].find(record_moves);
+-        if (it == record_names[side].end())
+-          continue;
+-        const Key key{side, it->second};
+-        if (const auto known = hp.find(key); known != hp.end())
+-          set_hp(key, {Le16(w[9 + 85 * i], 0), known->second.second}, !replace);
+-      }
+-      pending[s] = {me,      replace, {Le16(w[5], 0), Le16(w[5], 2), Le16(w[6], 0), Le16(w[6], 2)},
+-                    moves_key, w[7]};
+-    }
+-    else
+-    {
+-      const auto it = pending.find(s);
+-      if (it == pending.end() || turns.empty())
+-        continue;
+-      const Pending decision = it->second;
+-      pending.erase(it);
+-      const auto& r = event.reply;
+-      std::vector<std::string>& acts = turns.back().acts;
+-      if (r[2] == 2)
+-      {
+-        acts.push_back(fmt::format("GBA {} sends in a replacement", s));
+-        replacements.push_back({decision.me, turns.size() - 1, acts.size() - 1});
+-        continue;
+-      }
+-      const std::string move = r[0] < 4 ? MoveName(decision.moves[r[0]]) : std::string("?");
+-      const std::string actor = names[decision.me].empty() ? "?" : names[decision.me];
+-      std::string target;
+-      if (r[1] <= 3)
+-      {
+-        target = fmt::format(" on GBA {} {}", r[1] / 2 + 1,
+-                             names[r[1]].empty() ? std::string("?") : names[r[1]]);
+-      }
+-      acts.push_back(fmt::format("GBA {} {}: {}{}", s, actor, move, target));
+-      if (r[0] < 4)
+-      {
+-        unconfirmed.push_back(
+-            {side, turns.size() - 1, acts.size() - 1, decision.moves_key, r[0], decision.pp[r[0]]});
+-      }
+-    }
+-  }
+-  if (turns.empty())
+-    return {};
+-
+-  std::string out;
+-  for (size_t n = 0; n < turns.size(); ++n)
+-  {
+-    out += fmt::format("Turn {}\n", n + 1);
+-    for (const std::string& act : turns[n].acts)
+-      out += fmt::format("  {}\n", act);
+-    std::vector<std::string> changes;
+-    for (const Key& key : turns[n].order)
+-    {
+-      const int before = turns[n].hp.at(key).first;
+-      int after = hp.at(key).first;
+-      if (n + 1 < turns.size())
+-      {
+-        if (const auto it = turns[n + 1].hp.find(key); it != turns[n + 1].hp.end())
+-          after = it->second.first;
+-      }
+-      if (after != before)
+-      {
+-        changes.push_back(fmt::format("GBA {} {} {} -> {}{}", key.first + 1, key.second, before,
+-                                      after, after == 0 ? " (fainted)" : ""));
+-      }
+-    }
+-    out += "  Result: ";
+-    if (n + 1 == turns.size())
+-      out += "not known (XD sends the GBAs nothing after the last turn)";
+-    else if (changes.empty())
+-    {
+-      out += "no HP changes";
+-    }
+-    else
+-    {
+-      for (size_t i = 0; i < changes.size(); ++i)
+-        out += (i ? "; " : "") + changes[i];
+-    }
+-    out += '\n';
+-  }
+-  std::array<bool, 2> alive{};
+-  for (const auto& [key, value] : hp)
+-    alive[key.first] = alive[key.first] || value.first > 0;
+-  out += "Battle over.";
+-  if (alive[0] != alive[1])
+-    out += fmt::format(" GBA {} wins.", alive[0] ? 1 : 2);
+-  out += '\n';
+-  return out;
+-}
+-
+-// Must hold s_mutex. At session close: battle_<stamp>.txt beside the log, when there was a battle.
+-void WriteBattleTranscript()
+-{
+-  const std::string body = BuildBattleTranscript(std::move(s_battle));
+-  s_battle.clear();
+-  if (body.empty())
+-    return;
+-  const std::string path = File::GetUserPath(D_GBAUSER_IDX) + "Battle Records/battle_" +
+-                           s_session_stamp + ".txt";
+-  File::CreateFullPath(path);
+-  std::ofstream out(path, std::ios::out | std::ios::trunc);
+-  if (!out)
+-    return;
+-  out << "OrreLink battle transcript, session " << s_session_stamp << "\n";
+-  out << "Moves are each Pokemon's choice; Result is the HP change over the turn.\n\n";
+-  out << body;
+-}
+ }  // namespace
+ 
+ void Flush()
+@@ -474,48 +152,6 @@ void Flush()
+     s_trace.flush();
+ }
+ 
+-void BattleLinkWrite(int channel, u64 tick, const u8* data)
+-{
+-  if (channel < 0 || channel > 3)
+-    return;
+-  const BattleWord word{data[0], data[1], data[2], data[3]};
+-  // Keep-alives between messages.
+-  if (word == BattleWord{0x47, 0x58, 0x58, 0x45} || word == BattleWord{0, 0, 0, 0xAA} ||
+-      word == BattleWord{0, 0, 0, 0x11})
+-  {
+-    return;
+-  }
+-  std::lock_guard lock(s_mutex);
+-  if (!s_file.is_open())
+-    return;
+-  auto& building = s_battle_building[channel];
+-  if (word == BattleWord{0, 0, 0, 0x66})
+-  {
+-    building.emplace();
+-    building->reserve(BATTLE_BLOCK_WORDS);
+-    return;
+-  }
+-  if (!building)
+-    return;
+-  building->push_back(word);
+-  if (building->size() == BATTLE_BLOCK_WORDS)
+-  {
+-    s_battle.push_back({tick, 0, channel, std::move(*building), {}});
+-    building.reset();
+-  }
+-}
+-
+-void BattleLinkRead(int channel, u64 tick, const u8* data)
+-{
+-  // A choice: [slot or party index, target, 1 fight / 2 switch, 0].
+-  if (data[3] != 0 || (data[2] != 1 && data[2] != 2) || data[0] > 5)
+-    return;
+-  std::lock_guard lock(s_mutex);
+-  if (!s_file.is_open())
+-    return;
+-  s_battle.push_back({tick, 1, channel, {}, {data[0], data[1], data[2], data[3]}});
+-}
+-
+ bool IsTracingLink()
+ {
+   std::lock_guard lock(s_mutex);
+@@ -554,9 +190,6 @@ void OnDeviceCreated()
+   PruneOldLogs(dir);
+   s_session_stamp = Timestamp("%Y%m%d_%H%M%S");
+   s_path = dir + "gba_detect_" + s_session_stamp + ".log";
+-  s_battle.clear();
+-  for (auto& building : s_battle_building)
+-    building.reset();
+   s_file.close();
+   s_file.clear();
+   s_file.open(s_path, std::ios::out | std::ios::trunc);
+@@ -606,7 +239,7 @@ void OnDeviceDestroyed()
+       s_trace.flush();
+       s_trace.close();
+     }
+-    WriteBattleTranscript();
++    XDBattleRecorder::Finish();
+   }
+ }
+ 
+diff --git a/Source/Core/Core/HW/GBADetectLog.h b/Source/Core/Core/HW/GBADetectLog.h
+index 57204b6..3fa4879 100644
+--- a/Source/Core/Core/HW/GBADetectLog.h
++++ b/Source/Core/Core/HW/GBADetectLog.h
+@@ -27,10 +27,6 @@ std::string FilePath();
+ void Flush();
+ // Tester switch XDNetplay/RecordLinkTraffic: the session's full GC<->GBA data traffic goes to
+ // linktrace_<stamp>.txt beside the log. IsTracingLink is cheap enough to ask per command.
+-// The battle transcript (battle_<stamp>.txt at session close): every GC->GBA WRITE's data and
+-// every GBA READ reply of the session's GBAs. CPU thread, from the GBA device.
+-void BattleLinkWrite(int channel, u64 tick, const u8* data);
+-void BattleLinkRead(int channel, u64 tick, const u8* data);
+ bool IsTracingLink();
+ void TraceLink(int channel, u64 tick, char dir, const u8* bytes, int len, int jstat = -1);
+ 
+diff --git a/Source/Core/Core/HW/GBAMoveNames.h b/Source/Core/Core/HW/GBAMoveNames.h
+index 4c12397..42233af 100644
+--- a/Source/Core/Core/HW/GBAMoveNames.h
++++ b/Source/Core/Core/HW/GBAMoveNames.h
+@@ -366,4 +366,420 @@ constexpr std::string_view GEN3_MOVE_NAMES[] = {
+     "Doom Desire",
+     "Psycho Boost",
+ };
++// Showdown ids by internal (Hoenn order) species id; "" for the unused ids.
++constexpr std::string_view GEN3_SPECIES_IDS[] = {
++    "",
++    "bulbasaur",
++    "ivysaur",
++    "venusaur",
++    "charmander",
++    "charmeleon",
++    "charizard",
++    "squirtle",
++    "wartortle",
++    "blastoise",
++    "caterpie",
++    "metapod",
++    "butterfree",
++    "weedle",
++    "kakuna",
++    "beedrill",
++    "pidgey",
++    "pidgeotto",
++    "pidgeot",
++    "rattata",
++    "raticate",
++    "spearow",
++    "fearow",
++    "ekans",
++    "arbok",
++    "pikachu",
++    "raichu",
++    "sandshrew",
++    "sandslash",
++    "nidoranf",
++    "nidorina",
++    "nidoqueen",
++    "nidoranm",
++    "nidorino",
++    "nidoking",
++    "clefairy",
++    "clefable",
++    "vulpix",
++    "ninetales",
++    "jigglypuff",
++    "wigglytuff",
++    "zubat",
++    "golbat",
++    "oddish",
++    "gloom",
++    "vileplume",
++    "paras",
++    "parasect",
++    "venonat",
++    "venomoth",
++    "diglett",
++    "dugtrio",
++    "meowth",
++    "persian",
++    "psyduck",
++    "golduck",
++    "mankey",
++    "primeape",
++    "growlithe",
++    "arcanine",
++    "poliwag",
++    "poliwhirl",
++    "poliwrath",
++    "abra",
++    "kadabra",
++    "alakazam",
++    "machop",
++    "machoke",
++    "machamp",
++    "bellsprout",
++    "weepinbell",
++    "victreebel",
++    "tentacool",
++    "tentacruel",
++    "geodude",
++    "graveler",
++    "golem",
++    "ponyta",
++    "rapidash",
++    "slowpoke",
++    "slowbro",
++    "magnemite",
++    "magneton",
++    "farfetchd",
++    "doduo",
++    "dodrio",
++    "seel",
++    "dewgong",
++    "grimer",
++    "muk",
++    "shellder",
++    "cloyster",
++    "gastly",
++    "haunter",
++    "gengar",
++    "onix",
++    "drowzee",
++    "hypno",
++    "krabby",
++    "kingler",
++    "voltorb",
++    "electrode",
++    "exeggcute",
++    "exeggutor",
++    "cubone",
++    "marowak",
++    "hitmonlee",
++    "hitmonchan",
++    "lickitung",
++    "koffing",
++    "weezing",
++    "rhyhorn",
++    "rhydon",
++    "chansey",
++    "tangela",
++    "kangaskhan",
++    "horsea",
++    "seadra",
++    "goldeen",
++    "seaking",
++    "staryu",
++    "starmie",
++    "mrmime",
++    "scyther",
++    "jynx",
++    "electabuzz",
++    "magmar",
++    "pinsir",
++    "tauros",
++    "magikarp",
++    "gyarados",
++    "lapras",
++    "ditto",
++    "eevee",
++    "vaporeon",
++    "jolteon",
++    "flareon",
++    "porygon",
++    "omanyte",
++    "omastar",
++    "kabuto",
++    "kabutops",
++    "aerodactyl",
++    "snorlax",
++    "articuno",
++    "zapdos",
++    "moltres",
++    "dratini",
++    "dragonair",
++    "dragonite",
++    "mewtwo",
++    "mew",
++    "chikorita",
++    "bayleef",
++    "meganium",
++    "cyndaquil",
++    "quilava",
++    "typhlosion",
++    "totodile",
++    "croconaw",
++    "feraligatr",
++    "sentret",
++    "furret",
++    "hoothoot",
++    "noctowl",
++    "ledyba",
++    "ledian",
++    "spinarak",
++    "ariados",
++    "crobat",
++    "chinchou",
++    "lanturn",
++    "pichu",
++    "cleffa",
++    "igglybuff",
++    "togepi",
++    "togetic",
++    "natu",
++    "xatu",
++    "mareep",
++    "flaaffy",
++    "ampharos",
++    "bellossom",
++    "marill",
++    "azumarill",
++    "sudowoodo",
++    "politoed",
++    "hoppip",
++    "skiploom",
++    "jumpluff",
++    "aipom",
++    "sunkern",
++    "sunflora",
++    "yanma",
++    "wooper",
++    "quagsire",
++    "espeon",
++    "umbreon",
++    "murkrow",
++    "slowking",
++    "misdreavus",
++    "unown",
++    "wobbuffet",
++    "girafarig",
++    "pineco",
++    "forretress",
++    "dunsparce",
++    "gligar",
++    "steelix",
++    "snubbull",
++    "granbull",
++    "qwilfish",
++    "scizor",
++    "shuckle",
++    "heracross",
++    "sneasel",
++    "teddiursa",
++    "ursaring",
++    "slugma",
++    "magcargo",
++    "swinub",
++    "piloswine",
++    "corsola",
++    "remoraid",
++    "octillery",
++    "delibird",
++    "mantine",
++    "skarmory",
++    "houndour",
++    "houndoom",
++    "kingdra",
++    "phanpy",
++    "donphan",
++    "porygon2",
++    "stantler",
++    "smeargle",
++    "tyrogue",
++    "hitmontop",
++    "smoochum",
++    "elekid",
++    "magby",
++    "miltank",
++    "blissey",
++    "raikou",
++    "entei",
++    "suicune",
++    "larvitar",
++    "pupitar",
++    "tyranitar",
++    "lugia",
++    "hooh",
++    "celebi",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "",
++    "treecko",
++    "grovyle",
++    "sceptile",
++    "torchic",
++    "combusken",
++    "blaziken",
++    "mudkip",
++    "marshtomp",
++    "swampert",
++    "poochyena",
++    "mightyena",
++    "zigzagoon",
++    "linoone",
++    "wurmple",
++    "silcoon",
++    "beautifly",
++    "cascoon",
++    "dustox",
++    "lotad",
++    "lombre",
++    "ludicolo",
++    "seedot",
++    "nuzleaf",
++    "shiftry",
++    "nincada",
++    "ninjask",
++    "shedinja",
++    "taillow",
++    "swellow",
++    "shroomish",
++    "breloom",
++    "spinda",
++    "wingull",
++    "pelipper",
++    "surskit",
++    "masquerain",
++    "wailmer",
++    "wailord",
++    "skitty",
++    "delcatty",
++    "kecleon",
++    "baltoy",
++    "claydol",
++    "nosepass",
++    "torkoal",
++    "sableye",
++    "barboach",
++    "whiscash",
++    "luvdisc",
++    "corphish",
++    "crawdaunt",
++    "feebas",
++    "milotic",
++    "carvanha",
++    "sharpedo",
++    "trapinch",
++    "vibrava",
++    "flygon",
++    "makuhita",
++    "hariyama",
++    "electrike",
++    "manectric",
++    "numel",
++    "camerupt",
++    "spheal",
++    "sealeo",
++    "walrein",
++    "cacnea",
++    "cacturne",
++    "snorunt",
++    "glalie",
++    "lunatone",
++    "solrock",
++    "azurill",
++    "spoink",
++    "grumpig",
++    "plusle",
++    "minun",
++    "mawile",
++    "meditite",
++    "medicham",
++    "swablu",
++    "altaria",
++    "wynaut",
++    "duskull",
++    "dusclops",
++    "roselia",
++    "slakoth",
++    "vigoroth",
++    "slaking",
++    "gulpin",
++    "swalot",
++    "tropius",
++    "whismur",
++    "loudred",
++    "exploud",
++    "clamperl",
++    "huntail",
++    "gorebyss",
++    "absol",
++    "shuppet",
++    "banette",
++    "seviper",
++    "zangoose",
++    "relicanth",
++    "aron",
++    "lairon",
++    "aggron",
++    "castform",
++    "volbeat",
++    "illumise",
++    "lileep",
++    "cradily",
++    "anorith",
++    "armaldo",
++    "ralts",
++    "kirlia",
++    "gardevoir",
++    "bagon",
++    "shelgon",
++    "salamence",
++    "beldum",
++    "metang",
++    "metagross",
++    "regirock",
++    "regice",
++    "registeel",
++    "kyogre",
++    "groudon",
++    "rayquaza",
++    "latias",
++    "latios",
++    "jirachi",
++    "deoxys",
++    "chimecho",
++};
++
+ }  // namespace GBADetectLog
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+index 7471b46..6934061 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+@@ -796,9 +796,6 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
+     // Tester trace: every data command (not the status probes), unfiltered.
+     if (data_cmd_now && GBADetectLog::IsTracingLink())
+       GBADetectLog::TraceLink(m_device_number, m_timestamp_sent, '>', buffer, request_length);
+-    // Battle transcript: every data word XD writes to this GBA.
+-    if (m_last_cmd == EBufferCommands::CMD_WRITE_GBA && request_length >= 5)
+-      GBADetectLog::BattleLinkWrite(m_device_number, m_timestamp_sent, buffer + 1);
+     const u8 cmd_class = probing ? 1u : (data_cmd_now ? 2u : 0u);
+     const bool class_changed = cmd_class != m_diag_prev_cmd_class;
+     m_diag_prev_cmd_class = cmd_class;
+@@ -877,9 +874,6 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
+                               static_cast<int>(response_length),
+                               m_core->GetJoyStatAfterCommand());
+     }
+-    // Battle transcript: every word XD reads back (the GBA's choices among them).
+-    if (m_last_cmd == EBufferCommands::CMD_READ_GBA && response_length >= 4)
+-      GBADetectLog::BattleLinkRead(m_device_number, m_timestamp_sent, buffer);
+ 
+     // H9 (gba_detect.log). A withheld command (m_diag_cmd_sent == false) makes
+     // the core return 0 with nothing having been asked, so it must NEVER be
+diff --git a/Source/Core/Core/HW/XDBattleRecorder.cpp b/Source/Core/Core/HW/XDBattleRecorder.cpp
+new file mode 100644
+index 0000000..25c4ec5
+--- /dev/null
++++ b/Source/Core/Core/HW/XDBattleRecorder.cpp
+@@ -0,0 +1,457 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "Core/HW/XDBattleRecorder.h"
++
++#include <array>
++#include <cstdlib>
++#include <ctime>
++#include <fstream>
++#include <map>
++#include <optional>
++#include <string>
++#include <vector>
++
++#include <fmt/format.h>
++
++#include "Common/CommonPaths.h"
++#include "Common/FileUtil.h"
++#include "Core/ConfigManager.h"
++#include "Core/HW/GBAMoveNames.h"
++#include "Core/HW/Memmap.h"
++#include "Core/System.h"
++
++namespace XDBattleRecorder
++{
++namespace
++{
++// XD (GXXE01) addresses and offsets. Battle floor: the current attacker, target and switch-in.
++constexpr u32 FLOOR = 0x804A1730;
++constexpr u32 FLOOR_ATTACKER = FLOOR + 0xDDF4;
++constexpr u32 FLOOR_TARGET = FLOOR + 0xDDF8;
++constexpr u32 FLOOR_SWITCH = FLOOR + 0xDE00;
++// The four battle positions: GBA 1's two, then GBA 2's. The second of each is unused in singles.
++constexpr std::array<u32, 4> SLOTS{0x804A3324, 0x804A3BB8, 0x804AA214, 0x804AAAA8};
++constexpr std::array<const char*, 4> SLOT_NAMES{"p1a", "p1b", "p2a", "p2b"};
++constexpr u32 SLOT_POKEMON = 4;      // -> battle Pokemon; its Pokemon data starts 4 bytes in
++constexpr u32 SLOT_MOVE = 0x648;     // the move in progress
++constexpr u32 SLOT_STAGES = 0x7B0;   // atk, def, spa, spd, spe, accuracy, evasion; 6 is neutral
++constexpr u32 MOVE_ID = 4;           // u16
++constexpr u32 MOVE_RESULT = 0x69;    // 0x45 once it missed or was blocked
++constexpr u32 MOVE_CRIT = 0x98;      // 2 on a critical hit
++constexpr u32 MON_SPECIES = 0;       // u16
++constexpr u32 MON_HP = 4;            // u16
++constexpr u32 MON_LEVEL = 0x11;
++constexpr u32 MON_STATUS = 0x16;
++constexpr u32 MON_NAME = 0x4E;       // UTF-16, 10 characters
++constexpr u32 MON_PP = 0x82;         // u8, every 4 bytes for the four moves
++
++constexpr u8 RESULT_MISSED = 0x45;
++constexpr std::array<const char*, 7> STAGE_NAMES{"atk", "def",     "spa",    "spd",
++                                                 "spe", "accuracy", "evasion"};
++constexpr std::array<const char*, 7> STAGE_TEXT{"Attack",  "Defense",  "Sp. Atk", "Sp. Def",
++                                                "Speed",   "accuracy", "evasion"};
++
++struct SlotState
++{
++  u32 pokemon = 0;
++  u16 species = 0;
++  int hp = 0;
++  u8 level = 0;
++  u8 status = 0;
++  int pp = 0;
++  std::array<u8, 7> stages{};
++  std::string name;
++};
++
++struct Battle
++{
++  std::array<SlotState, 4> slots;
++  std::map<u32, int> max_hp;  // by battle Pokemon: its HP when first seen
++  std::vector<std::string> log;
++  std::vector<std::string> text;
++  std::array<bool, 4> acted{};
++  std::array<u16, 4> move_this_turn{};
++  int turn = 1;
++  bool turn_over = false;
++  int acting = -1;
++  bool crit_shown = false;
++  bool result_shown = false;
++};
++
++std::optional<Battle> s_battle;
++std::string s_session_stamp;
++int s_battle_count = 0;
++bool s_was_idle = true;
++
++u32 Read32(const Memory::MemoryManager& mem, u32 address)
++{
++  return mem.Read_U32(address & 0x01FFFFFF);
++}
++u16 Read16(const Memory::MemoryManager& mem, u32 address)
++{
++  return mem.Read_U16(address & 0x01FFFFFF);
++}
++u8 Read8(const Memory::MemoryManager& mem, u32 address)
++{
++  return mem.Read_U8(address & 0x01FFFFFF);
++}
++
++bool IsRamPointer(u32 address)
++{
++  return address >= 0x80000000 && address < 0x81800000;
++}
++
++std::optional<int> SlotOf(u32 pointer)
++{
++  for (size_t i = 0; i < SLOTS.size(); ++i)
++  {
++    if (SLOTS[i] == pointer)
++      return static_cast<int>(i);
++  }
++  return std::nullopt;
++}
++
++SlotState ReadSlot(const Memory::MemoryManager& mem, int index)
++{
++  SlotState state;
++  const u32 slot = SLOTS[index];
++  state.pokemon = Read32(mem, slot + SLOT_POKEMON);
++  if (!IsRamPointer(state.pokemon))
++  {
++    state.pokemon = 0;
++    return state;
++  }
++  const u32 mon = state.pokemon + 4;
++  state.species = Read16(mem, mon + MON_SPECIES);
++  state.hp = Read16(mem, mon + MON_HP);
++  state.level = Read8(mem, mon + MON_LEVEL);
++  state.status = Read8(mem, mon + MON_STATUS);
++  for (u32 i = 0; i < 4; ++i)
++    state.pp += Read8(mem, mon + MON_PP + i * 4);
++  for (u32 i = 0; i < state.stages.size(); ++i)
++    state.stages[i] = Read8(mem, slot + SLOT_STAGES + i);
++  for (u32 i = 0; i < 10; ++i)
++  {
++    const u16 c = Read16(mem, mon + MON_NAME + i * 2);
++    if (c == 0)
++      break;
++    state.name.push_back(c < 0x80 ? static_cast<char>(c) : '?');
++  }
++  if (state.species == 0 || state.level == 0)
++    state.pokemon = 0;
++  return state;
++}
++
++std::string SpeciesKey(u16 species)
++{
++  return species < std::size(GBADetectLog::GEN3_SPECIES_IDS) ?
++             std::string(GBADetectLog::GEN3_SPECIES_IDS[species]) :
++             fmt::format("pokemon{}", species);
++}
++
++std::string MoveName(u16 id)
++{
++  return id < std::size(GBADetectLog::GEN3_MOVE_NAMES) && id != 0 ?
++             std::string(GBADetectLog::GEN3_MOVE_NAMES[id]) :
++             fmt::format("Move {}", id);
++}
++
++std::string Who(const Battle& battle, int slot)
++{
++  return fmt::format("{}: {}", SLOT_NAMES[slot], battle.slots[slot].name);
++}
++
++std::string TextWho(const Battle& battle, int slot)
++{
++  return fmt::format("GBA {} {}", slot / 2 + 1, battle.slots[slot].name);
++}
++
++const char* StatusId(u8 status)
++{
++  switch (status)
++  {
++  case 3:
++    return "psn";
++  case 4:
++    return "tox";
++  case 5:
++    return "par";
++  case 6:
++    return "brn";
++  case 7:
++    return "frz";
++  case 8:
++    return "slp";
++  default:
++    return nullptr;
++  }
++}
++
++void AddSwitch(Battle& battle, int slot)
++{
++  const SlotState& state = battle.slots[slot];
++  const int max = battle.max_hp.try_emplace(state.pokemon, state.hp).first->second;
++  battle.log.push_back(fmt::format("|switch|{}|{}, L{}|{}/{}", Who(battle, slot),
++                                   SpeciesKey(state.species), state.level, state.hp, max));
++  battle.text.push_back(fmt::format("{} comes in ({}/{})", TextWho(battle, slot), state.hp, max));
++}
++
++void StartTurnIfPending(Battle& battle)
++{
++  if (!battle.turn_over)
++    return;
++  battle.turn_over = false;
++  ++battle.turn;
++  battle.acted = {};
++  battle.move_this_turn = {};
++  battle.log.push_back("|");
++  battle.log.push_back(fmt::format("|turn|{}", battle.turn));
++  battle.text.push_back(fmt::format("Turn {}", battle.turn));
++}
++
++bool AllLiveSlotsActed(const Battle& battle)
++{
++  for (size_t i = 0; i < battle.slots.size(); ++i)
++  {
++    if (battle.slots[i].pokemon != 0 && battle.slots[i].hp > 0 && !battle.acted[i])
++      return false;
++  }
++  return true;
++}
++
++void Step(const Memory::MemoryManager& mem, Battle& battle)
++{
++  const u32 attacker = Read32(mem, FLOOR_ATTACKER);
++  const u32 target = Read32(mem, FLOOR_TARGET);
++
++  for (int i = 0; i < 4; ++i)
++  {
++    const SlotState now = ReadSlot(mem, i);
++    SlotState& was = battle.slots[i];
++    if (now.pokemon == 0)
++      continue;
++
++    if (now.pokemon != was.pokemon)
++    {
++      StartTurnIfPending(battle);
++      was = now;
++      AddSwitch(battle, i);
++      continue;
++    }
++
++    // Move used: its PP went down (flinched, asleep or fainted Pokemon spend none).
++    if (now.pp < was.pp && attacker == SLOTS[i])
++    {
++      if (battle.acted[i])
++        battle.turn_over = true;
++      StartTurnIfPending(battle);
++      const u16 move = Read16(mem, SLOTS[i] + SLOT_MOVE + MOVE_ID);
++      const std::optional<int> aim = SlotOf(target);
++      battle.log.push_back("|");
++      battle.log.push_back(fmt::format("|move|{}|{}|{}", Who(battle, i), MoveName(move),
++                                       aim ? Who(battle, *aim) : std::string{}));
++      battle.text.push_back(fmt::format("  {}: {}{}", TextWho(battle, i), MoveName(move),
++                                        aim ? " on " + TextWho(battle, *aim) : std::string{}));
++      battle.acted[i] = true;
++      battle.move_this_turn[i] = move;
++      battle.acting = i;
++      battle.crit_shown = false;
++      battle.result_shown = false;
++    }
++    was.pp = now.pp;
++
++    if (now.hp != was.hp)
++    {
++      const int max = battle.max_hp.try_emplace(now.pokemon, was.hp).first->second;
++      const std::string who = Who(battle, i);
++      if (now.hp < was.hp)
++      {
++        if (battle.acting >= 0 && !battle.crit_shown && target == SLOTS[i] &&
++            Read8(mem, SLOTS[battle.acting] + SLOT_MOVE + MOVE_CRIT) == 2)
++        {
++          battle.log.push_back(fmt::format("|-crit|{}", who));
++          battle.text.push_back("    A critical hit!");
++          battle.crit_shown = true;
++        }
++        battle.log.push_back(now.hp == 0 ? fmt::format("|-damage|{}|0 fnt", who) :
++                                           fmt::format("|-damage|{}|{}/{}", who, now.hp, max));
++      }
++      else
++      {
++        battle.log.push_back(fmt::format("|-heal|{}|{}/{}", who, now.hp, max));
++      }
++      battle.text.push_back(fmt::format("    {} {} -> {}", TextWho(battle, i), was.hp, now.hp));
++      if (now.hp == 0)
++      {
++        battle.log.push_back(fmt::format("|faint|{}", who));
++        battle.text.push_back(fmt::format("    {} fainted", TextWho(battle, i)));
++      }
++      was.hp = now.hp;
++    }
++
++    if (now.status != was.status)
++    {
++      const std::string who = Who(battle, i);
++      if (const char* id = StatusId(now.status))
++      {
++        battle.log.push_back(fmt::format("|-status|{}|{}", who, id));
++        battle.text.push_back(fmt::format("    {} is now {}", TextWho(battle, i), id));
++      }
++      else if (const char* old_id = StatusId(was.status))
++      {
++        battle.log.push_back(fmt::format("|-curestatus|{}|{}", who, old_id));
++        battle.text.push_back(fmt::format("    {} is cured of {}", TextWho(battle, i), old_id));
++      }
++      was.status = now.status;
++    }
++
++    for (size_t s = 0; s < now.stages.size(); ++s)
++    {
++      const int change = now.stages[s] - was.stages[s];
++      if (change == 0)
++        continue;
++      battle.log.push_back(fmt::format("|{}|{}|{}|{}", change > 0 ? "-boost" : "-unboost",
++                                       Who(battle, i), STAGE_NAMES[s], std::abs(change)));
++      battle.text.push_back(fmt::format("    {} {} {:+}", TextWho(battle, i), STAGE_TEXT[s],
++                                        change));
++    }
++    was.stages = now.stages;
++  }
++
++  // Missed or blocked. A Protect or Detect by the target this turn says which.
++  if (battle.acting >= 0 && !battle.result_shown &&
++      Read8(mem, SLOTS[battle.acting] + SLOT_MOVE + MOVE_RESULT) == RESULT_MISSED)
++  {
++    battle.result_shown = true;
++    const std::optional<int> aim = SlotOf(target);
++    if (aim && *aim != battle.acting)
++    {
++      const u16 move = battle.move_this_turn[*aim];
++      if (move == 182 || move == 197)
++      {
++        battle.log.push_back(fmt::format("|-activate|{}|Protect", Who(battle, *aim)));
++        battle.text.push_back(fmt::format("    {} protected itself", TextWho(battle, *aim)));
++      }
++      else
++      {
++        battle.log.push_back(fmt::format("|-miss|{}|{}", Who(battle, battle.acting),
++                                         Who(battle, *aim)));
++        battle.text.push_back("    It missed or failed");
++      }
++    }
++  }
++
++  if (AllLiveSlotsActed(battle))
++    battle.turn_over = true;
++}
++
++std::string Stamp()
++{
++  const std::time_t now = std::time(nullptr);
++  std::array<char, 32> buffer{};
++  std::strftime(buffer.data(), buffer.size(), "%Y%m%d_%H%M%S", std::localtime(&now));
++  return buffer.data();
++}
++
++void WriteBattle(Battle& battle)
++{
++  if (battle.text.size() <= 1)
++    return;
++
++  std::array<bool, 2> alive{};
++  for (size_t i = 0; i < battle.slots.size(); ++i)
++    alive[i / 2] = alive[i / 2] || (battle.slots[i].pokemon != 0 && battle.slots[i].hp > 0);
++  // Only the Pokemon on the field are known here, so a side with one on the bench can look beaten.
++  if (alive[0] != alive[1])
++  {
++    battle.log.push_back("|");
++    battle.log.push_back(fmt::format("|win|GBA {}", alive[0] ? 1 : 2));
++    battle.text.push_back(fmt::format("GBA {} wins.", alive[0] ? 1 : 2));
++  }
++  else
++  {
++    battle.text.push_back("Battle over.");
++  }
++
++  std::string log = "|gametype|doubles\n|player|p1|GBA 1||\n|player|p2|GBA 2||\n|gen|3\n"
++                    "|tier|[Gen 3] OrreLink\n|start\n";
++  for (const std::string& line : battle.log)
++    log += line + '\n';
++  std::string text = "OrreLink battle record\n\n";
++  for (const std::string& line : battle.text)
++    text += line + '\n';
++
++  if (s_session_stamp.empty())
++    s_session_stamp = Stamp();
++  ++s_battle_count;
++  const std::string base = fmt::format("{}Battle Records/battle_{}_{}",
++                                       File::GetUserPath(D_GBAUSER_IDX), s_session_stamp,
++                                       s_battle_count);
++  File::CreateFullPath(base);
++  std::ofstream(base + ".txt", std::ios::trunc) << text;
++  std::ofstream(base + ".html", std::ios::trunc)
++      << "<!DOCTYPE html>\n<meta charset=\"utf-8\" />\n<!-- version 1 -->\n"
++         "<title>OrreLink replay</title>\n"
++         "<div class=\"wrapper replay-wrapper\" style=\"max-width:1180px;margin:0 auto\">\n"
++         "<input type=\"hidden\" name=\"replayid\" value=\"orrelink\" />\n"
++         "<div class=\"battle\"></div><div class=\"battle-log\"></div>"
++         "<div class=\"replay-controls\"></div><div class=\"replay-controls-2\"></div>\n"
++         "<script type=\"text/plain\" class=\"battle-log-data\">\n"
++      << log
++      << "</script>\n</div>\n"
++         "<script src=\"https://play.pokemonshowdown.com/js/replay-embed.js\"></script>\n";
++}
++}  // namespace
++
++void OnField(Core::System& system)
++{
++  if (SConfig::GetInstance().GetGameID() != "GXXE01")
++    return;
++  Memory::MemoryManager& mem = system.GetMemory();
++  if (mem.GetRAM() == nullptr)
++    return;
++
++  const u32 attacker = Read32(mem, FLOOR_ATTACKER);
++  const u32 switching = Read32(mem, FLOOR_SWITCH);
++  const bool active = SlotOf(attacker).has_value() || SlotOf(switching).has_value();
++
++  if (!s_battle)
++  {
++    // XD clears these at each battle's start, so a stale value from the last one cannot start one.
++    if (active && s_was_idle)
++    {
++      s_battle.emplace();
++      for (int i = 0; i < 4; ++i)
++      {
++        s_battle->slots[i] = ReadSlot(mem, i);
++        if (s_battle->slots[i].pokemon != 0)
++          AddSwitch(*s_battle, i);
++      }
++      s_battle->log.push_back("|turn|1");
++      s_battle->text.push_back("Turn 1");
++    }
++    s_was_idle = !active;
++    return;
++  }
++
++  if (!active)
++  {
++    WriteBattle(*s_battle);
++    s_battle.reset();
++    s_was_idle = true;
++    return;
++  }
++  Step(mem, *s_battle);
++}
++
++void Finish()
++{
++  if (s_battle)
++    WriteBattle(*s_battle);
++  s_battle.reset();
++  s_was_idle = true;
++  s_session_stamp.clear();
++  s_battle_count = 0;
++}
++}  // namespace XDBattleRecorder
+diff --git a/Source/Core/Core/HW/XDBattleRecorder.h b/Source/Core/Core/HW/XDBattleRecorder.h
+new file mode 100644
+index 0000000..25ed2af
+--- /dev/null
++++ b/Source/Core/Core/HW/XDBattleRecorder.h
+@@ -0,0 +1,20 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++namespace Core
++{
++class System;
++}
++
++// Pokemon XD battle recorder. Once per field it reads XD's battle state and notes what changed:
++// moves, HP, faints, switches, status and stat stages. Each finished battle becomes
++// GBA/Battle Records/battle_<stamp>_<n>.html (a Showdown-format replay) and .txt (a readable log).
++// It only reads emulated memory, so it cannot affect netplay.
++namespace XDBattleRecorder
++{
++void OnField(Core::System& system);
++// The game is stopping: a battle still open is written as far as it got.
++void Finish();
++}  // namespace XDBattleRecorder
+diff --git a/Source/Core/DolphinLib.props b/Source/Core/DolphinLib.props
+index bba9a81..1a404db 100644
+--- a/Source/Core/DolphinLib.props
++++ b/Source/Core/DolphinLib.props
+@@ -303,6 +303,7 @@
+     <ClInclude Include="Core\HW\EXI\EXI.h" />
+     <ClInclude Include="Core\HW\GBACore.h" />
+     <ClInclude Include="Core\HW\GBADetectLog.h" />
++    <ClInclude Include="Core\HW\XDBattleRecorder.h" />
+     <ClInclude Include="Core\HW\GBAMoveNames.h" />
+     <ClInclude Include="Core\HW\GBAPad.h" />
+     <ClInclude Include="Core\HW\GBAPadEmu.h" />
+@@ -1037,6 +1038,7 @@
+     <ClCompile Include="Core\HW\EXI\EXI.cpp" />
+     <ClCompile Include="Core\HW\GBACore.cpp" />
+     <ClCompile Include="Core\HW\GBADetectLog.cpp" />
++    <ClCompile Include="Core\HW\XDBattleRecorder.cpp" />
+     <ClCompile Include="Core\HW\GBAPad.cpp" />
+     <ClCompile Include="Core\HW\GBAPadEmu.cpp" />
+     <ClCompile Include="Core\HW\GCKeyboard.cpp" />
+diff --git a/Source/Core/UICommon/XDNetplay/Version.h b/Source/Core/UICommon/XDNetplay/Version.h
+index 6727d3a..aaaa9c7 100644
+--- a/Source/Core/UICommon/XDNetplay/Version.h
++++ b/Source/Core/UICommon/XDNetplay/Version.h
+@@ -11,5 +11,5 @@ namespace XDNetplay
+ // fork's release, so it cannot answer "which XD Netplay am I?" -- this constant is the only thing
+ // that can. It MUST be bumped in the same patch that a release is tagged from: ship a tag ahead of
+ // this string and every user of that release is told they are out of date forever.
+-constexpr char VERSION[] = "1.8.0";
++constexpr char VERSION[] = "1.8.1";
+ }  // namespace XDNetplay
+-- 
+2.39.5 (Apple Git-154)
+
