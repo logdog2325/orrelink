@@ -272,6 +272,20 @@ jobs:
           # Newer Homebrew dylibs (brotli) name their dependencies through @rpath, which CMake's
           # fixup_bundle cannot resolve. Give them absolute names again.
           lib="$(brew --prefix)/lib"
+          # Homebrew's freetype needs /usr/lib/libhvf.dylib, missing from earlier macOS 15 releases,
+          # so the app would not start there. Build the same version without it.
+          ver="$(brew list --versions freetype | awk '{print $2}' | cut -d_ -f1)"
+          curl -fsSL "https://download.savannah.gnu.org/releases/freetype/freetype-$ver.tar.xz" | tar xJ -C "$RUNNER_TEMP"
+          (cd "$RUNNER_TEMP/freetype-$ver" && \
+            CFLAGS="-O2 -mmacosx-version-min=11.0" LDFLAGS="-mmacosx-version-min=11.0" \
+            ./configure --prefix="$RUNNER_TEMP/ft" --with-harfbuzz=no --with-brotli=no --with-bzip2=no --with-png=no >/dev/null && \
+            make -j4 >/dev/null && make install >/dev/null)
+          real="$(realpath "$lib/libfreetype.6.dylib")"
+          chmod u+w "$real"
+          cp "$RUNNER_TEMP/ft/lib/libfreetype.6.dylib" "$real"
+          install_name_tool -id "$lib/libfreetype.6.dylib" "$real"
+          codesign --force --sign - "$real"
+          if otool -L "$real" | grep -q libhvf; then echo "::error::freetype still needs libhvf"; exit 1; fi
           for f in "$lib"/*.dylib; do
             real="$(realpath "$f")"
             [ -w "$real" ] || chmod u+w "$real"
