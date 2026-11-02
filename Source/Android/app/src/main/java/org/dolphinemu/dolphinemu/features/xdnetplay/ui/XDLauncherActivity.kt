@@ -411,8 +411,9 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
             } ?: emptyArray()).sortedByDescending { it.name }.take(1) +
             // The newest battle transcript.
             (java.io.File(dir, "Battle Records").listFiles { f ->
-                f.isFile && f.name.startsWith("battle_") && f.name.endsWith(".txt")
-            } ?: emptyArray()).sortedByDescending { it.name }.take(1)
+                f.isFile && f.name.startsWith("battle_") &&
+                    (f.name.endsWith(".txt") || f.name.endsWith(".html"))
+            } ?: emptyArray()).sortedByDescending { it.name }.take(2)
         if (logs.isEmpty()) {
             android.widget.Toast.makeText(
                 this, "No detect log yet — boot XD once, then share.",
