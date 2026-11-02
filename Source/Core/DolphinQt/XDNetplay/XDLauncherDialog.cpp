@@ -821,7 +821,8 @@ void XDLauncherDialog::OnShareLog()
   const QDir records(logs.filePath(QStringLiteral("Battle Records")));
   for (const auto& [folder, pattern] :
        {std::pair{&logs, QStringLiteral("linktrace_*.txt")},
-        std::pair{&records, QStringLiteral("battle_*.txt")}})
+        std::pair{&records, QStringLiteral("battle_*.txt")},
+        std::pair{&records, QStringLiteral("battle_*.html")}})
   {
     const QStringList extras = folder->entryList({pattern}, QDir::Files, QDir::Time);
     if (extras.isEmpty())
