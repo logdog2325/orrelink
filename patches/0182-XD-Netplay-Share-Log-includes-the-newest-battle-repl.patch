@@ -1,0 +1,43 @@
+From 1043170d87fa038f5a1aa26cd2fca8126e9a9648 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 16:16:51 -0800
+Subject: [PATCH] XD Netplay: Share Log includes the newest battle replay
+
+---
+ .../dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt   | 5 +++--
+ Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp         | 3 ++-
+ 2 files changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+index d5cd098..b185cd5 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+@@ -411,8 +411,9 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+             } ?: emptyArray()).sortedByDescending { it.name }.take(1) +
+             // The newest battle transcript.
+             (java.io.File(dir, "Battle Records").listFiles { f ->
+-                f.isFile && f.name.startsWith("battle_") && f.name.endsWith(".txt")
+-            } ?: emptyArray()).sortedByDescending { it.name }.take(1)
++                f.isFile && f.name.startsWith("battle_") &&
++                    (f.name.endsWith(".txt") || f.name.endsWith(".html"))
++            } ?: emptyArray()).sortedByDescending { it.name }.take(2)
+         if (logs.isEmpty()) {
+             android.widget.Toast.makeText(
+                 this, "No detect log yet — boot XD once, then share.",
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 9348ec4..ad0720f 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -821,7 +821,8 @@ void XDLauncherDialog::OnShareLog()
+   const QDir records(logs.filePath(QStringLiteral("Battle Records")));
+   for (const auto& [folder, pattern] :
+        {std::pair{&logs, QStringLiteral("linktrace_*.txt")},
+-        std::pair{&records, QStringLiteral("battle_*.txt")}})
++        std::pair{&records, QStringLiteral("battle_*.txt")},
++        std::pair{&records, QStringLiteral("battle_*.html")}})
+   {
+     const QStringList extras = folder->entryList({pattern}, QDir::Files, QDir::Time);
+     if (extras.isEmpty())
+-- 
+2.39.5 (Apple Git-154)
+
