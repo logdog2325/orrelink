@@ -35,6 +35,10 @@ constexpr u32 FLOOR_SWITCH = FLOOR + 0xDE00;
 // The four battle positions: GBA 1's two, then GBA 2's. The second of each is unused in singles.
 constexpr std::array<u32, 4> SLOTS{0x804A3324, 0x804A3BB8, 0x804AA214, 0x804AAAA8};
 constexpr std::array<const char*, 4> SLOT_NAMES{"p1a", "p1b", "p2a", "p2b"};
+// Trainer names (UTF-16, from each player's save): by side, then the side's second trainer in Multi.
+constexpr u32 TRAINER_NAME = 0x804A17AC;
+constexpr u32 TRAINER_NAME_SIDE_STEP = 0x6EF0;
+constexpr u32 TRAINER_NAME_MULTI_STEP = 0x3744;
 constexpr u32 SLOT_POKEMON = 4;      // -> battle Pokemon; its Pokemon data starts 4 bytes in
 constexpr u32 SLOT_MOVE = 0x648;     // the move in progress
 constexpr u32 SLOT_STAGES = 0x7B0;   // atk, def, spa, spd, spe, accuracy, evasion; 6 is neutral
@@ -69,6 +73,7 @@ struct SlotState
 struct Battle
 {
   std::array<SlotState, 4> slots;
+  std::array<std::string, 2> players;
   std::map<u32, int> max_hp;  // by battle Pokemon: its HP when first seen
   std::vector<std::string> log;
   std::vector<std::string> text;
@@ -111,6 +116,31 @@ std::optional<int> SlotOf(u32 pointer)
   return std::nullopt;
 }
 
+std::string ReadText(const Memory::MemoryManager& mem, u32 address)
+{
+  std::string text;
+  for (u32 i = 0; i < 10; ++i)
+  {
+    const u16 c = Read16(mem, address + i * 2);
+    if (c == 0)
+      break;
+    // These go into pipe-separated log lines inside a web page.
+    const bool plain = c >= 0x20 && c < 0x7F && c != '|' && c != '<' && c != '>' && c != '&';
+    text.push_back(plain ? static_cast<char>(c) : '?');
+  }
+  return text;
+}
+
+std::string ReadPlayer(const Memory::MemoryManager& mem, int side)
+{
+  const u32 first = TRAINER_NAME + side * TRAINER_NAME_SIDE_STEP;
+  std::string name = ReadText(mem, first);
+  const std::string second = ReadText(mem, first + TRAINER_NAME_MULTI_STEP);
+  if (!second.empty())
+    name += name.empty() ? second : " & " + second;
+  return name.empty() ? fmt::format("GBA {}", side + 1) : name;
+}
+
 SlotState ReadSlot(const Memory::MemoryManager& mem, int index)
 {
   SlotState state;
@@ -130,13 +160,7 @@ SlotState ReadSlot(const Memory::MemoryManager& mem, int index)
     state.pp += Read8(mem, mon + MON_PP + i * 4);
   for (u32 i = 0; i < state.stages.size(); ++i)
     state.stages[i] = Read8(mem, slot + SLOT_STAGES + i);
-  for (u32 i = 0; i < 10; ++i)
-  {
-    const u16 c = Read16(mem, mon + MON_NAME + i * 2);
-    if (c == 0)
-      break;
-    state.name.push_back(c < 0x80 ? static_cast<char>(c) : '?');
-  }
+  state.name = ReadText(mem, mon + MON_NAME);
   if (state.species == 0 || state.level == 0)
     state.pokemon = 0;
   return state;
@@ -163,7 +187,7 @@ std::string Who(const Battle& battle, int slot)
 
 std::string TextWho(const Battle& battle, int slot)
 {
-  return fmt::format("GBA {} {}", slot / 2 + 1, battle.slots[slot].name);
+  return fmt::format("{}'s {}", battle.players[slot / 2], battle.slots[slot].name);
 }
 
 const char* StatusId(u8 status)
@@ -344,19 +368,22 @@ void WriteBattle(Battle& battle)
   if (alive[0] != alive[1])
   {
     battle.log.push_back("|");
-    battle.log.push_back(fmt::format("|win|GBA {}", alive[0] ? 1 : 2));
-    battle.text.push_back(fmt::format("GBA {} wins.", alive[0] ? 1 : 2));
+    const std::string& winner = battle.players[alive[0] ? 0 : 1];
+    battle.log.push_back(fmt::format("|win|{}", winner));
+    battle.text.push_back(fmt::format("{} wins.", winner));
   }
   else
   {
     battle.text.push_back("Battle over.");
   }
 
-  std::string log = "|gametype|doubles\n|player|p1|GBA 1||\n|player|p2|GBA 2||\n|gen|3\n"
-                    "|tier|[Gen 3] OrreLink\n|start\n";
+  const std::string title = fmt::format("{} vs. {}", battle.players[0], battle.players[1]);
+  std::string log = fmt::format("|gametype|doubles\n|player|p1|{}||\n|player|p2|{}||\n|gen|3\n"
+                                "|tier|[Gen 3] OrreLink\n|start\n",
+                                battle.players[0], battle.players[1]);
   for (const std::string& line : battle.log)
     log += line + '\n';
-  std::string text = "OrreLink battle record\n\n";
+  std::string text = fmt::format("OrreLink battle record: {}\n\n", title);
   for (const std::string& line : battle.text)
     text += line + '\n';
 
@@ -370,7 +397,9 @@ void WriteBattle(Battle& battle)
   std::ofstream(base + ".txt", std::ios::trunc) << text;
   std::ofstream(base + ".html", std::ios::trunc)
       << "<!DOCTYPE html>\n<meta charset=\"utf-8\" />\n<!-- version 1 -->\n"
-         "<title>OrreLink replay</title>\n"
+         "<title>OrreLink replay: "
+      << title
+      << "</title>\n"
          "<div class=\"wrapper replay-wrapper\" style=\"max-width:1180px;margin:0 auto\">\n"
          "<input type=\"hidden\" name=\"replayid\" value=\"orrelink\" />\n"
          "<div class=\"battle\"></div><div class=\"battle-log\"></div>"
@@ -405,6 +434,7 @@ void OnField(Core::System& system)
     if (!SlotOf(Read32(mem, FLOOR_ATTACKER)) && !SlotOf(Read32(mem, FLOOR_SWITCH)))
       return;
     s_battle.emplace();
+    s_battle->players = {ReadPlayer(mem, 0), ReadPlayer(mem, 1)};
     for (int i = 0; i < 4; ++i)
     {
       s_battle->slots[i] = ReadSlot(mem, i);
