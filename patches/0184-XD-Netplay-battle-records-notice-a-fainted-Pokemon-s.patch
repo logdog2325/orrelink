@@ -1,0 +1,186 @@
+From 511b38dfd7a9a7980d513e9cee338d60215efa47 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 11:03:54 -0800
+Subject: [PATCH 184/185] XD Netplay: battle records notice a fainted Pokemon's
+ replacement; Share Log and Battle records send the whole session
+
+---
+ .../xdnetplay/ui/XDLauncherActivity.kt        | 50 +++++++++----------
+ Source/Core/Core/HW/XDBattleRecorder.cpp      | 10 ++--
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 33 ++++++++----
+ 3 files changed, 52 insertions(+), 41 deletions(-)
+
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+index b185cd5..4be9e54 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherActivity.kt
+@@ -410,10 +410,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+                 f.isFile && f.name.startsWith("linktrace_") && f.name.endsWith(".txt")
+             } ?: emptyArray()).sortedByDescending { it.name }.take(1) +
+             // The newest battle transcript.
+-            (java.io.File(dir, "Battle Records").listFiles { f ->
+-                f.isFile && f.name.startsWith("battle_") &&
+-                    (f.name.endsWith(".txt") || f.name.endsWith(".html"))
+-            } ?: emptyArray()).sortedByDescending { it.name }.take(2)
++            newestBattleSession(dir)
+         if (logs.isEmpty()) {
+             android.widget.Toast.makeText(
+                 this, "No detect log yet — boot XD once, then share.",
+@@ -432,35 +429,36 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
+         startActivity(android.content.Intent.createChooser(send, "Share detect logs"))
+     }
+ 
+-    /** Open the newest battle transcript (GBA/Battle Records/battle_*.txt) in a text viewer, or
+-     * share it. App storage has no folder a file manager can open, so this is the Android side
+-     * of the desktop's Battle Records folder button. */
++    /** Every battle record of the newest session (battle_<date>_<time>_<n>), so a set comes whole. */
++    private fun newestBattleSession(dir: java.io.File): List<java.io.File> {
++        val all = (java.io.File(dir, "Battle Records").listFiles { f ->
++            f.isFile && f.name.startsWith("battle_") &&
++                (f.name.endsWith(".txt") || f.name.endsWith(".html"))
++        } ?: emptyArray()).toList()
++        val session = all.maxOfOrNull { it.name.split('_').take(3).joinToString("_") }
++            ?: return emptyList()
++        return all.filter { it.name.split('_').take(3).joinToString("_") == session }
++            .sortedBy { it.name }
++    }
++
++    /** Share every battle record of the newest session (a set's replays and logs together). */
+     private fun openLastBattle() {
+-        val dir = java.io.File(getExternalFilesDir(null), "GBA/Battle Records")
+-        val newest = (dir.listFiles { f ->
+-            f.isFile && f.name.startsWith("battle_") && f.name.endsWith(".txt")
+-        } ?: emptyArray()).maxByOrNull { it.name }
+-        if (newest == null) {
++        val files = newestBattleSession(java.io.File(getExternalFilesDir(null), "GBA"))
++        if (files.isEmpty()) {
+             android.widget.Toast.makeText(
+-                this, "No battle transcript yet. One is written when a game stops.",
++                this, "No battle record yet. One is written after each battle.",
+                 android.widget.Toast.LENGTH_LONG).show()
+             return
+         }
+-        val uri = androidx.core.content.FileProvider.getUriForFile(
+-            this, "$packageName.xdshare", newest)
+-        val view = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+-            setDataAndType(uri, "text/plain")
+-            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+-        }
+-        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+-            type = "text/plain"
+-            putExtra(android.content.Intent.EXTRA_STREAM, uri)
++        val uris = ArrayList<android.os.Parcelable>(files.map {
++            androidx.core.content.FileProvider.getUriForFile(this, "$packageName.xdshare", it)
++        })
++        val send = android.content.Intent(android.content.Intent.ACTION_SEND_MULTIPLE).apply {
++            type = "*/*"
++            putParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, uris)
+             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+         }
+-        // Viewers and share targets (Discord, Drive) in one chooser.
+-        startActivity(android.content.Intent.createChooser(send, "Battle records").apply {
+-            putExtra(android.content.Intent.EXTRA_INITIAL_INTENTS, arrayOf(view))
+-        })
++        startActivity(android.content.Intent.createChooser(send, "Battle records"))
+     }
+ 
+     /** Boot Pokemon XD directly by game ID, bypassing the game picker (which
+diff --git a/Source/Core/Core/HW/XDBattleRecorder.cpp b/Source/Core/Core/HW/XDBattleRecorder.cpp
+index 6f2cdef..3cf668d 100644
+--- a/Source/Core/Core/HW/XDBattleRecorder.cpp
++++ b/Source/Core/Core/HW/XDBattleRecorder.cpp
+@@ -10,6 +10,7 @@
+ #include <map>
+ #include <optional>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ #include <fmt/format.h>
+@@ -74,7 +75,7 @@ struct Battle
+ {
+   std::array<SlotState, 4> slots;
+   std::array<std::string, 2> players;
+-  std::map<u32, int> max_hp;  // by battle Pokemon: its HP when first seen
++  std::map<std::pair<u32, u16>, int> max_hp;  // by battle Pokemon and species: HP when first seen
+   std::vector<std::string> log;
+   std::vector<std::string> text;
+   std::array<u16, 4> move_this_turn{};
+@@ -214,7 +215,7 @@ const char* StatusId(u8 status)
+ void AddSwitch(Battle& battle, int slot)
+ {
+   const SlotState& state = battle.slots[slot];
+-  const int max = battle.max_hp.try_emplace(state.pokemon, state.hp).first->second;
++  const int max = battle.max_hp.try_emplace({state.pokemon, state.species}, state.hp).first->second;
+   battle.log.push_back(fmt::format("|switch|{}|{}, L{}|{}/{}", Who(battle, slot),
+                                    SpeciesKey(state.species), state.level, state.hp, max));
+   battle.text.push_back(fmt::format("{} comes in ({}/{})", TextWho(battle, slot), state.hp, max));
+@@ -242,7 +243,8 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
+     if (now.pokemon == 0)
+       continue;
+ 
+-    if (now.pokemon != was.pokemon)
++    // A switch, or a fainted Pokemon's replacement: XD may reuse the slot's battle Pokemon.
++    if (now.pokemon != was.pokemon || now.species != was.species || now.name != was.name)
+     {
+       was = now;
+       AddSwitch(battle, i);
+@@ -268,7 +270,7 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
+ 
+     if (now.hp != was.hp)
+     {
+-      const int max = battle.max_hp.try_emplace(now.pokemon, was.hp).first->second;
++      const int max = battle.max_hp.try_emplace({now.pokemon, now.species}, was.hp).first->second;
+       const std::string who = Who(battle, i);
+       if (now.hp < was.hp)
+       {
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index ad0720f..71b671d 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -819,20 +819,31 @@ void XDLauncherDialog::OnShareLog()
+   // The newest link recording (Record link traffic) and battle transcript, saved beside the log
+   // under their own names.
+   const QDir records(logs.filePath(QStringLiteral("Battle Records")));
+-  for (const auto& [folder, pattern] :
+-       {std::pair{&logs, QStringLiteral("linktrace_*.txt")},
+-        std::pair{&records, QStringLiteral("battle_*.txt")},
+-        std::pair{&records, QStringLiteral("battle_*.html")}})
++  QStringList extras;
++  const QStringList traces =
++      logs.entryList({QStringLiteral("linktrace_*.txt")}, QDir::Files, QDir::Time);
++  if (!traces.isEmpty())
++    extras.push_back(logs.filePath(traces.first()));
++  // Every battle of the newest session (battle_<session>_<n>), so a whole set comes along.
++  const QStringList battles =
++      records.entryList({QStringLiteral("battle_*")}, QDir::Files, QDir::Time);
++  if (!battles.isEmpty())
+   {
+-    const QStringList extras = folder->entryList({pattern}, QDir::Files, QDir::Time);
+-    if (extras.isEmpty())
+-      continue;
+-    const QString extra_target = QFileInfo(target).absoluteDir().filePath(extras.first());
+-    if (QFileInfo(extra_target).canonicalFilePath() !=
+-        QFileInfo(folder->filePath(extras.first())).canonicalFilePath())
++    const QString session = battles.first().section(QLatin1Char('_'), 0, 2);
++    for (const QString& name : battles)
++    {
++      if (name.section(QLatin1Char('_'), 0, 2) == session)
++        extras.push_back(records.filePath(name));
++    }
++  }
++  for (const QString& extra : extras)
++  {
++    const QString extra_target =
++        QFileInfo(target).absoluteDir().filePath(QFileInfo(extra).fileName());
++    if (QFileInfo(extra_target).canonicalFilePath() != QFileInfo(extra).canonicalFilePath())
+     {
+       QFile::remove(extra_target);
+-      QFile::copy(folder->filePath(extras.first()), extra_target);
++      QFile::copy(extra, extra_target);
+     }
+   }
+   QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(target).absolutePath()));
+-- 
+2.39.5 (Apple Git-154)
+
