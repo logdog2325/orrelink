@@ -10,6 +10,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <fmt/format.h>
@@ -74,7 +75,7 @@ struct Battle
 {
   std::array<SlotState, 4> slots;
   std::array<std::string, 2> players;
-  std::map<u32, int> max_hp;  // by battle Pokemon: its HP when first seen
+  std::map<std::pair<u32, u16>, int> max_hp;  // by battle Pokemon and species: HP when first seen
   std::vector<std::string> log;
   std::vector<std::string> text;
   std::array<u16, 4> move_this_turn{};
@@ -214,7 +215,7 @@ const char* StatusId(u8 status)
 void AddSwitch(Battle& battle, int slot)
 {
   const SlotState& state = battle.slots[slot];
-  const int max = battle.max_hp.try_emplace(state.pokemon, state.hp).first->second;
+  const int max = battle.max_hp.try_emplace({state.pokemon, state.species}, state.hp).first->second;
   battle.log.push_back(fmt::format("|switch|{}|{}, L{}|{}/{}", Who(battle, slot),
                                    SpeciesKey(state.species), state.level, state.hp, max));
   battle.text.push_back(fmt::format("{} comes in ({}/{})", TextWho(battle, slot), state.hp, max));
@@ -242,7 +243,8 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
     if (now.pokemon == 0)
       continue;
 
-    if (now.pokemon != was.pokemon)
+    // A switch, or a fainted Pokemon's replacement: XD may reuse the slot's battle Pokemon.
+    if (now.pokemon != was.pokemon || now.species != was.species || now.name != was.name)
     {
       was = now;
       AddSwitch(battle, i);
@@ -268,7 +270,7 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
 
     if (now.hp != was.hp)
     {
-      const int max = battle.max_hp.try_emplace(now.pokemon, was.hp).first->second;
+      const int max = battle.max_hp.try_emplace({now.pokemon, now.species}, was.hp).first->second;
       const std::string who = Who(battle, i);
       if (now.hp < was.hp)
       {

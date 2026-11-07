@@ -410,10 +410,7 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
                 f.isFile && f.name.startsWith("linktrace_") && f.name.endsWith(".txt")
             } ?: emptyArray()).sortedByDescending { it.name }.take(1) +
             // The newest battle transcript.
-            (java.io.File(dir, "Battle Records").listFiles { f ->
-                f.isFile && f.name.startsWith("battle_") &&
-                    (f.name.endsWith(".txt") || f.name.endsWith(".html"))
-            } ?: emptyArray()).sortedByDescending { it.name }.take(2)
+            newestBattleSession(dir)
         if (logs.isEmpty()) {
             android.widget.Toast.makeText(
                 this, "No detect log yet — boot XD once, then share.",
@@ -432,35 +429,36 @@ class XDLauncherActivity : AppCompatActivity(), ThemeProvider {
         startActivity(android.content.Intent.createChooser(send, "Share detect logs"))
     }
 
-    /** Open the newest battle transcript (GBA/Battle Records/battle_*.txt) in a text viewer, or
-     * share it. App storage has no folder a file manager can open, so this is the Android side
-     * of the desktop's Battle Records folder button. */
+    /** Every battle record of the newest session (battle_<date>_<time>_<n>), so a set comes whole. */
+    private fun newestBattleSession(dir: java.io.File): List<java.io.File> {
+        val all = (java.io.File(dir, "Battle Records").listFiles { f ->
+            f.isFile && f.name.startsWith("battle_") &&
+                (f.name.endsWith(".txt") || f.name.endsWith(".html"))
+        } ?: emptyArray()).toList()
+        val session = all.maxOfOrNull { it.name.split('_').take(3).joinToString("_") }
+            ?: return emptyList()
+        return all.filter { it.name.split('_').take(3).joinToString("_") == session }
+            .sortedBy { it.name }
+    }
+
+    /** Share every battle record of the newest session (a set's replays and logs together). */
     private fun openLastBattle() {
-        val dir = java.io.File(getExternalFilesDir(null), "GBA/Battle Records")
-        val newest = (dir.listFiles { f ->
-            f.isFile && f.name.startsWith("battle_") && f.name.endsWith(".txt")
-        } ?: emptyArray()).maxByOrNull { it.name }
-        if (newest == null) {
+        val files = newestBattleSession(java.io.File(getExternalFilesDir(null), "GBA"))
+        if (files.isEmpty()) {
             android.widget.Toast.makeText(
-                this, "No battle transcript yet. One is written when a game stops.",
+                this, "No battle record yet. One is written after each battle.",
                 android.widget.Toast.LENGTH_LONG).show()
             return
         }
-        val uri = androidx.core.content.FileProvider.getUriForFile(
-            this, "$packageName.xdshare", newest)
-        val view = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "text/plain")
-            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(android.content.Intent.EXTRA_STREAM, uri)
-            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        // Viewers and share targets (Discord, Drive) in one chooser.
-        startActivity(android.content.Intent.createChooser(send, "Battle records").apply {
-            putExtra(android.content.Intent.EXTRA_INITIAL_INTENTS, arrayOf(view))
+        val uris = ArrayList<android.os.Parcelable>(files.map {
+            androidx.core.content.FileProvider.getUriForFile(this, "$packageName.xdshare", it)
         })
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND_MULTIPLE).apply {
+            type = "*/*"
+            putParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, uris)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(android.content.Intent.createChooser(send, "Battle records"))
     }
 
     /** Boot Pokemon XD directly by game ID, bypassing the game picker (which

@@ -819,20 +819,31 @@ void XDLauncherDialog::OnShareLog()
   // The newest link recording (Record link traffic) and battle transcript, saved beside the log
   // under their own names.
   const QDir records(logs.filePath(QStringLiteral("Battle Records")));
-  for (const auto& [folder, pattern] :
-       {std::pair{&logs, QStringLiteral("linktrace_*.txt")},
-        std::pair{&records, QStringLiteral("battle_*.txt")},
-        std::pair{&records, QStringLiteral("battle_*.html")}})
+  QStringList extras;
+  const QStringList traces =
+      logs.entryList({QStringLiteral("linktrace_*.txt")}, QDir::Files, QDir::Time);
+  if (!traces.isEmpty())
+    extras.push_back(logs.filePath(traces.first()));
+  // Every battle of the newest session (battle_<session>_<n>), so a whole set comes along.
+  const QStringList battles =
+      records.entryList({QStringLiteral("battle_*")}, QDir::Files, QDir::Time);
+  if (!battles.isEmpty())
   {
-    const QStringList extras = folder->entryList({pattern}, QDir::Files, QDir::Time);
-    if (extras.isEmpty())
-      continue;
-    const QString extra_target = QFileInfo(target).absoluteDir().filePath(extras.first());
-    if (QFileInfo(extra_target).canonicalFilePath() !=
-        QFileInfo(folder->filePath(extras.first())).canonicalFilePath())
+    const QString session = battles.first().section(QLatin1Char('_'), 0, 2);
+    for (const QString& name : battles)
+    {
+      if (name.section(QLatin1Char('_'), 0, 2) == session)
+        extras.push_back(records.filePath(name));
+    }
+  }
+  for (const QString& extra : extras)
+  {
+    const QString extra_target =
+        QFileInfo(target).absoluteDir().filePath(QFileInfo(extra).fileName());
+    if (QFileInfo(extra_target).canonicalFilePath() != QFileInfo(extra).canonicalFilePath())
     {
       QFile::remove(extra_target);
-      QFile::copy(folder->filePath(extras.first()), extra_target);
+      QFile::copy(extra, extra_target);
     }
   }
   QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(target).absolutePath()));
