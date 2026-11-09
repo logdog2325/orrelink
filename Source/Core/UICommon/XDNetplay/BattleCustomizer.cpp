@@ -1427,8 +1427,15 @@ static std::vector<XDBattleRecorder::TeamMember> LogSocketTeam(int sock, const s
         for (const Gen3Mon& mon : *party)
         {
           species += fmt::format("{}{}", species.empty() ? "" : ",", mon.species);
-          team.push_back({static_cast<u16>(mon.species), static_cast<u8>(mon.level),
-                          static_cast<u16>(mon.max_hp), mon.GetNickname()});
+          XDBattleRecorder::TeamMember member;
+          member.species = static_cast<u16>(mon.species);
+          member.level = static_cast<u8>(mon.level);
+          member.max_hp = static_cast<u16>(mon.max_hp);
+          member.item = static_cast<u16>(mon.held_item);
+          for (size_t m = 0; m < member.moves.size(); ++m)
+            member.moves[m] = static_cast<u16>(mon.moves[m]);
+          member.name = mon.GetNickname();
+          team.push_back(std::move(member));
         }
         if (species.empty())
           species = "none";

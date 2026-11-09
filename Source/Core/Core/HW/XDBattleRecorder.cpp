@@ -3,6 +3,7 @@
 
 #include "Core/HW/XDBattleRecorder.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <ctime>
@@ -10,6 +11,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -52,9 +54,18 @@ constexpr u32 MON_HP = 4;            // u16
 constexpr u32 MON_LEVEL = 0x11;
 constexpr u32 MON_STATUS = 0x16;
 constexpr u32 MON_NAME = 0x4E;       // UTF-16, 10 characters
+constexpr u32 MON_MOVES = 0x80;      // u16, every 4 bytes for the four moves
 constexpr u32 MON_PP = 0x82;         // u8, every 4 bytes for the four moves
 
 constexpr u8 RESULT_MISSED = 0x45;
+// Held items (Gen 3 item IDs) the record names when they act.
+constexpr u16 ITEM_SITRUS_BERRY = 142;
+constexpr u16 ITEM_WHITE_HERB = 180;
+constexpr u16 ITEM_LEFTOVERS = 200;
+// The GBA link block XD sends at each choice: after a start word, 373 words. Party record i
+// (the side's four Pokemon in battle, in its current order) starts at word 9 + 85 * i: HP, then
+// at byte 8 the four move IDs.
+constexpr size_t LINK_BLOCK_WORDS = 373;
 constexpr std::array<const char*, 7> STAGE_NAMES{"atk", "def",     "spa",    "spd",
                                                  "spe", "accuracy", "evasion"};
 constexpr std::array<const char*, 7> STAGE_TEXT{"Attack",  "Defense",  "Sp. Atk", "Sp. Def",
@@ -68,6 +79,7 @@ struct SlotState
   u8 level = 0;
   u8 status = 0;
   int pp = 0;
+  std::array<u16, 4> moves{};  // sorted
   std::array<u8, 7> stages{};
   std::string name;
 };
@@ -77,6 +89,8 @@ struct Battle
   std::array<SlotState, 4> slots;
   std::array<std::string, 2> players;
   std::array<std::vector<TeamMember>, 2> teams;
+  std::set<std::pair<int, size_t>> items_used;  // side, team index
+  std::array<std::map<std::array<u16, 4>, std::string>, 2> seen_moves;  // sorted moves -> name
   std::map<std::pair<u32, u16>, int> max_hp;  // by battle Pokemon and species: HP when first seen
   std::vector<std::string> log;
   std::vector<std::string> text;
@@ -90,6 +104,9 @@ struct Battle
 std::optional<Battle> s_battle;
 std::mutex s_teams_mutex;
 std::array<std::vector<TeamMember>, 2> s_teams;
+// From the GBA link: each side's four Pokemon in battle, by their moves. Guarded by s_teams_mutex.
+std::array<std::vector<std::array<u16, 4>>, 2> s_brought;
+std::array<std::optional<std::vector<u8>>, 4> s_link_block;
 std::string s_session_stamp;
 int s_battle_count = 0;
 
@@ -162,7 +179,11 @@ SlotState ReadSlot(const Memory::MemoryManager& mem, int index)
   state.level = Read8(mem, mon + MON_LEVEL);
   state.status = Read8(mem, mon + MON_STATUS);
   for (u32 i = 0; i < 4; ++i)
+  {
     state.pp += Read8(mem, mon + MON_PP + i * 4);
+    state.moves[i] = Read16(mem, mon + MON_MOVES + i * 4);
+  }
+  std::ranges::sort(state.moves);
   for (u32 i = 0; i < state.stages.size(); ++i)
     state.stages[i] = Read8(mem, slot + SLOT_STAGES + i);
   state.name = ReadText(mem, mon + MON_NAME);
@@ -216,6 +237,41 @@ const char* StatusId(u8 status)
   }
 }
 
+// The slot's Pokemon in its player's team: by species, the nickname deciding between two of the
+// same species. -1 when the team is not known.
+int MemberIndex(const Battle& battle, int slot)
+{
+  const SlotState& state = battle.slots[slot];
+  const std::vector<TeamMember>& team = battle.teams[slot / 2];
+  int by_species = -1;
+  for (size_t i = 0; i < team.size(); ++i)
+  {
+    if (team[i].species != state.species)
+      continue;
+    if (team[i].name == state.name)
+      return static_cast<int>(i);
+    if (by_species < 0)
+      by_species = static_cast<int>(i);
+  }
+  return by_species;
+}
+
+// The slot's held item, if it still has it.
+u16 HeldItem(const Battle& battle, int slot)
+{
+  const int index = MemberIndex(battle, slot);
+  if (index < 0 || battle.items_used.contains({slot / 2, static_cast<size_t>(index)}))
+    return 0;
+  return battle.teams[slot / 2][index].item;
+}
+
+void UseItem(Battle& battle, int slot)
+{
+  const int index = MemberIndex(battle, slot);
+  if (index >= 0)
+    battle.items_used.insert({slot / 2, static_cast<size_t>(index)});
+}
+
 std::optional<int> PartyMaxHp(const Battle& battle, int slot)
 {
   // By species, the nickname deciding between two of the same species.
@@ -236,6 +292,7 @@ std::optional<int> PartyMaxHp(const Battle& battle, int slot)
 void AddSwitch(Battle& battle, int slot)
 {
   const SlotState& state = battle.slots[slot];
+  battle.seen_moves[slot / 2][state.moves] = state.name;
   const int first_seen = PartyMaxHp(battle, slot).value_or(state.hp);
   const int max = battle.max_hp.try_emplace({state.pokemon, state.species}, first_seen).first->second;
   battle.log.push_back(fmt::format("|switch|{}|{}, L{}|{}/{}", Who(battle, slot),
@@ -294,6 +351,7 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
     {
       const int max = battle.max_hp.try_emplace({now.pokemon, now.species}, was.hp).first->second;
       const std::string who = Who(battle, i);
+      std::string from;  // what healed it, when that is known
       if (now.hp < was.hp)
       {
         if (battle.acting >= 0 && !battle.crit_shown && target == SLOTS[i] &&
@@ -308,9 +366,25 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
       }
       else
       {
-        battle.log.push_back(fmt::format("|-heal|{}|{}/{}", who, now.hp, max));
+        const int gained = now.hp - was.hp;
+        const u16 item = HeldItem(battle, i);
+        if (item == ITEM_LEFTOVERS && gained == std::max(1, max / 16))
+        {
+          from = "Leftovers";
+        }
+        else if (item == ITEM_SITRUS_BERRY && gained == std::min(30, max - was.hp))
+        {
+          from = "Sitrus Berry";
+          battle.log.push_back(fmt::format("|-enditem|{}|Sitrus Berry|[eat]", who));
+          UseItem(battle, i);
+        }
+        battle.log.push_back(from.empty() ?
+                                 fmt::format("|-heal|{}|{}/{}", who, now.hp, max) :
+                                 fmt::format("|-heal|{}|{}/{}|[from] item: {}", who, now.hp,
+                                             max, from));
       }
-      battle.text.push_back(fmt::format("    {} {} -> {}", TextWho(battle, i), was.hp, now.hp));
+      battle.text.push_back(fmt::format("    {} {} -> {}{}", TextWho(battle, i), was.hp, now.hp,
+                                        from.empty() ? "" : " (" + from + ")"));
       if (now.hp == 0)
       {
         battle.log.push_back(fmt::format("|faint|{}", who));
@@ -333,6 +407,32 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
         battle.text.push_back(fmt::format("    {} is cured of {}", TextWho(battle, i), old_id));
       }
       was.status = now.status;
+    }
+
+    // White Herb: every lowered stat back to neutral at once.
+    if (HeldItem(battle, i) == ITEM_WHITE_HERB)
+    {
+      bool restored = false;
+      bool all_neutral = true;
+      for (size_t s = 0; s < now.stages.size(); ++s)
+      {
+        restored = restored || (was.stages[s] < 6 && now.stages[s] == 6);
+        all_neutral = all_neutral && (was.stages[s] >= 6 || now.stages[s] == 6);
+      }
+      if (restored && all_neutral)
+      {
+        const std::string who = Who(battle, i);
+        battle.log.push_back(fmt::format("|-enditem|{}|White Herb", who));
+        battle.log.push_back(fmt::format("|-clearnegativeboost|{}|[silent]", who));
+        battle.text.push_back(fmt::format("    {} restored its stats with its White Herb",
+                                          TextWho(battle, i)));
+        UseItem(battle, i);
+        for (size_t s = 0; s < now.stages.size(); ++s)
+        {
+          if (was.stages[s] < 6)
+            was.stages[s] = 6;
+        }
+      }
     }
 
     for (size_t s = 0; s < now.stages.size(); ++s)
@@ -424,6 +524,38 @@ void WriteBattle(Battle& battle)
     log += "|teampreview\n";
   }
   log += "|start\n";
+  std::array<std::vector<std::array<u16, 4>>, 2> brought;
+  {
+    std::lock_guard lock(s_teams_mutex);
+    brought = s_brought;
+  }
+  for (int side = 0; side < 2; ++side)
+  {
+    std::string names;
+    for (std::array<u16, 4> moves : brought[side])
+    {
+      std::ranges::sort(moves);
+      std::string name = "?";
+      if (const auto seen = battle.seen_moves[side].find(moves);
+          seen != battle.seen_moves[side].end())
+      {
+        name = seen->second;
+      }
+      for (const TeamMember& member : battle.teams[side])
+      {
+        std::array<u16, 4> member_moves = member.moves;
+        std::ranges::sort(member_moves);
+        if (member_moves == moves)
+          name = member.name;
+      }
+      names += fmt::format("{}{}", names.empty() ? "" : ", ", name);
+    }
+    if (names.empty() || std::ranges::all_of(names, [](char c) { return c == '?' || c == ',' || c == ' '; }))
+      continue;
+    const std::string line = fmt::format("{} brought: {}", battle.players[side], names);
+    log += fmt::format("|message|{}\n", line);
+    team_text += line + '\n';
+  }
   for (const std::string& line : battle.log)
     log += line + '\n';
   std::string text = fmt::format("OrreLink battle record: {}\n\n{}{}", title, team_text,
@@ -481,6 +613,8 @@ void OnField(Core::System& system)
     if (s_battle)
       WriteBattle(*s_battle);
     s_battle.reset();
+    std::lock_guard lock(s_teams_mutex);
+    s_brought = {};
     return;
   }
 
@@ -503,6 +637,46 @@ void OnField(Core::System& system)
     }
   }
   Step(mem, *s_battle);
+}
+
+void OnLinkWrite(int device, const u8* word)
+{
+  if (device < 1 || device > 2)
+    return;
+  const std::array<u8, 4> w{word[0], word[1], word[2], word[3]};
+  // Keep-alives between blocks.
+  if (w == std::array<u8, 4>{0x47, 0x58, 0x58, 0x45} || w == std::array<u8, 4>{0, 0, 0, 0xAA} ||
+      w == std::array<u8, 4>{0, 0, 0, 0x11})
+  {
+    return;
+  }
+  std::lock_guard lock(s_teams_mutex);
+  std::optional<std::vector<u8>>& block = s_link_block[device];
+  if (w == std::array<u8, 4>{0, 0, 0, 0x66})
+  {
+    block.emplace();
+    block->reserve(LINK_BLOCK_WORDS * 4);
+    return;
+  }
+  if (!block)
+    return;
+  block->insert(block->end(), w.begin(), w.end());
+  if (block->size() < LINK_BLOCK_WORDS * 4)
+    return;
+  std::vector<std::array<u16, 4>>& brought = s_brought[device - 1];
+  if (brought.empty())
+  {
+    for (size_t i = 0; i < 4; ++i)
+    {
+      const size_t at = (9 + 85 * i) * 4 + 8;
+      std::array<u16, 4> moves{};
+      for (size_t m = 0; m < 4; ++m)
+        moves[m] = static_cast<u16>((*block)[at + 2 * m] | ((*block)[at + 2 * m + 1] << 8));
+      if (moves != std::array<u16, 4>{})
+        brought.push_back(moves);
+    }
+  }
+  block.reset();
 }
 
 void Finish()

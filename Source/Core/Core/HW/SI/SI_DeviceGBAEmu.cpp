@@ -22,6 +22,7 @@
 #include "Core/CoreTiming.h"
 #include "Core/HW/GBACore.h"
 #include "Core/HW/GBADetectLog.h"
+#include "Core/HW/XDBattleRecorder.h"
 #include "Core/HLE/HLE_XD.h"
 #include "Core/HW/GBAPad.h"
 #include "Core/HW/Memmap.h"
@@ -796,6 +797,9 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
     // Tester trace: every data command (not the status probes), unfiltered.
     if (data_cmd_now && GBADetectLog::IsTracingLink())
       GBADetectLog::TraceLink(m_device_number, m_timestamp_sent, '>', buffer, request_length);
+    // Battle records: which four Pokemon each side brought (read only).
+    if (m_last_cmd == EBufferCommands::CMD_WRITE_GBA && request_length >= 5)
+      XDBattleRecorder::OnLinkWrite(m_device_number, buffer + 1);
     const u8 cmd_class = probing ? 1u : (data_cmd_now ? 2u : 0u);
     const bool class_changed = cmd_class != m_diag_prev_cmd_class;
     m_diag_prev_cmd_class = cmd_class;

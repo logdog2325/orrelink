@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,8 @@ struct TeamMember
   u16 species = 0;
   u8 level = 0;
   u16 max_hp = 0;
+  u16 item = 0;
+  std::array<u16, 4> moves{};
   std::string name;
 };
 
@@ -33,6 +36,9 @@ void SetTeams(std::vector<TeamMember> side1, std::vector<TeamMember> side2);
 void ClearTeams();
 
 void OnField(Core::System& system);
+// A word XD writes to the GBA on SI channel `device`. At each choice XD sends that GBA a block
+// listing its side's four Pokemon in battle, which says which four of the six were brought.
+void OnLinkWrite(int device, const u8* word);
 // The game is stopping: a battle still open is written as far as it got.
 void Finish();
 }  // namespace XDBattleRecorder
