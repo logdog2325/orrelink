@@ -1,0 +1,246 @@
+From 8e9ad62aad08f713bb2bb858d9f66bd795cf9ea9 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 10:38:24 -0800
+Subject: [PATCH 186/187] XD Netplay: battle records list both full teams, and
+ take each Pokemon's max HP from its save
+
+A re-entering Pokemon that comes back damaged keeps its real max HP. A fainted Pokemon's status is no longer shown as cured.
+---
+ Source/Core/Core/HW/XDBattleRecorder.cpp      | 66 +++++++++++++++++--
+ Source/Core/Core/HW/XDBattleRecorder.h        | 18 +++++
+ .../UICommon/XDNetplay/BattleCustomizer.cpp   | 16 ++++-
+ 3 files changed, 93 insertions(+), 7 deletions(-)
+
+diff --git a/Source/Core/Core/HW/XDBattleRecorder.cpp b/Source/Core/Core/HW/XDBattleRecorder.cpp
+index 3cf668d..c629feb 100644
+--- a/Source/Core/Core/HW/XDBattleRecorder.cpp
++++ b/Source/Core/Core/HW/XDBattleRecorder.cpp
+@@ -8,6 +8,7 @@
+ #include <ctime>
+ #include <fstream>
+ #include <map>
++#include <mutex>
+ #include <optional>
+ #include <string>
+ #include <utility>
+@@ -75,6 +76,7 @@ struct Battle
+ {
+   std::array<SlotState, 4> slots;
+   std::array<std::string, 2> players;
++  std::array<std::vector<TeamMember>, 2> teams;
+   std::map<std::pair<u32, u16>, int> max_hp;  // by battle Pokemon and species: HP when first seen
+   std::vector<std::string> log;
+   std::vector<std::string> text;
+@@ -86,6 +88,8 @@ struct Battle
+ };
+ 
+ std::optional<Battle> s_battle;
++std::mutex s_teams_mutex;
++std::array<std::vector<TeamMember>, 2> s_teams;
+ std::string s_session_stamp;
+ int s_battle_count = 0;
+ 
+@@ -212,10 +216,28 @@ const char* StatusId(u8 status)
+   }
+ }
+ 
++std::optional<int> PartyMaxHp(const Battle& battle, int slot)
++{
++  // By species, the nickname deciding between two of the same species.
++  const SlotState& state = battle.slots[slot];
++  std::optional<int> by_species;
++  for (const TeamMember& member : battle.teams[slot / 2])
++  {
++    if (member.species != state.species || member.max_hp < state.hp)
++      continue;
++    if (member.name == state.name)
++      return member.max_hp;
++    if (!by_species)
++      by_species = member.max_hp;
++  }
++  return by_species;
++}
++
+ void AddSwitch(Battle& battle, int slot)
+ {
+   const SlotState& state = battle.slots[slot];
+-  const int max = battle.max_hp.try_emplace({state.pokemon, state.species}, state.hp).first->second;
++  const int first_seen = PartyMaxHp(battle, slot).value_or(state.hp);
++  const int max = battle.max_hp.try_emplace({state.pokemon, state.species}, first_seen).first->second;
+   battle.log.push_back(fmt::format("|switch|{}|{}, L{}|{}/{}", Who(battle, slot),
+                                    SpeciesKey(state.species), state.level, state.hp, max));
+   battle.text.push_back(fmt::format("{} comes in ({}/{})", TextWho(battle, slot), state.hp, max));
+@@ -305,7 +327,7 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
+         battle.log.push_back(fmt::format("|-status|{}|{}", who, id));
+         battle.text.push_back(fmt::format("    {} is now {}", TextWho(battle, i), id));
+       }
+-      else if (const char* old_id = StatusId(was.status))
++      else if (const char* old_id = StatusId(was.status); old_id && now.hp > 0)
+       {
+         battle.log.push_back(fmt::format("|-curestatus|{}|{}", who, old_id));
+         battle.text.push_back(fmt::format("    {} is cured of {}", TextWho(battle, i), old_id));
+@@ -381,11 +403,31 @@ void WriteBattle(Battle& battle)
+ 
+   const std::string title = fmt::format("{} vs. {}", battle.players[0], battle.players[1]);
+   std::string log = fmt::format("|gametype|doubles\n|player|p1|{}||\n|player|p2|{}||\n|gen|3\n"
+-                                "|tier|[Gen 3] OrreLink\n|start\n",
++                                "|tier|[Gen 3] OrreLink\n",
+                                 battle.players[0], battle.players[1]);
++  std::string team_text;
++  if (!battle.teams[0].empty() || !battle.teams[1].empty())
++  {
++    log += "|clearpoke\n";
++    for (int side = 0; side < 2; ++side)
++    {
++      std::string names;
++      for (const TeamMember& member : battle.teams[side])
++      {
++        log += fmt::format("|poke|p{}|{}, L{}|\n", side + 1, SpeciesKey(member.species),
++                           member.level);
++        names += fmt::format("{}{}", names.empty() ? "" : ", ", member.name);
++      }
++      team_text += fmt::format("{}'s team: {}\n", battle.players[side],
++                               names.empty() ? "unknown" : names);
++    }
++    log += "|teampreview\n";
++  }
++  log += "|start\n";
+   for (const std::string& line : battle.log)
+     log += line + '\n';
+-  std::string text = fmt::format("OrreLink battle record: {}\n\n", title);
++  std::string text = fmt::format("OrreLink battle record: {}\n\n{}{}", title, team_text,
++                                 team_text.empty() ? "" : "\n");
+   for (const std::string& line : battle.text)
+     text += line + '\n';
+ 
+@@ -413,6 +455,18 @@ void WriteBattle(Battle& battle)
+ }
+ }  // namespace
+ 
++void SetTeams(std::vector<TeamMember> side1, std::vector<TeamMember> side2)
++{
++  std::lock_guard lock(s_teams_mutex);
++  s_teams = {std::move(side1), std::move(side2)};
++}
++
++void ClearTeams()
++{
++  std::lock_guard lock(s_teams_mutex);
++  s_teams = {};
++}
++
+ void OnField(Core::System& system)
+ {
+   if (SConfig::GetInstance().GetGameID() != "GXXE01")
+@@ -437,6 +491,10 @@ void OnField(Core::System& system)
+       return;
+     s_battle.emplace();
+     s_battle->players = {ReadPlayer(mem, 0), ReadPlayer(mem, 1)};
++    {
++      std::lock_guard lock(s_teams_mutex);
++      s_battle->teams = s_teams;
++    }
+     for (int i = 0; i < 4; ++i)
+     {
+       s_battle->slots[i] = ReadSlot(mem, i);
+diff --git a/Source/Core/Core/HW/XDBattleRecorder.h b/Source/Core/Core/HW/XDBattleRecorder.h
+index 25ed2af..3c4e948 100644
+--- a/Source/Core/Core/HW/XDBattleRecorder.h
++++ b/Source/Core/Core/HW/XDBattleRecorder.h
+@@ -3,6 +3,11 @@
+ 
+ #pragma once
+ 
++#include <string>
++#include <vector>
++
++#include "Common/CommonTypes.h"
++
+ namespace Core
+ {
+ class System;
+@@ -14,6 +19,19 @@ class System;
+ // It only reads emulated memory, so it cannot affect netplay.
+ namespace XDBattleRecorder
+ {
++struct TeamMember
++{
++  u16 species = 0;
++  u8 level = 0;
++  u16 max_hp = 0;
++  std::string name;
++};
++
++// A 1v1 start's two parties, from the GBA saves it boots (side 0 is GBA 1). Each battle record
++// lists them at the top, so the whole team is on record even if some never leave the bench.
++void SetTeams(std::vector<TeamMember> side1, std::vector<TeamMember> side2);
++void ClearTeams();
++
+ void OnField(Core::System& system);
+ // The game is stopping: a battle still open is written as far as it got.
+ void Finish();
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+index e96cf08..ebea9d3 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+@@ -29,6 +29,7 @@
+ #ifdef HAS_LIBMGBA
+ #include "Core/HW/GBACore.h"
+ #include "Core/HW/GBADetectLog.h"
++#include "Core/HW/XDBattleRecorder.h"
+ #endif
+ 
+ #include "Common/IOFile.h"
+@@ -1404,8 +1405,9 @@ static int SaveBustClass(int device)
+ 
+ // One line per GBA save a start boots: which file, its CRC and the party's species, so a report
+ // of "the old team played" can be checked against what was actually there.
+-static void LogSocketTeam(int sock, const std::string& path)
++static std::vector<XDBattleRecorder::TeamMember> LogSocketTeam(int sock, const std::string& path)
+ {
++  std::vector<XDBattleRecorder::TeamMember> team;
+ #ifdef HAS_LIBMGBA
+   std::vector<u8> bytes;
+   if (File::IOFile file(path, "rb"); file)
+@@ -1423,7 +1425,11 @@ static void LogSocketTeam(int sock, const std::string& path)
+       {
+         species.clear();
+         for (const Gen3Mon& mon : *party)
++        {
+           species += fmt::format("{}{}", species.empty() ? "" : ",", mon.species);
++          team.push_back({static_cast<u16>(mon.species), static_cast<u8>(mon.level),
++                          static_cast<u16>(mon.max_hp), mon.GetNickname()});
++        }
+         if (species.empty())
+           species = "none";
+       }
+@@ -1437,6 +1443,7 @@ static void LogSocketTeam(int sock, const std::string& path)
+   (void)sock;
+   (void)path;
+ #endif
++  return team;
+ }
+ 
+ // A solo Multi boot: "Your model" for port 1 and the MultiSoloModels tester key ("2B,16,41") for
+@@ -1820,13 +1827,16 @@ void PrepareForStart(StartKind kind, const SeatLooks* looks)
+ #ifdef HAS_LIBMGBA
+   // The two 1v1 GBA saves this start boots (a watched start: its boot copies; Multi's boot copies
+   // are logged where they are written).
++  XDBattleRecorder::ClearTeams();
+   if (kind == StartKind::OneVsOne)
+   {
++    std::array<std::vector<XDBattleRecorder::TeamMember>, 2> teams;
+     for (const int device : {1, 2})
+     {
+-      LogSocketTeam(device, looks ? NetPlay::GetGBANetplayTempPath(device) :
+-                                    SocketSavePath(device));
++      teams[device - 1] = LogSocketTeam(device, looks ? NetPlay::GetGBANetplayTempPath(device) :
++                                                        SocketSavePath(device));
+     }
++    XDBattleRecorder::SetTeams(std::move(teams[0]), std::move(teams[1]));
+   }
+ #endif
+   // A solo Multi boot has no room to collect picks from (see SoloMultiLooks).
+-- 
+2.39.5 (Apple Git-154)
+
