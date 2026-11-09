@@ -1,7 +1,7 @@
-From e050c8312ac62b95f095fb1c8642b068cbf0675b Mon Sep 17 00:00:00 2001
+From a54f60a3133ede1916c427d49ba2471ac0cb8dde Mon Sep 17 00:00:00 2001
 From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
-Date: Mon, 9 Nov 2026 10:38:24 -0800
-Subject: [PATCH 187/187] XD Netplay v1.8.3
+Date: Mon, 9 Nov 2026 10:53:59 -0800
+Subject: [PATCH 188/188] XD Netplay v1.8.3
 
 ---
  Source/Core/UICommon/XDNetplay/Version.h | 2 +-

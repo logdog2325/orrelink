@@ -1,0 +1,384 @@
+From 3eaf10ec2e8cb4a2782865b11f851268cc89f265 Mon Sep 17 00:00:00 2001
+From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 10:53:59 -0800
+Subject: [PATCH 187/188] XD Netplay: battle records say which four Pokemon
+ each player brought, and name item effects
+
+The four come from the block XD sends each GBA at every choice (read only). Heals by Leftovers and Sitrus Berry and a White Herb's restore are labeled from each Pokemon's held item.
+---
+ Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp    |   4 +
+ Source/Core/Core/HW/XDBattleRecorder.cpp      | 178 +++++++++++++++++-
+ Source/Core/Core/HW/XDBattleRecorder.h        |   6 +
+ .../UICommon/XDNetplay/BattleCustomizer.cpp   |  11 +-
+ 4 files changed, 195 insertions(+), 4 deletions(-)
+
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+index 6934061..6a503b4 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBAEmu.cpp
+@@ -22,6 +22,7 @@
+ #include "Core/CoreTiming.h"
+ #include "Core/HW/GBACore.h"
+ #include "Core/HW/GBADetectLog.h"
++#include "Core/HW/XDBattleRecorder.h"
+ #include "Core/HLE/HLE_XD.h"
+ #include "Core/HW/GBAPad.h"
+ #include "Core/HW/Memmap.h"
+@@ -796,6 +797,9 @@ int CSIDevice_GBAEmu::RunBuffer(u8* buffer, int request_length)
+     // Tester trace: every data command (not the status probes), unfiltered.
+     if (data_cmd_now && GBADetectLog::IsTracingLink())
+       GBADetectLog::TraceLink(m_device_number, m_timestamp_sent, '>', buffer, request_length);
++    // Battle records: which four Pokemon each side brought (read only).
++    if (m_last_cmd == EBufferCommands::CMD_WRITE_GBA && request_length >= 5)
++      XDBattleRecorder::OnLinkWrite(m_device_number, buffer + 1);
+     const u8 cmd_class = probing ? 1u : (data_cmd_now ? 2u : 0u);
+     const bool class_changed = cmd_class != m_diag_prev_cmd_class;
+     m_diag_prev_cmd_class = cmd_class;
+diff --git a/Source/Core/Core/HW/XDBattleRecorder.cpp b/Source/Core/Core/HW/XDBattleRecorder.cpp
+index c629feb..a350f82 100644
+--- a/Source/Core/Core/HW/XDBattleRecorder.cpp
++++ b/Source/Core/Core/HW/XDBattleRecorder.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "Core/HW/XDBattleRecorder.h"
+ 
++#include <algorithm>
+ #include <array>
+ #include <cstdlib>
+ #include <ctime>
+@@ -10,6 +11,7 @@
+ #include <map>
+ #include <mutex>
+ #include <optional>
++#include <set>
+ #include <string>
+ #include <utility>
+ #include <vector>
+@@ -52,9 +54,18 @@ constexpr u32 MON_HP = 4;            // u16
+ constexpr u32 MON_LEVEL = 0x11;
+ constexpr u32 MON_STATUS = 0x16;
+ constexpr u32 MON_NAME = 0x4E;       // UTF-16, 10 characters
++constexpr u32 MON_MOVES = 0x80;      // u16, every 4 bytes for the four moves
+ constexpr u32 MON_PP = 0x82;         // u8, every 4 bytes for the four moves
+ 
+ constexpr u8 RESULT_MISSED = 0x45;
++// Held items (Gen 3 item IDs) the record names when they act.
++constexpr u16 ITEM_SITRUS_BERRY = 142;
++constexpr u16 ITEM_WHITE_HERB = 180;
++constexpr u16 ITEM_LEFTOVERS = 200;
++// The GBA link block XD sends at each choice: after a start word, 373 words. Party record i
++// (the side's four Pokemon in battle, in its current order) starts at word 9 + 85 * i: HP, then
++// at byte 8 the four move IDs.
++constexpr size_t LINK_BLOCK_WORDS = 373;
+ constexpr std::array<const char*, 7> STAGE_NAMES{"atk", "def",     "spa",    "spd",
+                                                  "spe", "accuracy", "evasion"};
+ constexpr std::array<const char*, 7> STAGE_TEXT{"Attack",  "Defense",  "Sp. Atk", "Sp. Def",
+@@ -68,6 +79,7 @@ struct SlotState
+   u8 level = 0;
+   u8 status = 0;
+   int pp = 0;
++  std::array<u16, 4> moves{};  // sorted
+   std::array<u8, 7> stages{};
+   std::string name;
+ };
+@@ -77,6 +89,8 @@ struct Battle
+   std::array<SlotState, 4> slots;
+   std::array<std::string, 2> players;
+   std::array<std::vector<TeamMember>, 2> teams;
++  std::set<std::pair<int, size_t>> items_used;  // side, team index
++  std::array<std::map<std::array<u16, 4>, std::string>, 2> seen_moves;  // sorted moves -> name
+   std::map<std::pair<u32, u16>, int> max_hp;  // by battle Pokemon and species: HP when first seen
+   std::vector<std::string> log;
+   std::vector<std::string> text;
+@@ -90,6 +104,9 @@ struct Battle
+ std::optional<Battle> s_battle;
+ std::mutex s_teams_mutex;
+ std::array<std::vector<TeamMember>, 2> s_teams;
++// From the GBA link: each side's four Pokemon in battle, by their moves. Guarded by s_teams_mutex.
++std::array<std::vector<std::array<u16, 4>>, 2> s_brought;
++std::array<std::optional<std::vector<u8>>, 4> s_link_block;
+ std::string s_session_stamp;
+ int s_battle_count = 0;
+ 
+@@ -162,7 +179,11 @@ SlotState ReadSlot(const Memory::MemoryManager& mem, int index)
+   state.level = Read8(mem, mon + MON_LEVEL);
+   state.status = Read8(mem, mon + MON_STATUS);
+   for (u32 i = 0; i < 4; ++i)
++  {
+     state.pp += Read8(mem, mon + MON_PP + i * 4);
++    state.moves[i] = Read16(mem, mon + MON_MOVES + i * 4);
++  }
++  std::ranges::sort(state.moves);
+   for (u32 i = 0; i < state.stages.size(); ++i)
+     state.stages[i] = Read8(mem, slot + SLOT_STAGES + i);
+   state.name = ReadText(mem, mon + MON_NAME);
+@@ -216,6 +237,41 @@ const char* StatusId(u8 status)
+   }
+ }
+ 
++// The slot's Pokemon in its player's team: by species, the nickname deciding between two of the
++// same species. -1 when the team is not known.
++int MemberIndex(const Battle& battle, int slot)
++{
++  const SlotState& state = battle.slots[slot];
++  const std::vector<TeamMember>& team = battle.teams[slot / 2];
++  int by_species = -1;
++  for (size_t i = 0; i < team.size(); ++i)
++  {
++    if (team[i].species != state.species)
++      continue;
++    if (team[i].name == state.name)
++      return static_cast<int>(i);
++    if (by_species < 0)
++      by_species = static_cast<int>(i);
++  }
++  return by_species;
++}
++
++// The slot's held item, if it still has it.
++u16 HeldItem(const Battle& battle, int slot)
++{
++  const int index = MemberIndex(battle, slot);
++  if (index < 0 || battle.items_used.contains({slot / 2, static_cast<size_t>(index)}))
++    return 0;
++  return battle.teams[slot / 2][index].item;
++}
++
++void UseItem(Battle& battle, int slot)
++{
++  const int index = MemberIndex(battle, slot);
++  if (index >= 0)
++    battle.items_used.insert({slot / 2, static_cast<size_t>(index)});
++}
++
+ std::optional<int> PartyMaxHp(const Battle& battle, int slot)
+ {
+   // By species, the nickname deciding between two of the same species.
+@@ -236,6 +292,7 @@ std::optional<int> PartyMaxHp(const Battle& battle, int slot)
+ void AddSwitch(Battle& battle, int slot)
+ {
+   const SlotState& state = battle.slots[slot];
++  battle.seen_moves[slot / 2][state.moves] = state.name;
+   const int first_seen = PartyMaxHp(battle, slot).value_or(state.hp);
+   const int max = battle.max_hp.try_emplace({state.pokemon, state.species}, first_seen).first->second;
+   battle.log.push_back(fmt::format("|switch|{}|{}, L{}|{}/{}", Who(battle, slot),
+@@ -294,6 +351,7 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
+     {
+       const int max = battle.max_hp.try_emplace({now.pokemon, now.species}, was.hp).first->second;
+       const std::string who = Who(battle, i);
++      std::string from;  // what healed it, when that is known
+       if (now.hp < was.hp)
+       {
+         if (battle.acting >= 0 && !battle.crit_shown && target == SLOTS[i] &&
+@@ -308,9 +366,25 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
+       }
+       else
+       {
+-        battle.log.push_back(fmt::format("|-heal|{}|{}/{}", who, now.hp, max));
++        const int gained = now.hp - was.hp;
++        const u16 item = HeldItem(battle, i);
++        if (item == ITEM_LEFTOVERS && gained == std::max(1, max / 16))
++        {
++          from = "Leftovers";
++        }
++        else if (item == ITEM_SITRUS_BERRY && gained == std::min(30, max - was.hp))
++        {
++          from = "Sitrus Berry";
++          battle.log.push_back(fmt::format("|-enditem|{}|Sitrus Berry|[eat]", who));
++          UseItem(battle, i);
++        }
++        battle.log.push_back(from.empty() ?
++                                 fmt::format("|-heal|{}|{}/{}", who, now.hp, max) :
++                                 fmt::format("|-heal|{}|{}/{}|[from] item: {}", who, now.hp,
++                                             max, from));
+       }
+-      battle.text.push_back(fmt::format("    {} {} -> {}", TextWho(battle, i), was.hp, now.hp));
++      battle.text.push_back(fmt::format("    {} {} -> {}{}", TextWho(battle, i), was.hp, now.hp,
++                                        from.empty() ? "" : " (" + from + ")"));
+       if (now.hp == 0)
+       {
+         battle.log.push_back(fmt::format("|faint|{}", who));
+@@ -335,6 +409,32 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
+       was.status = now.status;
+     }
+ 
++    // White Herb: every lowered stat back to neutral at once.
++    if (HeldItem(battle, i) == ITEM_WHITE_HERB)
++    {
++      bool restored = false;
++      bool all_neutral = true;
++      for (size_t s = 0; s < now.stages.size(); ++s)
++      {
++        restored = restored || (was.stages[s] < 6 && now.stages[s] == 6);
++        all_neutral = all_neutral && (was.stages[s] >= 6 || now.stages[s] == 6);
++      }
++      if (restored && all_neutral)
++      {
++        const std::string who = Who(battle, i);
++        battle.log.push_back(fmt::format("|-enditem|{}|White Herb", who));
++        battle.log.push_back(fmt::format("|-clearnegativeboost|{}|[silent]", who));
++        battle.text.push_back(fmt::format("    {} restored its stats with its White Herb",
++                                          TextWho(battle, i)));
++        UseItem(battle, i);
++        for (size_t s = 0; s < now.stages.size(); ++s)
++        {
++          if (was.stages[s] < 6)
++            was.stages[s] = 6;
++        }
++      }
++    }
++
+     for (size_t s = 0; s < now.stages.size(); ++s)
+     {
+       const int change = now.stages[s] - was.stages[s];
+@@ -424,6 +524,38 @@ void WriteBattle(Battle& battle)
+     log += "|teampreview\n";
+   }
+   log += "|start\n";
++  std::array<std::vector<std::array<u16, 4>>, 2> brought;
++  {
++    std::lock_guard lock(s_teams_mutex);
++    brought = s_brought;
++  }
++  for (int side = 0; side < 2; ++side)
++  {
++    std::string names;
++    for (std::array<u16, 4> moves : brought[side])
++    {
++      std::ranges::sort(moves);
++      std::string name = "?";
++      if (const auto seen = battle.seen_moves[side].find(moves);
++          seen != battle.seen_moves[side].end())
++      {
++        name = seen->second;
++      }
++      for (const TeamMember& member : battle.teams[side])
++      {
++        std::array<u16, 4> member_moves = member.moves;
++        std::ranges::sort(member_moves);
++        if (member_moves == moves)
++          name = member.name;
++      }
++      names += fmt::format("{}{}", names.empty() ? "" : ", ", name);
++    }
++    if (names.empty() || std::ranges::all_of(names, [](char c) { return c == '?' || c == ',' || c == ' '; }))
++      continue;
++    const std::string line = fmt::format("{} brought: {}", battle.players[side], names);
++    log += fmt::format("|message|{}\n", line);
++    team_text += line + '\n';
++  }
+   for (const std::string& line : battle.log)
+     log += line + '\n';
+   std::string text = fmt::format("OrreLink battle record: {}\n\n{}{}", title, team_text,
+@@ -481,6 +613,8 @@ void OnField(Core::System& system)
+     if (s_battle)
+       WriteBattle(*s_battle);
+     s_battle.reset();
++    std::lock_guard lock(s_teams_mutex);
++    s_brought = {};
+     return;
+   }
+ 
+@@ -505,6 +639,46 @@ void OnField(Core::System& system)
+   Step(mem, *s_battle);
+ }
+ 
++void OnLinkWrite(int device, const u8* word)
++{
++  if (device < 1 || device > 2)
++    return;
++  const std::array<u8, 4> w{word[0], word[1], word[2], word[3]};
++  // Keep-alives between blocks.
++  if (w == std::array<u8, 4>{0x47, 0x58, 0x58, 0x45} || w == std::array<u8, 4>{0, 0, 0, 0xAA} ||
++      w == std::array<u8, 4>{0, 0, 0, 0x11})
++  {
++    return;
++  }
++  std::lock_guard lock(s_teams_mutex);
++  std::optional<std::vector<u8>>& block = s_link_block[device];
++  if (w == std::array<u8, 4>{0, 0, 0, 0x66})
++  {
++    block.emplace();
++    block->reserve(LINK_BLOCK_WORDS * 4);
++    return;
++  }
++  if (!block)
++    return;
++  block->insert(block->end(), w.begin(), w.end());
++  if (block->size() < LINK_BLOCK_WORDS * 4)
++    return;
++  std::vector<std::array<u16, 4>>& brought = s_brought[device - 1];
++  if (brought.empty())
++  {
++    for (size_t i = 0; i < 4; ++i)
++    {
++      const size_t at = (9 + 85 * i) * 4 + 8;
++      std::array<u16, 4> moves{};
++      for (size_t m = 0; m < 4; ++m)
++        moves[m] = static_cast<u16>((*block)[at + 2 * m] | ((*block)[at + 2 * m + 1] << 8));
++      if (moves != std::array<u16, 4>{})
++        brought.push_back(moves);
++    }
++  }
++  block.reset();
++}
++
+ void Finish()
+ {
+   if (s_battle)
+diff --git a/Source/Core/Core/HW/XDBattleRecorder.h b/Source/Core/Core/HW/XDBattleRecorder.h
+index 3c4e948..d260c78 100644
+--- a/Source/Core/Core/HW/XDBattleRecorder.h
++++ b/Source/Core/Core/HW/XDBattleRecorder.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <array>
+ #include <string>
+ #include <vector>
+ 
+@@ -24,6 +25,8 @@ struct TeamMember
+   u16 species = 0;
+   u8 level = 0;
+   u16 max_hp = 0;
++  u16 item = 0;
++  std::array<u16, 4> moves{};
+   std::string name;
+ };
+ 
+@@ -33,6 +36,9 @@ void SetTeams(std::vector<TeamMember> side1, std::vector<TeamMember> side2);
+ void ClearTeams();
+ 
+ void OnField(Core::System& system);
++// A word XD writes to the GBA on SI channel `device`. At each choice XD sends that GBA a block
++// listing its side's four Pokemon in battle, which says which four of the six were brought.
++void OnLinkWrite(int device, const u8* word);
+ // The game is stopping: a battle still open is written as far as it got.
+ void Finish();
+ }  // namespace XDBattleRecorder
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+index ebea9d3..1674645 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+@@ -1427,8 +1427,15 @@ static std::vector<XDBattleRecorder::TeamMember> LogSocketTeam(int sock, const s
+         for (const Gen3Mon& mon : *party)
+         {
+           species += fmt::format("{}{}", species.empty() ? "" : ",", mon.species);
+-          team.push_back({static_cast<u16>(mon.species), static_cast<u8>(mon.level),
+-                          static_cast<u16>(mon.max_hp), mon.GetNickname()});
++          XDBattleRecorder::TeamMember member;
++          member.species = static_cast<u16>(mon.species);
++          member.level = static_cast<u8>(mon.level);
++          member.max_hp = static_cast<u16>(mon.max_hp);
++          member.item = static_cast<u16>(mon.held_item);
++          for (size_t m = 0; m < member.moves.size(); ++m)
++            member.moves[m] = static_cast<u16>(mon.moves[m]);
++          member.name = mon.GetNickname();
++          team.push_back(std::move(member));
+         }
+         if (species.empty())
+           species = "none";
+-- 
+2.39.5 (Apple Git-154)
+

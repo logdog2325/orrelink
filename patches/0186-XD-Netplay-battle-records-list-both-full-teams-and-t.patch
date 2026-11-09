@@ -1,7 +1,7 @@
 From 8e9ad62aad08f713bb2bb858d9f66bd795cf9ea9 Mon Sep 17 00:00:00 2001
 From: logdog2325 <226450061+logdog2325@users.noreply.github.com>
 Date: Mon, 9 Nov 2026 10:38:24 -0800
-Subject: [PATCH 186/187] XD Netplay: battle records list both full teams, and
+Subject: [PATCH 186/188] XD Netplay: battle records list both full teams, and
  take each Pokemon's max HP from its save
 
 A re-entering Pokemon that comes back damaged keeps its real max HP. A fainted Pokemon's status is no longer shown as cured.
