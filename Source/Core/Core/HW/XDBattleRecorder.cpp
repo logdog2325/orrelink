@@ -8,6 +8,7 @@
 #include <ctime>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -75,6 +76,7 @@ struct Battle
 {
   std::array<SlotState, 4> slots;
   std::array<std::string, 2> players;
+  std::array<std::vector<TeamMember>, 2> teams;
   std::map<std::pair<u32, u16>, int> max_hp;  // by battle Pokemon and species: HP when first seen
   std::vector<std::string> log;
   std::vector<std::string> text;
@@ -86,6 +88,8 @@ struct Battle
 };
 
 std::optional<Battle> s_battle;
+std::mutex s_teams_mutex;
+std::array<std::vector<TeamMember>, 2> s_teams;
 std::string s_session_stamp;
 int s_battle_count = 0;
 
@@ -212,10 +216,28 @@ const char* StatusId(u8 status)
   }
 }
 
+std::optional<int> PartyMaxHp(const Battle& battle, int slot)
+{
+  // By species, the nickname deciding between two of the same species.
+  const SlotState& state = battle.slots[slot];
+  std::optional<int> by_species;
+  for (const TeamMember& member : battle.teams[slot / 2])
+  {
+    if (member.species != state.species || member.max_hp < state.hp)
+      continue;
+    if (member.name == state.name)
+      return member.max_hp;
+    if (!by_species)
+      by_species = member.max_hp;
+  }
+  return by_species;
+}
+
 void AddSwitch(Battle& battle, int slot)
 {
   const SlotState& state = battle.slots[slot];
-  const int max = battle.max_hp.try_emplace({state.pokemon, state.species}, state.hp).first->second;
+  const int first_seen = PartyMaxHp(battle, slot).value_or(state.hp);
+  const int max = battle.max_hp.try_emplace({state.pokemon, state.species}, first_seen).first->second;
   battle.log.push_back(fmt::format("|switch|{}|{}, L{}|{}/{}", Who(battle, slot),
                                    SpeciesKey(state.species), state.level, state.hp, max));
   battle.text.push_back(fmt::format("{} comes in ({}/{})", TextWho(battle, slot), state.hp, max));
@@ -305,7 +327,7 @@ void Step(const Memory::MemoryManager& mem, Battle& battle)
         battle.log.push_back(fmt::format("|-status|{}|{}", who, id));
         battle.text.push_back(fmt::format("    {} is now {}", TextWho(battle, i), id));
       }
-      else if (const char* old_id = StatusId(was.status))
+      else if (const char* old_id = StatusId(was.status); old_id && now.hp > 0)
       {
         battle.log.push_back(fmt::format("|-curestatus|{}|{}", who, old_id));
         battle.text.push_back(fmt::format("    {} is cured of {}", TextWho(battle, i), old_id));
@@ -381,11 +403,31 @@ void WriteBattle(Battle& battle)
 
   const std::string title = fmt::format("{} vs. {}", battle.players[0], battle.players[1]);
   std::string log = fmt::format("|gametype|doubles\n|player|p1|{}||\n|player|p2|{}||\n|gen|3\n"
-                                "|tier|[Gen 3] OrreLink\n|start\n",
+                                "|tier|[Gen 3] OrreLink\n",
                                 battle.players[0], battle.players[1]);
+  std::string team_text;
+  if (!battle.teams[0].empty() || !battle.teams[1].empty())
+  {
+    log += "|clearpoke\n";
+    for (int side = 0; side < 2; ++side)
+    {
+      std::string names;
+      for (const TeamMember& member : battle.teams[side])
+      {
+        log += fmt::format("|poke|p{}|{}, L{}|\n", side + 1, SpeciesKey(member.species),
+                           member.level);
+        names += fmt::format("{}{}", names.empty() ? "" : ", ", member.name);
+      }
+      team_text += fmt::format("{}'s team: {}\n", battle.players[side],
+                               names.empty() ? "unknown" : names);
+    }
+    log += "|teampreview\n";
+  }
+  log += "|start\n";
   for (const std::string& line : battle.log)
     log += line + '\n';
-  std::string text = fmt::format("OrreLink battle record: {}\n\n", title);
+  std::string text = fmt::format("OrreLink battle record: {}\n\n{}{}", title, team_text,
+                                 team_text.empty() ? "" : "\n");
   for (const std::string& line : battle.text)
     text += line + '\n';
 
@@ -413,6 +455,18 @@ void WriteBattle(Battle& battle)
 }
 }  // namespace
 
+void SetTeams(std::vector<TeamMember> side1, std::vector<TeamMember> side2)
+{
+  std::lock_guard lock(s_teams_mutex);
+  s_teams = {std::move(side1), std::move(side2)};
+}
+
+void ClearTeams()
+{
+  std::lock_guard lock(s_teams_mutex);
+  s_teams = {};
+}
+
 void OnField(Core::System& system)
 {
   if (SConfig::GetInstance().GetGameID() != "GXXE01")
@@ -437,6 +491,10 @@ void OnField(Core::System& system)
       return;
     s_battle.emplace();
     s_battle->players = {ReadPlayer(mem, 0), ReadPlayer(mem, 1)};
+    {
+      std::lock_guard lock(s_teams_mutex);
+      s_battle->teams = s_teams;
+    }
     for (int i = 0; i < 4; ++i)
     {
       s_battle->slots[i] = ReadSlot(mem, i);

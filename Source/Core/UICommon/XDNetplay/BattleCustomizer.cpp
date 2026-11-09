@@ -29,6 +29,7 @@
 #ifdef HAS_LIBMGBA
 #include "Core/HW/GBACore.h"
 #include "Core/HW/GBADetectLog.h"
+#include "Core/HW/XDBattleRecorder.h"
 #endif
 
 #include "Common/IOFile.h"
@@ -1404,8 +1405,9 @@ static int SaveBustClass(int device)
 
 // One line per GBA save a start boots: which file, its CRC and the party's species, so a report
 // of "the old team played" can be checked against what was actually there.
-static void LogSocketTeam(int sock, const std::string& path)
+static std::vector<XDBattleRecorder::TeamMember> LogSocketTeam(int sock, const std::string& path)
 {
+  std::vector<XDBattleRecorder::TeamMember> team;
 #ifdef HAS_LIBMGBA
   std::vector<u8> bytes;
   if (File::IOFile file(path, "rb"); file)
@@ -1423,7 +1425,11 @@ static void LogSocketTeam(int sock, const std::string& path)
       {
         species.clear();
         for (const Gen3Mon& mon : *party)
+        {
           species += fmt::format("{}{}", species.empty() ? "" : ",", mon.species);
+          team.push_back({static_cast<u16>(mon.species), static_cast<u8>(mon.level),
+                          static_cast<u16>(mon.max_hp), mon.GetNickname()});
+        }
         if (species.empty())
           species = "none";
       }
@@ -1437,6 +1443,7 @@ static void LogSocketTeam(int sock, const std::string& path)
   (void)sock;
   (void)path;
 #endif
+  return team;
 }
 
 // A solo Multi boot: "Your model" for port 1 and the MultiSoloModels tester key ("2B,16,41") for
@@ -1820,13 +1827,16 @@ void PrepareForStart(StartKind kind, const SeatLooks* looks)
 #ifdef HAS_LIBMGBA
   // The two 1v1 GBA saves this start boots (a watched start: its boot copies; Multi's boot copies
   // are logged where they are written).
+  XDBattleRecorder::ClearTeams();
   if (kind == StartKind::OneVsOne)
   {
+    std::array<std::vector<XDBattleRecorder::TeamMember>, 2> teams;
     for (const int device : {1, 2})
     {
-      LogSocketTeam(device, looks ? NetPlay::GetGBANetplayTempPath(device) :
-                                    SocketSavePath(device));
+      teams[device - 1] = LogSocketTeam(device, looks ? NetPlay::GetGBANetplayTempPath(device) :
+                                                        SocketSavePath(device));
     }
+    XDBattleRecorder::SetTeams(std::move(teams[0]), std::move(teams[1]));
   }
 #endif
   // A solo Multi boot has no room to collect picks from (see SoloMultiLooks).
